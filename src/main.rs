@@ -94,7 +94,7 @@ fn run() -> Result<(), String> {
     if args.auto_yes {
         println!("aviso: --yes ativo, edições serão aplicadas sem confirmação");
     }
-    println!("Digite uma tarefa. /limpar apaga o contexto. /sair encerra.\n");
+    println!("Digite uma tarefa. /limpar-contexto apaga o contexto. /sair encerra.\n");
 
     let mut messages = vec![json!({"role": "system", "content": SYSTEM_PROMPT})];
     let stdin = io::stdin();
@@ -116,7 +116,7 @@ fn run() -> Result<(), String> {
         if input == "/sair" {
             break;
         }
-        if input == "/limpar" {
+        if input == "/limpar-contexto" {
             context::clear(&mut messages);
             println!("contexto limpo; o prompt do sistema foi mantido.\n");
             continue;

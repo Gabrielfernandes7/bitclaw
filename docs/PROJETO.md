@@ -101,7 +101,7 @@ Smoke test manual com `qwen2.5-coder:3b` pode ser feito a qualquer momento pelo 
 - **Fase 2 (trait `Tool`):** ferramentas são implementações de `Tool` (nome, esquema, `mutates`, execução) guardadas em um `Registry`. A confirmação é injetada por `Approver` (`AutoApprover` com `--yes`, `StdinApprover` no terminal). O loop não conhece nomes de ferramenta. A proteção contra repetir uma alteração no mesmo turno é genérica (usa `mutates`).
 - **Política de histórico (Fase 3): opção A**, em `docs/CHOICE.md`, com os ajustes registrados ali. Orçamento = (num_ctx − 1024 de saída) × caracteres por token − esquemas. Começa em 3 caracteres/token e é calibrado com `prompt_eval_count`.
 - **Correções do diagnóstico de remoção:** `delete_file` (com backup e confirmação); regra no prompt para perguntas e remoções; avisos quando o texto final afirma criação, alteração ou remoção que as ações não confirmam (heurística por palavras, gera aviso e não bloqueia); parada após duas falhas seguidas da mesma ferramenta, mesmo com argumentos diferentes.
-- **Experiência no terminal:** informações do modelo na inicialização (via `/api/show`), uso da janela em percentual no prompt, indicador "modelo pensando" com tempo decorrido, e `/limpar` para apagar o contexto.
+- **Experiência no terminal:** informações do modelo na inicialização (via `/api/show`), uso da janela em percentual no prompt, indicador "modelo pensando" com tempo decorrido, e `/limpar-contexto` para apagar o contexto.
 - **Fronteira corrigida:** `agent.rs` não depende mais do Ollama. A implementação de `ChatModel` para o Ollama está em `ollama.rs`.
 - **Janela de contexto:** `num_ctx` = 8192 explícito. `read_file` limitado a 8 KB. Esses valores são escolhas iniciais, não medidas; reavaliar com a Fase 5 quando houver tarefas de várias etapas.
 - **Números de benchmark de terceiros** (ex.: BFCL do Google) não entram na decisão sem verificação. Vale a avaliação própria.
@@ -112,7 +112,7 @@ Smoke test manual com `qwen2.5-coder:3b` pode ser feito a qualquer momento pelo 
 ## 8. Próximos passos
 
 1. ~~Trait `Model` e modelo falso (Fase 1).~~ Feito como `ChatModel` em `agent.rs`.
-2. Testes do loop. Feitos: repetição, fallback de texto, ferramenta desconhecida, falso sucesso. Falta: limite de passos (`MAX_STEPS`) e erro do modelo (`complete` retornando `Err`).
+2. ~~Testes do loop.~~ Feito: repetição, fallback de texto, ferramenta desconhecida, falso sucesso, limite de passos (`MAX_STEPS`) e erro do modelo. `cargo test`: 52 testes passam sem Ollama. **Fase 1 fechada.**
 3. ~~Versão do Ollama e contexto.~~ Ollama 0.40.18 confirmado. `num_ctx` explícito. Falta verificar o efeito real de 8192 na memória (16 GB).
 4. ~~Fase 2: trait `Tool`, `Registry`, `Approver`.~~ Feito. Critério de saída cumprido: um teste registra uma ferramenta nova (`Echo`) sem editar o loop (`agent.rs`).
 5. ~~Fase 3: política para o histórico.~~ Feito: `ContextManager` em `context.rs` (opção A de `docs/CHOICE.md`). Descarta turnos antigos inteiros, protege sistema e turno atual, calibra com `prompt_eval_count` e registra cada descarte no terminal. 39 testes sem rede.
