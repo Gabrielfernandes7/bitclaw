@@ -32,6 +32,47 @@ Opções:
 
 Ao iniciar, o programa mostra o modelo em uso e a janela de contexto. Se o modelo não estiver instalado no Ollama, ele avisa antes de começar.
 
+## Configuração do agente
+
+O comportamento do agente vem de um arquivo TOML. O padrão é [`agents/bitclaw.toml`](agents/bitclaw.toml), embutido no binário; para usar outro:
+
+```sh
+cargo run -- --config meu-agente.toml
+```
+
+```toml
+name = "bitclaw"
+system_prompt = "Você é ..."
+tools = ["list_dir", "read_file", "edit_file", "create_file", "delete_file"]
+
+[model]
+name = "nemotron-3-nano:4b-mlx"
+url = "http://localhost:11434"
+num_ctx = 8192        # opcional
+temperature = 0.1     # opcional
+
+[limits]              # opcional
+max_steps = 8
+max_consecutive_failures = 2
+reserve_output_tokens = 1024
+```
+
+Campos desconhecidos, ferramentas inexistentes ou repetidas e valores incoerentes (ex.: `num_ctx` menor que `reserve_output_tokens`) são erros com mensagem clara. `--model` e `--url` sobrescrevem o arquivo.
+
+## Usar como biblioteca
+
+O crate `bitclaw` expõe o core. Um agente novo monta uma `Session` a partir de uma configuração e de um modelo, sem editar o core:
+
+```rust
+use bitclaw::{agent::Silent, config::AgentConfig, session::Session, tools::AutoApprover};
+
+let cfg = AgentConfig::from_toml(include_str!("agente.toml"))?;
+let mut sessao = Session::from_config(&cfg, modelo, Box::new(AutoApprover), Path::new("."))?;
+let relatorio = sessao.submit("liste os arquivos", &Silent)?;
+```
+
+`modelo` é qualquer implementação de `bitclaw::agent::ChatModel`. O adaptador do Ollama está em `bitclaw::ollama`, mas o core não depende dele. Ferramentas novas são implementações de `bitclaw::tools::Tool` registradas em `Registry`.
+
 ## Uso no prompt
 
 Digite a tarefa em linguagem natural e pressione Enter. Comandos:
@@ -90,17 +131,22 @@ Os testes não dependem de rede nem de modelo: usam um modelo falso com resposta
 
 - Modelos pequenos às vezes escrevem a chamada de ferramenta como texto JSON. Há um fallback que reconhece esse formato (`calls_from_text` em `src/agent.rs`).
 - O modelo pode afirmar que concluiu uma tarefa sem ter aplicado todas as edições. Confira o arquivo. O programa avisa nos casos mais óbvios, mas não é garantia.
-- A configuração do agente (prompt, ferramentas, modelo) ainda está no próprio binário. A separação em biblioteca e configuração é a Fase 4 de `docs/PROJETO.md`.
+- Ferramentas ainda são só as embutidas: não há carregamento de ferramentas externas nem de skills.
+- A biblioteca ainda não tem um segundo agente que a use de fora do repositório. Essa é a prova da Fase 6 de `docs/PROJETO.md`.
 
 ## Estrutura
 
 | Arquivo | Papel |
 |---|---|
+| `src/lib.rs` | Ponto de entrada da biblioteca (o core). |
+| `src/session.rs` | `Session`: API pública para usar o agente (histórico, turnos, contexto). |
+| `src/config.rs` | Leitura e validação da configuração em TOML. |
 | `src/agent.rs` | Ciclo modelo → ferramentas → modelo, com limites de passos e de repetição. |
 | `src/tools.rs` | Trait `Tool`, registro de ferramentas e `Approver` (confirmação). |
 | `src/context.rs` | Orçamento e descarte do histórico. |
 | `src/ollama.rs` | Adaptador do Ollama (implementa `ChatModel`). |
 | `src/sandbox.rs` | Validação de caminhos dentro do projeto. |
-| `src/main.rs` | Interface de terminal e montagem das peças. |
+| `src/main.rs` | Binário: lê a configuração, monta as peças e abre o terminal. |
+| `agents/bitclaw.toml` | Configuração do agente padrão. |
 | `scripts/eval.sh` | Avaliação com modelos reais. |
 | `docs/PROJETO.md` | Propósito, decisões e plano. |

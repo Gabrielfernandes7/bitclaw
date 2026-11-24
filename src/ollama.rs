@@ -2,18 +2,32 @@ use crate::agent::{ChatModel, Reply};
 use serde_json::{json, Value};
 use std::time::Duration;
 
-// Janela de contexto pedida explicitamente ao Ollama. Sem isso vale o padrão do Ollama, que é pequeno.
+// Janela de contexto e temperatura padrão. Sem `num_ctx` explícito, o Ollama usa uma janela pequena.
 pub const NUM_CTX: u32 = 8192;
+pub const TEMPERATURE: f32 = 0.2;
+
+// Opções de geração enviadas ao Ollama. Vêm da configuração do agente.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Options {
+    pub num_ctx: u32,
+    pub temperature: f32,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self { num_ctx: NUM_CTX, temperature: TEMPERATURE }
+    }
+}
 
 // Corpo da requisição `/api/chat`. Separado do envio para ser testável sem rede.
-pub fn build_body(model: &str, messages: &[Value], tools: &Value) -> Value {
+pub fn build_body(model: &str, messages: &[Value], tools: &Value, options: &Options) -> Value {
     json!({
         "model": model,
         "messages": messages,
         "tools": tools,
         "stream": false,
         "think": false,
-        "options": { "temperature": 0.1, "num_ctx": NUM_CTX }
+        "options": { "temperature": options.temperature, "num_ctx": options.num_ctx }
     })
 }
 
@@ -21,6 +35,7 @@ pub struct Client {
     http: reqwest::blocking::Client,
     base_url: String,
     pub model: String,
+    pub options: Options,
 }
 
 // Dados do modelo informados pelo Ollama.
@@ -39,17 +54,17 @@ impl ChatModel for Client {
 }
 
 impl Client {
-    pub fn new(base_url: String, model: String) -> Result<Self, String> {
+    pub fn new(base_url: String, model: String, options: Options) -> Result<Self, String> {
         let http = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(300))
             .build()
             .map_err(|e| e.to_string())?;
-        Ok(Self { http, base_url, model })
+        Ok(Self { http, base_url, model, options })
     }
 
     /// Envia o histórico e as ferramentas; devolve a mensagem do assistente.
     pub fn chat(&self, messages: &[Value], tools: &Value) -> Result<Reply, String> {
-        let body = build_body(&self.model, messages, tools);
+        let body = build_body(&self.model, messages, tools, &self.options);
         let resp = self
             .http
             .post(format!("{}/api/chat", self.base_url))
@@ -122,7 +137,7 @@ mod tests {
 
     #[test]
     fn request_sets_explicit_context_window() {
-        let body = build_body("m", &[], &json!([]));
+        let body = build_body("m", &[], &json!([]), &Options::default());
         assert_eq!(body["options"]["num_ctx"], NUM_CTX);
         assert_eq!(body["stream"], false);
         assert_eq!(body["model"], "m");

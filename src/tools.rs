@@ -95,13 +95,27 @@ impl Registry {
 
     // Ferramentas que o BitClaw traz de fábrica.
     pub fn default_set() -> Self {
-        Self::new(vec![
-            Box::new(ListDir),
-            Box::new(ReadFile),
-            Box::new(EditFile),
-            Box::new(CreateFile),
-            Box::new(DeleteFile),
-        ])
+        Self::from_names(BUILTIN_TOOLS).expect("as ferramentas embutidas existem")
+    }
+
+    // Monta o registro a partir de nomes de ferramentas embutidas (ex.: vindos de uma configuração).
+    // Nome desconhecido é erro, para que um erro de digitação não passe despercebido.
+    pub fn from_names<S: AsRef<str>>(names: &[S]) -> Result<Self, String> {
+        let mut tools: Vec<Box<dyn Tool>> = Vec::with_capacity(names.len());
+        for name in names {
+            let name = name.as_ref();
+            if tools.iter().any(|t| t.name() == name) {
+                return Err(format!("ferramenta repetida na configuração: {name}"));
+            }
+            let tool = builtin(name).ok_or_else(|| {
+                format!("ferramenta desconhecida na configuração: {name}. Disponíveis: {}", BUILTIN_TOOLS.join(", "))
+            })?;
+            tools.push(tool);
+        }
+        if tools.is_empty() {
+            return Err("nenhuma ferramenta configurada".into());
+        }
+        Ok(Self::new(tools))
     }
 
     pub fn schemas(&self) -> Value {
@@ -128,6 +142,21 @@ impl Registry {
 
     fn find(&self, name: &str) -> Option<&dyn Tool> {
         self.tools.iter().find(|t| t.name() == name).map(|t| t.as_ref())
+    }
+}
+
+// Nomes das ferramentas embutidas, na ordem padrão.
+pub const BUILTIN_TOOLS: &[&str] = &["list_dir", "read_file", "edit_file", "create_file", "delete_file"];
+
+// Constrói uma ferramenta embutida pelo nome. Nome desconhecido devolve `None`.
+fn builtin(name: &str) -> Option<Box<dyn Tool>> {
+    match name {
+        "list_dir" => Some(Box::new(ListDir)),
+        "read_file" => Some(Box::new(ReadFile)),
+        "edit_file" => Some(Box::new(EditFile)),
+        "create_file" => Some(Box::new(CreateFile)),
+        "delete_file" => Some(Box::new(DeleteFile)),
+        _ => None,
     }
 }
 

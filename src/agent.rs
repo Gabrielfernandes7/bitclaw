@@ -9,7 +9,7 @@ use std::path::Path;
 
 pub const MAX_STEPS: usize = 8;
 // Quantas falhas seguidas da mesma ferramenta encerram o turno.
-const MAX_CONSECUTIVE_FAILURES: usize = 2;
+pub const MAX_CONSECUTIVE_FAILURES: usize = 2;
 
 // Palavras que indicam que o texto final afirma uma alteração. Heurística: gera aviso, não bloqueia.
 const CHANGE_WORDS: [&str; 8] = ["criad", "criei", "criou", "alterad", "alterei", "alterou", "editad", "editei"];
@@ -32,11 +32,9 @@ pub trait Progress {
     fn model_waiting(&self, waiting: bool);
 }
 
-// Progresso que não mostra nada (uso em testes).
-#[cfg(test)]
+// Progresso que não mostra nada (útil em testes e em agentes sem terminal).
 pub struct Silent;
 
-#[cfg(test)]
 impl Progress for Silent {
     fn model_waiting(&self, _waiting: bool) {}
 }
@@ -92,8 +90,20 @@ impl TurnReport {
     }
 }
 
-// Roda o ciclo até o modelo responder sem chamar ferramentas.
-// Erros de ferramenta e de nome desconhecido voltam ao modelo como texto e ficam no relatório.
+// Limites de um turno. Os padrões são as constantes acima.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    pub max_steps: usize,
+    pub max_consecutive_failures: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self { max_steps: MAX_STEPS, max_consecutive_failures: MAX_CONSECUTIVE_FAILURES }
+    }
+}
+
+// Roda o ciclo com os limites padrão. Ver `run_turn_with`.
 pub fn run_turn(
     model: &dyn ChatModel,
     registry: &Registry,
@@ -103,6 +113,22 @@ pub fn run_turn(
     ctx: &mut ContextManager,
     progress: &dyn Progress,
 ) -> Result<TurnReport, String> {
+    run_turn_with(model, registry, root, messages, approver, ctx, progress, Limits::default())
+}
+
+// Roda o ciclo até o modelo responder sem chamar ferramentas.
+// Erros de ferramenta e de nome desconhecido voltam ao modelo como texto e ficam no relatório.
+#[allow(clippy::too_many_arguments)]
+pub fn run_turn_with(
+    model: &dyn ChatModel,
+    registry: &Registry,
+    root: &Path,
+    messages: &mut Vec<Value>,
+    approver: &dyn Approver,
+    ctx: &mut ContextManager,
+    progress: &dyn Progress,
+    limits: Limits,
+) -> Result<TurnReport, String> {
     let tools = registry.schemas();
     let mut report = TurnReport::default();
     let mut last_call: Option<String> = None;
@@ -111,7 +137,7 @@ pub fn run_turn(
     // Alterações já executadas neste turno. Repetir a mesma alteração não a reaplica.
     let mut applied: HashSet<String> = HashSet::new();
 
-    for _ in 0..MAX_STEPS {
+    for _ in 0..limits.max_steps {
         if let Some(trim) = ctx.fit(messages, &tools)? {
             report.trims.push(trim);
         }
@@ -180,18 +206,18 @@ pub fn run_turn(
             messages.push(json!({"role": "tool", "tool_name": name.clone(), "content": outcome.text()}));
             report.actions.push(Action { name: name.clone(), args, outcome, mutates });
 
-            if let Some((_, count)) = &failing {
-                if *count >= MAX_CONSECUTIVE_FAILURES {
-                    report.error = Some(format!(
-                        "a ferramenta {name} falhou {count} vezes seguidas; interrompendo para não repetir o erro"
-                    ));
-                    return Ok(report);
-                }
+            if let Some((_, count)) = &failing
+                && *count >= limits.max_consecutive_failures
+            {
+                report.error = Some(format!(
+                    "a ferramenta {name} falhou {count} vezes seguidas; interrompendo para não repetir o erro"
+                ));
+                return Ok(report);
             }
         }
     }
 
-    report.error = Some(format!("limite de {MAX_STEPS} passos atingido sem resposta final"));
+    report.error = Some(format!("limite de {} passos atingido sem resposta final", limits.max_steps));
     Ok(report)
 }
 

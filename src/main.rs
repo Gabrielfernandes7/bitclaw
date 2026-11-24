@@ -1,12 +1,11 @@
-mod agent;
-mod context;
-mod ollama;
-mod sandbox;
-mod tools;
+//! Binário do BitClaw: monta as peças (configuração, adaptador do Ollama, aprovação) e abre o terminal.
+//! A lógica do agente fica na biblioteca.
 
-use agent::{Progress, TurnReport};
-use context::ContextManager;
-use serde_json::json;
+use bitclaw::agent::{Progress, TurnReport};
+use bitclaw::config::AgentConfig;
+use bitclaw::ollama::{self, Options};
+use bitclaw::session::Session;
+use bitclaw::tools::{self, Approver, AutoApprover, StdinApprover};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,44 +13,35 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const DEFAULT_MODEL: &str = "nemotron-3-nano:4b-mlx";
-const DEFAULT_URL: &str = "http://localhost:11434";
-// Tokens reservados para a resposta do modelo, fora do orçamento do histórico.
-const RESERVE_OUTPUT_TOKENS: usize = 1024;
-
-const SYSTEM_PROMPT: &str = "Você é o BitClaw, um assistente que lê e altera arquivos de um projeto local. \
-Use as ferramentas para inspecionar o projeto antes de responder. \
-Se o usuário fizer uma pergunta, responda em texto, sem usar ferramentas de alteração. \
-Altere arquivos somente quando o usuário pedir uma ação. \
-Para criar um arquivo novo, use create_file. Para remover um arquivo, use delete_file. \
-Para alterar um existente, leia-o com read_file e use edit_file com o trecho exato. \
-Nunca diga que criou, alterou ou removeu algo sem que a ferramenta tenha retornado sucesso. \
-Se uma ferramenta retornar ERRO, corrija a chamada ou explique a falha. \
-Faça uma alteração por vez. Responda em português, de forma curta.";
+// Agente padrão, embutido no binário como dado. `--config` usa outro arquivo.
+const DEFAULT_CONFIG: &str = include_str!("../agents/bitclaw.toml");
 
 struct Args {
-    model: String,
-    url: String,
+    config: Option<PathBuf>,
+    model: Option<String>,
+    url: Option<String>,
     dir: PathBuf,
     auto_yes: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut args = Args {
-        model: DEFAULT_MODEL.into(),
-        url: DEFAULT_URL.into(),
+        config: None,
+        model: None,
+        url: None,
         dir: std::env::current_dir().map_err(|e| e.to_string())?,
         auto_yes: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--model" => args.model = it.next().ok_or("--model precisa de valor")?,
-            "--url" => args.url = it.next().ok_or("--url precisa de valor")?,
+            "--config" => args.config = Some(PathBuf::from(it.next().ok_or("--config precisa de valor")?)),
+            "--model" => args.model = Some(it.next().ok_or("--model precisa de valor")?),
+            "--url" => args.url = Some(it.next().ok_or("--url precisa de valor")?),
             "--dir" => args.dir = PathBuf::from(it.next().ok_or("--dir precisa de valor")?),
             "--yes" => args.auto_yes = true,
             "-h" | "--help" => {
-                println!("uso: bitclaw [--model M] [--url U] [--dir D] [--yes]");
+                println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes]");
                 std::process::exit(0);
             }
             other => return Err(format!("argumento desconhecido: {other}")),
@@ -69,25 +59,34 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
-    let root = args.dir.canonicalize().map_err(|e| format!("diretório inválido: {e}"))?;
-    let client = ollama::Client::new(args.url.clone(), args.model.clone())?;
-    let registry = tools::Registry::default_set();
-    let tools_schema = registry.schemas();
-    let approver: Box<dyn tools::Approver> = if args.auto_yes {
-        Box::new(tools::AutoApprover)
-    } else {
-        Box::new(tools::StdinApprover)
+    let mut cfg = match &args.config {
+        Some(path) => {
+            let text = std::fs::read_to_string(path).map_err(|e| format!("não consegui ler {}: {e}", path.display()))?;
+            AgentConfig::from_toml(&text)?
+        }
+        None => AgentConfig::from_toml(DEFAULT_CONFIG)?,
     };
-    let spinner = Spinner::new();
-    let mut ctx = ContextManager::new(ollama::NUM_CTX as usize, RESERVE_OUTPUT_TOKENS);
+    // Linha de comando sobrescreve a configuração.
+    if let Some(m) = args.model {
+        cfg.model.name = m;
+    }
+    if let Some(u) = args.url {
+        cfg.model.url = u;
+    }
 
-    println!("BitClaw · projeto {}", root.display());
-    print_model_info(&client);
-    match client.has_model() {
+    let options = Options { num_ctx: cfg.model.num_ctx, temperature: cfg.model.temperature };
+    let client = ollama::Client::new(cfg.model.url.clone(), cfg.model.name.clone(), options)?;
+    let approver: Box<dyn Approver> = if args.auto_yes { Box::new(AutoApprover) } else { Box::new(StdinApprover) };
+    let mut session = Session::from_config(&cfg, Box::new(client), approver, &args.dir)?;
+    let spinner = Spinner::new();
+
+    println!("{} · projeto {}", cfg.name, session.root().display());
+    print_model_info(&cfg);
+    match ollama_has_model(&cfg) {
         Ok(true) => {}
         Ok(false) => eprintln!(
-            "aviso: o modelo '{}' não aparece no Ollama. Instale com: ollama pull {}",
-            args.model, args.model
+            "aviso: o modelo '{0}' não aparece no Ollama. Instale com: ollama pull {0}",
+            cfg.model.name
         ),
         Err(e) => eprintln!("aviso: não consegui listar os modelos do Ollama: {e}"),
     }
@@ -96,13 +95,12 @@ fn run() -> Result<(), String> {
     }
     println!("Digite uma tarefa. /limpar-contexto apaga o contexto. /sair encerra.\n");
 
-    let mut messages = vec![json!({"role": "system", "content": SYSTEM_PROMPT})];
     let stdin = io::stdin();
     loop {
-        let usage = ctx.usage(&messages, &tools_schema);
+        let usage = session.usage();
         print!(
-            "bitclaw [contexto {:.0}% · ~{}/{} tok]> ",
-            usage.percent, usage.tokens, usage.window
+            "{} [contexto {:.0}% · ~{}/{} tok]> ",
+            cfg.name, usage.percent, usage.tokens, usage.window
         );
         io::stdout().flush().ok();
         let mut line = String::new();
@@ -117,13 +115,11 @@ fn run() -> Result<(), String> {
             break;
         }
         if input == "/limpar-contexto" {
-            context::clear(&mut messages);
+            session.clear();
             println!("contexto limpo; o prompt do sistema foi mantido.\n");
             continue;
         }
-        messages.push(json!({"role": "user", "content": input}));
-
-        match agent::run_turn(&client, &registry, &root, &mut messages, approver.as_ref(), &mut ctx, &spinner) {
+        match session.submit(input, &spinner) {
             Ok(report) => print_report(&report),
             Err(e) => eprintln!("erro: {e}"),
         }
@@ -131,18 +127,25 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn print_model_info(client: &ollama::Client) {
-    match client.model_info() {
+// Verifica se o modelo configurado está instalado no Ollama.
+fn ollama_has_model(cfg: &AgentConfig) -> Result<bool, String> {
+    let options = Options { num_ctx: cfg.model.num_ctx, temperature: cfg.model.temperature };
+    ollama::Client::new(cfg.model.url.clone(), cfg.model.name.clone(), options)?.has_model()
+}
+
+fn print_model_info(cfg: &AgentConfig) {
+    let options = Options { num_ctx: cfg.model.num_ctx, temperature: cfg.model.temperature };
+    match ollama::Client::new(cfg.model.url.clone(), cfg.model.name.clone(), options).and_then(|c| c.model_info()) {
         Ok(info) => println!(
             "modelo {} · {} · quantização {} · janela máxima {} tokens",
-            client.model,
+            cfg.model.name,
             info.parameter_size.unwrap_or_else(|| "?".into()),
             info.quantization.unwrap_or_else(|| "?".into()),
             info.context_length.map_or("?".into(), |c| c.to_string()),
         ),
-        Err(_) => println!("modelo {}", client.model),
+        Err(_) => println!("modelo {}", cfg.model.name),
     }
-    println!("janela em uso: {} tokens", ollama::NUM_CTX);
+    println!("janela em uso: {} tokens", cfg.model.num_ctx);
 }
 
 // Mostra "modelo pensando" no terminal enquanto o modelo responde.

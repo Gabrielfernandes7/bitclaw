@@ -118,6 +118,14 @@ Smoke test manual com `qwen2.5-coder:3b` pode ser feito a qualquer momento pelo 
 5. ~~Fase 3: política para o histórico.~~ Feito: `ContextManager` em `context.rs` (opção A de `docs/CHOICE.md`). Descarta turnos antigos inteiros, protege sistema e turno atual, calibra com `prompt_eval_count` e registra cada descarte no terminal. 39 testes sem rede.
    Medição de RAM com `num_ctx` 8192: `nemotron-3-nano:4b-mlx` ocupa **5,2 GB** (100% GPU) em um Mac de 16 GB. Medido com o modelo carregado e sem histórico cheio; um histórico no limite deve ser medido de novo na Fase 5.
 6. Ferramenta de busca: nome e escopo ainda em aberto. Agora é só registrar uma implementação de `Tool`.
+7. **Fase 4 (agente como dado e separação lib/bin): feita.**
+   - `src/lib.rs` expõe o core. `src/main.rs` só lê a configuração, monta o adaptador do Ollama e abre o terminal.
+   - Configuração em TOML (`agents/bitclaw.toml`), com `deny_unknown_fields`, validação de valores coerentes e de ferramentas. Escolha: TOML, por ser legível e não exigir código para trocar prompt, ferramentas, modelo ou limites. O binário embute o arquivo padrão; `--config` usa outro.
+   - `Session` é a API pública: recebe o modelo como `Box<dyn ChatModel>`, então o core não cria adaptadores.
+   - Limites viraram parâmetro (`Limits`, `run_turn_with`); `run_turn` continua com os padrões.
+   - Opções do Ollama (`num_ctx`, `temperature`) vêm da configuração.
+   - `cargo test`: 64 testes unitários e 1 doctest, sem Ollama. Avaliação com nemotron: 5/5 PASS, igual antes da refatoração.
+   - Critério de saída: o binário não tem lógica de agente (só monta peças). A prova de que a API basta é a Fase 6.
 
 ## 9. Questões em aberto
 
