@@ -1,5 +1,5 @@
 //! Ciclo modelo → ferramentas → modelo. Não conhece o Ollama nem nomes de ferramentas:
-//! recebe um `ChatModel`, um `Registry` e um `ContextManager`.
+//! recebe um `ChatModel`, um `Registry`, um `ContextManager` e um `Progress`.
 
 use crate::context::{self, ContextManager, Trim};
 use crate::tools::{Approver, Outcome, Registry};
@@ -8,6 +8,12 @@ use std::collections::HashSet;
 use std::path::Path;
 
 pub const MAX_STEPS: usize = 8;
+// Quantas falhas seguidas da mesma ferramenta encerram o turno.
+const MAX_CONSECUTIVE_FAILURES: usize = 2;
+
+// Palavras que indicam que o texto final afirma uma alteração. Heurística: gera aviso, não bloqueia.
+const CHANGE_WORDS: [&str; 8] = ["criad", "criei", "criou", "alterad", "alterei", "alterou", "editad", "editei"];
+const DELETE_WORDS: [&str; 5] = ["remov", "apagad", "apaguei", "apagou", "exclu"];
 
 // Resposta de um provedor de modelo.
 pub struct Reply {
@@ -19,6 +25,20 @@ pub struct Reply {
 // Qualquer provedor capaz de completar uma conversa com ferramentas.
 pub trait ChatModel {
     fn complete(&self, messages: &[Value], tools: &Value) -> Result<Reply, String>;
+}
+
+// Recebe sinais de progresso do loop, para a interface mostrar que o modelo está trabalhando.
+pub trait Progress {
+    fn model_waiting(&self, waiting: bool);
+}
+
+// Progresso que não mostra nada (uso em testes).
+#[cfg(test)]
+pub struct Silent;
+
+#[cfg(test)]
+impl Progress for Silent {
+    fn model_waiting(&self, _waiting: bool) {}
 }
 
 // Uma chamada de ferramenta feita pelo modelo e o que aconteceu com ela.
@@ -46,9 +66,29 @@ impl TurnReport {
         self.actions.iter().any(|a| a.mutates && matches!(a.outcome, Outcome::Done(_)))
     }
 
+    // Algum arquivo foi removido de fato neste turno.
+    pub fn deleted(&self) -> bool {
+        self.actions.iter().any(|a| a.name == "delete_file" && matches!(a.outcome, Outcome::Done(_)))
+    }
+
     // O modelo tentou alterar algo, com sucesso ou não.
     pub fn attempted_changes(&self) -> bool {
         self.actions.iter().any(|a| a.mutates)
+    }
+
+    // Avisos sobre o texto final: ele afirma algo que as ações não confirmam.
+    pub fn warnings(&self) -> Vec<String> {
+        let text = self.text.to_lowercase();
+        let claims_delete = DELETE_WORDS.iter().any(|w| text.contains(w));
+        let claims_change = claims_delete || CHANGE_WORDS.iter().any(|w| text.contains(w));
+        let mut out = Vec::new();
+        if !self.changed() && (self.attempted_changes() || claims_change) {
+            out.push("nenhuma alteração foi aplicada neste turno.".to_string());
+        }
+        if claims_delete && !self.deleted() {
+            out.push("o texto diz que algo foi removido, mas nenhum arquivo foi removido.".to_string());
+        }
+        out
     }
 }
 
@@ -61,11 +101,13 @@ pub fn run_turn(
     messages: &mut Vec<Value>,
     approver: &dyn Approver,
     ctx: &mut ContextManager,
+    progress: &dyn Progress,
 ) -> Result<TurnReport, String> {
     let tools = registry.schemas();
     let mut report = TurnReport::default();
     let mut last_call: Option<String> = None;
     let mut repeats = 0;
+    let mut failing: Option<(String, usize)> = None;
     // Alterações já executadas neste turno. Repetir a mesma alteração não a reaplica.
     let mut applied: HashSet<String> = HashSet::new();
 
@@ -74,7 +116,10 @@ pub fn run_turn(
             report.trims.push(trim);
         }
         let sent_chars = context::size(messages) + context::value_size(&tools);
-        let reply = model.complete(messages, &tools)?;
+        progress.model_waiting(true);
+        let reply = model.complete(messages, &tools);
+        progress.model_waiting(false);
+        let reply = reply?;
         if let Some(tokens) = reply.prompt_tokens {
             ctx.calibrate(sent_chars, tokens);
         }
@@ -121,8 +166,28 @@ pub fn run_turn(
             }
 
             let outcome = registry.execute(root, &name, &args, approver);
+
+            // Falhas seguidas da mesma ferramenta, mesmo com argumentos diferentes, encerram o turno.
+            if matches!(outcome, Outcome::Error(_)) {
+                failing = match failing {
+                    Some((n, count)) if n == name => Some((n, count + 1)),
+                    _ => Some((name.clone(), 1)),
+                };
+            } else {
+                failing = None;
+            }
+
             messages.push(json!({"role": "tool", "tool_name": name.clone(), "content": outcome.text()}));
-            report.actions.push(Action { name, args, outcome, mutates });
+            report.actions.push(Action { name: name.clone(), args, outcome, mutates });
+
+            if let Some((_, count)) = &failing {
+                if *count >= MAX_CONSECUTIVE_FAILURES {
+                    report.error = Some(format!(
+                        "a ferramenta {name} falhou {count} vezes seguidas; interrompendo para não repetir o erro"
+                    ));
+                    return Ok(report);
+                }
+            }
         }
     }
 
@@ -230,6 +295,10 @@ mod tests {
         dir.canonicalize().unwrap()
     }
 
+    fn run(model: &dyn ChatModel, registry: &Registry, r: &Path, msgs: &mut Vec<Value>, approver: &dyn Approver) -> Result<TurnReport, String> {
+        run_turn(model, registry, r, msgs, approver, &mut ctx(), &Silent)
+    }
+
     #[test]
     fn create_then_answer_reports_change() {
         let r = root("create");
@@ -237,9 +306,10 @@ mod tests {
             call("create_file", json!({"path": "fib.py", "content": "print(1)\n"})),
             text("Pronto."),
         ]);
-        let report = run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut ctx()).unwrap();
+        let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
         assert!(report.changed());
         assert_eq!(report.text, "Pronto.");
+        assert!(report.warnings().is_empty());
         assert_eq!(fs::read_to_string(r.join("fib.py")).unwrap(), "print(1)\n");
     }
 
@@ -251,14 +321,61 @@ mod tests {
             text("Arquivo criado com sucesso."),
         ]);
         let mut msgs = start();
-        let report = run_turn(&model, &Registry::default_set(), &r, &mut msgs, &AutoApprover, &mut ctx()).unwrap();
-        // O modelo afirmou sucesso, mas o relatório mostra que nada foi alterado.
+        let report = run(&model, &Registry::default_set(), &r, &mut msgs, &AutoApprover).unwrap();
         assert!(report.attempted_changes());
         assert!(!report.changed());
         assert!(matches!(report.actions[0].outcome, Outcome::Error(_)));
         assert!(!r.join("fib.py").exists());
-        // E o erro foi devolvido ao modelo para ele poder se corrigir.
         assert!(msgs.iter().any(|m| m["content"].as_str().is_some_and(|c| c.starts_with("ERRO:"))));
+        assert!(report.warnings().iter().any(|w| w.contains("nenhuma alteração")));
+    }
+
+    #[test]
+    fn claim_of_removal_without_any_action_is_flagged() {
+        // Caso real: o modelo disse "foi removido" sem chamar nenhuma ferramenta.
+        let r = root("claim-no-action");
+        let model = fake(vec![text("O arquivo mean.cpp foi removido.")]);
+        let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+        assert!(report.actions.is_empty());
+        let w = report.warnings();
+        assert!(w.iter().any(|x| x.contains("nenhuma alteração")), "{w:?}");
+        assert!(w.iter().any(|x| x.contains("nenhum arquivo foi removido")), "{w:?}");
+    }
+
+    #[test]
+    fn removal_claim_after_only_an_edit_is_flagged() {
+        // Caso real: o arquivo foi só esvaziado por edição, mas o texto diz "removido".
+        let r = root("claim-edit");
+        fs::write(r.join("a.md"), "# nota\n").unwrap();
+        let model = fake(vec![
+            call("edit_file", json!({"path": "a.md", "old": "# nota", "new": ""})),
+            text("Arquivo a.md removido."),
+        ]);
+        let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+        assert!(report.changed());
+        assert!(report.warnings().iter().any(|x| x.contains("nenhum arquivo foi removido")));
+    }
+
+    #[test]
+    fn delete_then_claim_has_no_warning() {
+        let r = root("delete-ok");
+        fs::write(r.join("a.md"), "# nota\n").unwrap();
+        let model = fake(vec![
+            call("delete_file", json!({"path": "a.md"})),
+            text("Arquivo a.md removido."),
+        ]);
+        let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+        assert!(report.deleted());
+        assert!(report.warnings().is_empty(), "{:?}", report.warnings());
+        assert!(!r.join("a.md").exists());
+    }
+
+    #[test]
+    fn question_answered_in_text_has_no_warning() {
+        let r = root("question");
+        let model = fake(vec![text("No diretório há calc.py e fib.py.")]);
+        let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+        assert!(report.warnings().is_empty());
     }
 
     #[test]
@@ -268,8 +385,7 @@ mod tests {
             text(r#"{"name": "make_file", "arguments": {"path": "a.py"}}"#),
             text("ok"),
         ]);
-        let report = run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut ctx()).unwrap();
-        // Ferramenta desconhecida vira ação com erro, visível no relatório e devolvida ao modelo.
+        let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
         assert_eq!(report.actions.len(), 1);
         assert!(matches!(&report.actions[0].outcome, Outcome::Error(e) if e.contains("ferramenta desconhecida: make_file")));
         assert!(!report.attempted_changes());
@@ -284,7 +400,7 @@ mod tests {
             call("edit_file", json!({"path": "a.py", "old": "x = 1", "new": "x = 2"})),
             text("Pronto."),
         ]);
-        let report = run_turn(&model, &Registry::default_set(), &r, &mut start(), &Refuse, &mut ctx()).unwrap();
+        let report = run(&model, &Registry::default_set(), &r, &mut start(), &Refuse).unwrap();
         assert!(matches!(report.actions[0].outcome, Outcome::Refused(_)));
         assert!(!report.changed());
         assert!(report.attempted_changes());
@@ -296,7 +412,7 @@ mod tests {
         let r = root("echo");
         let registry = Registry::new(vec![Box::new(Echo)]);
         let model = fake(vec![call("echo", json!({"texto": "oi"})), text("ok")]);
-        let report = run_turn(&model, &registry, &r, &mut start(), &AutoApprover, &mut ctx()).unwrap();
+        let report = run(&model, &registry, &r, &mut start(), &AutoApprover).unwrap();
         assert_eq!(report.actions[0].outcome, Outcome::Done("oi".into()));
         assert!(!report.attempted_changes());
     }
@@ -306,20 +422,47 @@ mod tests {
         let r = root("dedupe");
         let create = || call("create_file", json!({"path": "a.txt", "content": "x"}));
         let model = fake(vec![create(), create(), text("ok")]);
-        let report = run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut ctx()).unwrap();
+        let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
         assert_eq!(report.actions.len(), 1);
         assert!(report.changed());
     }
 
     #[test]
+    fn consecutive_failures_of_same_tool_stop_the_turn() {
+        // Argumentos diferentes a cada vez: a proteção antiga (chamada idêntica) não pegaria isso.
+        let r = root("failures");
+        let model = fake(vec![
+            call("edit_file", json!({"path": "x.md", "old": "a", "new": "b"})),
+            call("edit_file", json!({"path": "x.md", "old": "c", "new": "d"})),
+            call("edit_file", json!({"path": "x.md", "old": "e", "new": "f"})),
+            text("nunca chega aqui"),
+        ]);
+        let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+        assert_eq!(report.actions.len(), MAX_CONSECUTIVE_FAILURES);
+        assert!(report.error.as_deref().is_some_and(|e| e.contains("falhou 2 vezes")));
+    }
+
+    #[test]
+    fn failures_of_different_tools_do_not_count_together() {
+        let r = root("mixed-failures");
+        let model = fake(vec![
+            call("edit_file", json!({"path": "x.md", "old": "a", "new": "b"})),
+            call("read_file", json!({"path": "nao.md"})),
+            text("ok"),
+        ]);
+        let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+        assert!(report.error.is_none());
+    }
+
+    #[test]
     fn step_limit_stops_the_turn() {
-        // Cada resposta chama uma ferramenta diferente, então a repetição não dispara; só o limite de passos.
+        // Chamadas bem-sucedidas e distintas (o argumento extra muda a chave): só o limite de passos para o turno.
         let r = root("steps");
         let replies: Vec<Value> = (0..MAX_STEPS + 2)
-            .map(|i| call("list_dir", json!({"path": format!("d{i}")})))
+            .map(|i| call("list_dir", json!({"path": ".", "n": i})))
             .collect();
         let model = fake(replies);
-        let report = run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut ctx()).unwrap();
+        let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
         assert_eq!(report.actions.len(), MAX_STEPS);
         assert!(report.error.as_deref().is_some_and(|e| e.contains("limite")));
     }
@@ -328,7 +471,7 @@ mod tests {
     fn model_error_propagates() {
         let r = root("model-error");
         let model = fake(vec![]); // roteiro vazio: o modelo "falha" na primeira chamada
-        let result = run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut ctx());
+        let result = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover);
         assert!(result.is_err());
     }
 
@@ -337,13 +480,12 @@ mod tests {
         let r = root("repeat");
         let same = || call("list_dir", json!({"path": "."}));
         let model = fake(vec![same(), same(), same()]);
-        let report = run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut ctx()).unwrap();
+        let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
         assert!(report.error.is_some());
     }
 
     #[test]
     fn long_history_is_trimmed_before_calling_the_model() {
-        // Histórico antigo grande, orçamento pequeno: o loop deve descartar turnos antes de chamar o modelo.
         let r = root("trim");
         let mut msgs = vec![json!({"role": "system", "content": "sistema"})];
         for i in 0..6 {
@@ -351,9 +493,9 @@ mod tests {
             msgs.push(json!({"role": "assistant", "content": "y".repeat(2_000)}));
         }
         msgs.push(json!({"role": "user", "content": "atual"}));
-        let mut small = ContextManager::new(1_200, 0); // ~3.600 caracteres de orçamento
+        let mut small = ContextManager::new(1_200, 0);
         let model = fake(vec![text("ok")]);
-        let report = run_turn(&model, &Registry::default_set(), &r, &mut msgs, &AutoApprover, &mut small).unwrap();
+        let report = run_turn(&model, &Registry::default_set(), &r, &mut msgs, &AutoApprover, &mut small, &Silent).unwrap();
         assert!(!report.trims.is_empty(), "deveria ter descartado turnos");
         assert_eq!(msgs[0]["content"], "sistema");
         assert!(msgs.iter().any(|m| m["content"] == "atual"));
@@ -365,7 +507,7 @@ mod tests {
         let mut msgs = vec![json!({"role": "system", "content": "sistema"}), json!({"role": "user", "content": "z".repeat(10_000)})];
         let mut small = ContextManager::new(1_200, 0);
         let model = fake(vec![text("ok")]);
-        let result = run_turn(&model, &Registry::default_set(), &r, &mut msgs, &AutoApprover, &mut small);
+        let result = run_turn(&model, &Registry::default_set(), &r, &mut msgs, &AutoApprover, &mut small, &Silent);
         assert!(result.is_err());
     }
 
@@ -379,7 +521,29 @@ mod tests {
         }
         let r = root("calib");
         let mut c = ctx();
-        run_turn(&Counted, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut c).unwrap();
+        run_turn(&Counted, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut c, &Silent).unwrap();
         assert_ne!(c.chars_per_token(), 3.0, "a calibração deveria ter mudado a estimativa");
+    }
+
+    #[test]
+    fn progress_is_signalled_around_each_model_call() {
+        use std::cell::Cell;
+        struct Counter(Cell<u32>, Cell<bool>);
+        impl Progress for Counter {
+            fn model_waiting(&self, waiting: bool) {
+                // Cada chamada deve abrir e fechar a espera, nessa ordem.
+                assert_ne!(self.1.get(), waiting, "sinal repetido");
+                self.1.set(waiting);
+                if waiting {
+                    self.0.set(self.0.get() + 1);
+                }
+            }
+        }
+        let r = root("progress");
+        let model = fake(vec![text("oi")]);
+        let p = Counter(Cell::new(0), Cell::new(false));
+        run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut ctx(), &p).unwrap();
+        assert_eq!(p.0.get(), 1);
+        assert!(!p.1.get(), "a espera deve terminar");
     }
 }

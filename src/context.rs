@@ -20,6 +20,14 @@ pub struct Trim {
     pub budget: usize,
 }
 
+// Ocupação atual da janela de contexto.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Usage {
+    pub tokens: usize,
+    pub window: usize,
+    pub percent: f64,
+}
+
 pub struct ContextManager {
     num_ctx: usize,
     reserve_output_tokens: usize,
@@ -42,6 +50,13 @@ impl ContextManager {
         let window_tokens = self.num_ctx.saturating_sub(self.reserve_output_tokens);
         let window_chars = (window_tokens as f64 * self.chars_per_token) as usize;
         window_chars.saturating_sub(value_size(tools))
+    }
+
+    // Quanto da janela está ocupado, em tokens estimados e em percentual.
+    pub fn usage(&self, messages: &[Value], tools: &Value) -> Usage {
+        let chars = size(messages) + value_size(tools);
+        let tokens = (chars as f64 / self.chars_per_token).ceil() as usize;
+        Usage { tokens, window: self.num_ctx, percent: tokens as f64 * 100.0 / self.num_ctx as f64 }
     }
 
     // Ajusta a estimativa com o número real de tokens de entrada devolvido pelo Ollama.
@@ -107,6 +122,12 @@ pub fn value_size(value: &Value) -> usize {
 // Tamanho de uma lista de mensagens, em caracteres.
 pub fn size(messages: &[Value]) -> usize {
     messages.iter().map(value_size).sum()
+}
+
+// Apaga todo o histórico, mantendo só o prompt do sistema. A calibração é do modelo, não da conversa, e fica.
+pub fn clear(messages: &mut Vec<Value>) {
+    let keep = usize::from(messages.first().is_some_and(|m| is_role(m, "system")));
+    messages.truncate(keep);
 }
 
 fn is_role(message: &Value, role: &str) -> bool {
@@ -263,6 +284,32 @@ mod tests {
         assert_eq!(cm.chars_per_token(), MAX_CHARS_PER_TOKEN);
         cm.calibrate(10, 0);
         assert_eq!(cm.chars_per_token(), MAX_CHARS_PER_TOKEN);
+    }
+
+    #[test]
+    fn usage_grows_with_history() {
+        let cm = ContextManager::new(8192, 1024);
+        let small = cm.usage(&history(1, 10), &no_tools());
+        let big = cm.usage(&history(5, 2_000), &no_tools());
+        assert!(big.tokens > small.tokens);
+        assert_eq!(big.window, 8192);
+        assert!(big.percent > small.percent);
+    }
+
+    #[test]
+    fn clear_keeps_only_system_prompt() {
+        let mut m = history(3, 100);
+        clear(&mut m);
+        assert_eq!(m.len(), 1);
+        assert!(is_role(&m[0], "system"));
+        assert_eq!(m[0]["content"], "você é o agente");
+    }
+
+    #[test]
+    fn clear_on_empty_history_is_noop() {
+        let mut m: Vec<Value> = vec![];
+        clear(&mut m);
+        assert!(m.is_empty());
     }
 
     #[test]

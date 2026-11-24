@@ -95,7 +95,13 @@ impl Registry {
 
     // Ferramentas que o BitClaw traz de fábrica.
     pub fn default_set() -> Self {
-        Self::new(vec![Box::new(ListDir), Box::new(ReadFile), Box::new(EditFile), Box::new(CreateFile)])
+        Self::new(vec![
+            Box::new(ListDir),
+            Box::new(ReadFile),
+            Box::new(EditFile),
+            Box::new(CreateFile),
+            Box::new(DeleteFile),
+        ])
     }
 
     pub fn schemas(&self) -> Value {
@@ -329,6 +335,68 @@ impl Tool for CreateFile {
     }
 }
 
+pub struct DeleteFile;
+
+impl Tool for DeleteFile {
+    fn name(&self) -> &'static str {
+        "delete_file"
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "function",
+            "function": {
+                "name": "delete_file",
+                "description": "Remove um arquivo existente do projeto. Guarda cópia em .bitclaw/backup/. Não remove pastas. O usuário confirma antes da remoção.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Caminho relativo ao projeto do arquivo a remover"}
+                    },
+                    "required": ["path"]
+                }
+            }
+        })
+    }
+
+    fn mutates(&self) -> bool {
+        true
+    }
+
+    fn run(&self, root: &Path, args: &Value, approver: &dyn Approver) -> Outcome {
+        wrap(delete_file(root, args, approver))
+    }
+}
+
+fn delete_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Outcome, String> {
+    let rel = str_arg(args, "path")?;
+    let path = resolve(root, rel)?;
+    if path.is_dir() {
+        return Err(format!("{rel} é uma pasta; delete_file remove só arquivos"));
+    }
+    if !path.is_file() {
+        return Err(format!("{rel} não existe"));
+    }
+
+    let content = fs::read_to_string(&path).unwrap_or_default();
+    eprintln!("\n\x1b[1m── remover arquivo {rel} ──\x1b[0m");
+    eprintln!("\x1b[31m{rel} será removido ({} linhas)\x1b[0m", content.lines().count());
+    if !approver.approve() {
+        return Ok(Outcome::Refused(format!("usuário recusou a remoção; {rel} foi mantido")));
+    }
+
+    // Backup antes de remover, no mesmo formato da edição.
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs();
+    let backup_name = rel.replace(['/', '\\'], "_");
+    let backup_dir = root.join(BACKUP_DIR);
+    fs::create_dir_all(&backup_dir).map_err(|e| e.to_string())?;
+    let backup_path = backup_dir.join(format!("{backup_name}.{ts}.bak"));
+    fs::write(&backup_path, &content).map_err(|e| e.to_string())?;
+
+    fs::remove_file(&path).map_err(|e| e.to_string())?;
+    Ok(Outcome::Done(format!("arquivo removido: {rel} (cópia em {BACKUP_DIR}/)")))
+}
+
 fn create_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Outcome, String> {
     let rel = str_arg(args, "path")?;
     let content = str_arg(args, "content")?;
@@ -473,10 +541,40 @@ mod tests {
     }
 
     #[test]
+    fn delete_file_removes_file_and_keeps_backup() {
+        let r = root("delete");
+        fs::write(r.join("mean.cpp"), "int main() {}\n").unwrap();
+        let out = run(&r, "delete_file", json!({"path": "mean.cpp"}));
+        assert!(matches!(out, Outcome::Done(_)), "{out:?}");
+        assert!(!r.join("mean.cpp").exists());
+        let backups: Vec<_> = fs::read_dir(r.join(BACKUP_DIR)).unwrap().collect();
+        assert_eq!(backups.len(), 1);
+    }
+
+    #[test]
+    fn refused_delete_keeps_file() {
+        let r = root("delete-refused");
+        fs::write(r.join("a.md"), "# nota\n").unwrap();
+        let out = Registry::default_set().execute(&r, "delete_file", &json!({"path": "a.md"}), &Refuse);
+        assert!(matches!(out, Outcome::Refused(_)), "{out:?}");
+        assert!(r.join("a.md").exists());
+    }
+
+    #[test]
+    fn delete_file_refuses_directories_and_missing_files() {
+        let r = root("delete-bad");
+        fs::create_dir_all(r.join("pasta")).unwrap();
+        assert!(matches!(run(&r, "delete_file", json!({"path": "pasta"})), Outcome::Error(_)));
+        assert!(matches!(run(&r, "delete_file", json!({"path": "nao.md"})), Outcome::Error(_)));
+        assert!(r.join("pasta").exists());
+    }
+
+    #[test]
     fn mutating_tools_are_marked() {
         let reg = Registry::default_set();
         assert!(reg.mutates("create_file"));
         assert!(reg.mutates("edit_file"));
+        assert!(reg.mutates("delete_file"));
         assert!(!reg.mutates("read_file"));
         assert!(!reg.mutates("list_dir"));
     }
