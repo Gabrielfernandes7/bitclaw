@@ -1,3 +1,4 @@
+use crate::agent::{ChatModel, Reply};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -22,6 +23,13 @@ pub struct Client {
     pub model: String,
 }
 
+// O núcleo depende da trait `ChatModel`; este adaptador é a implementação para o Ollama.
+impl ChatModel for Client {
+    fn complete(&self, messages: &[Value], tools: &Value) -> Result<Reply, String> {
+        self.chat(messages, tools)
+    }
+}
+
 impl Client {
     pub fn new(base_url: String, model: String) -> Result<Self, String> {
         let http = reqwest::blocking::Client::builder()
@@ -32,7 +40,7 @@ impl Client {
     }
 
     /// Envia o histórico e as ferramentas; devolve a mensagem do assistente.
-    pub fn chat(&self, messages: &[Value], tools: &Value) -> Result<Value, String> {
+    pub fn chat(&self, messages: &[Value], tools: &Value) -> Result<Reply, String> {
         let body = build_body(&self.model, messages, tools);
         let resp = self
             .http
@@ -47,7 +55,10 @@ impl Client {
             return Err(format!("Ollama respondeu HTTP {status}: {}", detail.trim()));
         }
         let v: Value = resp.json().map_err(|e| e.to_string())?;
-        Ok(v.get("message").cloned().unwrap_or(Value::Null))
+        Ok(Reply {
+            message: v.get("message").cloned().unwrap_or(Value::Null),
+            prompt_tokens: v.get("prompt_eval_count").and_then(Value::as_u64),
+        })
     }
 
     /// Verifica se o modelo configurado está instalado no Ollama.

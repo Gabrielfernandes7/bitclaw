@@ -1,15 +1,19 @@
 mod agent;
+mod context;
 mod ollama;
 mod sandbox;
 mod tools;
 
 use agent::TurnReport;
+use context::ContextManager;
 use serde_json::json;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
 const DEFAULT_MODEL: &str = "nemotron-3-nano:4b-mlx";
 const DEFAULT_URL: &str = "http://localhost:11434";
+// Tokens reservados para a resposta do modelo, fora do orçamento do histórico.
+const RESERVE_OUTPUT_TOKENS: usize = 1024;
 
 const SYSTEM_PROMPT: &str = "Você é o BitClaw, um assistente que lê e altera arquivos de um projeto local. \
 Use as ferramentas para inspecionar o projeto antes de responder. \
@@ -82,6 +86,7 @@ fn run() -> Result<(), String> {
     println!("Digite uma tarefa. /sair encerra.\n");
 
     let mut messages = vec![json!({"role": "system", "content": SYSTEM_PROMPT})];
+    let mut ctx = ContextManager::new(ollama::NUM_CTX as usize, RESERVE_OUTPUT_TOKENS);
     let stdin = io::stdin();
     loop {
         print!("bitclaw> ");
@@ -99,7 +104,7 @@ fn run() -> Result<(), String> {
         }
         messages.push(json!({"role": "user", "content": input}));
 
-        match agent::run_turn(&client, &registry, &root, &mut messages, approver.as_ref()) {
+        match agent::run_turn(&client, &registry, &root, &mut messages, approver.as_ref(), &mut ctx) {
             Ok(report) => print_report(&report),
             Err(e) => eprintln!("erro: {e}"),
         }
@@ -110,6 +115,12 @@ fn run() -> Result<(), String> {
 /// Mostra o texto do modelo e, em seguida, o que o programa de fato executou.
 /// A linha final vem do programa, não do modelo.
 fn print_report(report: &TurnReport) {
+    for t in &report.trims {
+        println!(
+            "[contexto] descartados {} turno(s) antigo(s); caracteres {} → {} (orçamento {})",
+            t.turns, t.chars_before, t.chars_after, t.budget
+        );
+    }
     if report.text.is_empty() {
         println!("\n(sem resposta)\n");
     } else {
