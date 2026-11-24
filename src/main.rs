@@ -60,7 +60,12 @@ fn run() -> Result<(), String> {
     let args = parse_args()?;
     let root = args.dir.canonicalize().map_err(|e| format!("diretório inválido: {e}"))?;
     let client = ollama::Client::new(args.url.clone(), args.model.clone())?;
-    let tools = tools::schemas();
+    let registry = tools::Registry::default_set();
+    let approver: Box<dyn tools::Approver> = if args.auto_yes {
+        Box::new(tools::AutoApprover)
+    } else {
+        Box::new(tools::StdinApprover)
+    };
 
     println!("BitClaw · modelo {} · projeto {}", args.model, root.display());
     match client.has_model() {
@@ -94,7 +99,7 @@ fn run() -> Result<(), String> {
         }
         messages.push(json!({"role": "user", "content": input}));
 
-        match agent::run_turn(&client, &tools, &root, &mut messages, args.auto_yes) {
+        match agent::run_turn(&client, &registry, &root, &mut messages, approver.as_ref()) {
             Ok(report) => print_report(&report),
             Err(e) => eprintln!("erro: {e}"),
         }

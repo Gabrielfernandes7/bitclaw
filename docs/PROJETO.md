@@ -52,7 +52,7 @@ Lacunas conhecidas:
 
 - Não há ferramenta de busca. A "pesquisa em arquivos" depende de `list_dir` e `read_file`.
 - O histórico de mensagens ainda cresce sem limite. Só o resultado de `read_file` é limitado. A política para o histórico que excede o contexto é a parte que falta da Fase 3.
-- Ferramentas, modelo e prompt ainda estão acoplados ao binário. `tools.rs` é um `match` fixo; falta a trait `Tool` (Fase 2).
+- Modelo e prompt ainda estão acoplados ao binário (Fase 4).
 - Chamadas de ferramenta escritas como texto só são aceitas se o JSON for válido. Um modelo que erra a sintaxe perde a ação sem aviso além do texto da resposta.
 
 Modelos instalados localmente: `nemotron-3-nano:4b-mlx` (2,9 GB) e `qwen2.5-coder:3b` (1,9 GB). Máquina: Mac com M4 e 16 GB de memória unificada.
@@ -98,6 +98,7 @@ Smoke test manual com `qwen2.5-coder:3b` pode ser feito a qualquer momento pelo 
 - **Controle da avaliação:** `qwen2.5-coder:3b`, 2/5. Falhas: repetiu chamadas de leitura até a proteção de repetição interromper o turno, e editou um arquivo criado sem ser pedido. Não é padrão, mas fica como referência.
 - **FunctionGemma: não validado nesta integração, fora da avaliação padrão.** Em teste direto na API (Ollama 0.40.18, que declara suporte a `tools`), gerou 22 tokens e devolveu `content` vazio, sem `tool_calls`. O parser do Ollama não reconheceu a saída. Isso indica problema de template ou formato, não de capacidade de escolher ferramentas; a causa não foi investigada. Reabrir só depois de resolver o parser e rodar a avaliação de novo.
 - **Avaliação com 3 execuções por tarefa (5 tarefas, `scripts/eval.sh`):** Nemotron 15/15; Qwen 3/15 (só passou em `editar`, com 4 a 5 erros por execução). Falhas do Qwen: chamada de ferramenta como texto com JSON malformado (chave de fechamento faltando, descartada pelo fallback), repetição de `read_file`, e edição além do pedido. A execução única anterior tinha dado 2/5 para o Qwen, o que mostra a variância.
+- **Fase 2 (trait `Tool`):** ferramentas são implementações de `Tool` (nome, esquema, `mutates`, execução) guardadas em um `Registry`. A confirmação é injetada por `Approver` (`AutoApprover` com `--yes`, `StdinApprover` no terminal). O loop não conhece nomes de ferramenta. A proteção contra repetir uma alteração no mesmo turno é genérica (usa `mutates`).
 - **Janela de contexto:** `num_ctx` = 8192 explícito. `read_file` limitado a 8 KB. Esses valores são escolhas iniciais, não medidas; reavaliar com a Fase 5 quando houver tarefas de várias etapas.
 - **Números de benchmark de terceiros** (ex.: BFCL do Google) não entram na decisão sem verificação. Vale a avaliação própria.
 - **FunctionGemma não substitui o Nemotron como modelo principal**, mesmo que volte a funcionar: planejamento e tarefas com várias etapas são outra capacidade.
@@ -109,8 +110,9 @@ Smoke test manual com `qwen2.5-coder:3b` pode ser feito a qualquer momento pelo 
 1. ~~Trait `Model` e modelo falso (Fase 1).~~ Feito como `ChatModel` em `agent.rs`.
 2. Testes do loop. Feitos: repetição, fallback de texto, ferramenta desconhecida, falso sucesso. Falta: limite de passos (`MAX_STEPS`) e erro do modelo (`complete` retornando `Err`).
 3. ~~Versão do Ollama e contexto.~~ Ollama 0.40.18 confirmado. `num_ctx` explícito. Falta verificar o efeito real de 8192 na memória (16 GB).
-4. Fase 3 restante: política para o histórico que excede o limite.
-5. Só então a Fase 2 (trait `Tool`).
+4. ~~Fase 2: trait `Tool`, `Registry`, `Approver`.~~ Feito. Critério de saída cumprido: um teste registra uma ferramenta nova (`Echo`) sem editar o loop (`agent.rs`).
+5. Fase 3 restante: política para o histórico que excede o limite. Aguarda aprovação da política proposta.
+6. Ferramenta de busca: nome e escopo ainda em aberto. Agora é só registrar uma implementação de `Tool`.
 
 ## 9. Questões em aberto
 

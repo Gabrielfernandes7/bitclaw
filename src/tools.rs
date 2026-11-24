@@ -10,17 +10,14 @@ pub const MAX_READ_BYTES: usize = 8_000;
 const BACKUP_DIR: &str = ".bitclaw/backup";
 const CONTEXT_LINES: usize = 2;
 
-// Nomes de todas as ferramentas registradas. Qualquer outro nome é erro.
-pub const NAMES: [&str; 4] = ["list_dir", "read_file", "edit_file", "create_file"];
-
 // O que realmente aconteceu com uma chamada de ferramenta.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
-    /// A ferramenta executou e o resultado foi aplicado (ou lido).
+    // A ferramenta executou e o resultado foi aplicado (ou lido).
     Done(String),
-    /// O usuário recusou a alteração na confirmação.
+    // O usuário recusou a alteração na confirmação.
     Refused(String),
-    /// A ferramenta falhou; nada foi alterado.
+    // A ferramenta falhou; nada foi alterado.
     Error(String),
 }
 
@@ -42,10 +39,111 @@ impl Outcome {
     }
 }
 
-// Esquemas das ferramentas no formato que o Ollama espera.
-pub fn schemas() -> Value {
-    json!([
-        {
+// Decide se uma alteração proposta pode ser aplicada. Injetado para não ler o stdin dentro da ferramenta.
+pub trait Approver {
+    fn approve(&self) -> bool;
+}
+
+// Aprova tudo (uso com `--yes` e testes).
+pub struct AutoApprover;
+
+impl Approver for AutoApprover {
+    fn approve(&self) -> bool {
+        true
+    }
+}
+
+// Pergunta no terminal.
+pub struct StdinApprover;
+
+impl Approver for StdinApprover {
+    fn approve(&self) -> bool {
+        confirm().unwrap_or(false)
+    }
+}
+
+// Contrato de uma ferramenta: nome, esquema e execução juntos.
+// Adicionar uma ferramenta é implementar esta trait e registrá-la; o loop do agente não muda.
+pub trait Tool {
+    fn name(&self) -> &'static str;
+
+    // Entrada completa no formato `{"type": "function", "function": {...}}` que o Ollama espera.
+    fn schema(&self) -> Value;
+
+    // Se a ferramenta altera arquivos. Usado pelo relatório do turno e pela proteção contra repetição.
+    fn mutates(&self) -> bool {
+        false
+    }
+
+    fn run(&self, root: &Path, args: &Value, approver: &dyn Approver) -> Outcome;
+}
+
+// Conjunto de ferramentas disponíveis para um agente. É o único lugar que o loop consulta.
+pub struct Registry {
+    tools: Vec<Box<dyn Tool>>,
+}
+
+impl Registry {
+    pub fn new(tools: Vec<Box<dyn Tool>>) -> Self {
+        let mut names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        names.sort_unstable();
+        let total = names.len();
+        names.dedup();
+        assert_eq!(names.len(), total, "nomes de ferramenta duplicados");
+        Self { tools }
+    }
+
+    // Ferramentas que o BitClaw traz de fábrica.
+    pub fn default_set() -> Self {
+        Self::new(vec![Box::new(ListDir), Box::new(ReadFile), Box::new(EditFile), Box::new(CreateFile)])
+    }
+
+    pub fn schemas(&self) -> Value {
+        Value::Array(self.tools.iter().map(|t| t.schema()).collect())
+    }
+
+    pub fn names(&self) -> Vec<&'static str> {
+        self.tools.iter().map(|t| t.name()).collect()
+    }
+
+    pub fn mutates(&self, name: &str) -> bool {
+        self.find(name).is_some_and(|t| t.mutates())
+    }
+
+    pub fn execute(&self, root: &Path, name: &str, args: &Value, approver: &dyn Approver) -> Outcome {
+        match self.find(name) {
+            Some(tool) => tool.run(root, args, approver),
+            None => Outcome::Error(format!(
+                "ferramenta desconhecida: {name}. Use uma destas: {}",
+                self.names().join(", ")
+            )),
+        }
+    }
+
+    fn find(&self, name: &str) -> Option<&dyn Tool> {
+        self.tools.iter().find(|t| t.name() == name).map(|t| t.as_ref())
+    }
+}
+
+fn wrap(result: Result<Outcome, String>) -> Outcome {
+    result.unwrap_or_else(Outcome::Error)
+}
+
+fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("argumento '{key}' ausente ou inválido"))
+}
+
+pub struct ListDir;
+
+impl Tool for ListDir {
+    fn name(&self) -> &'static str {
+        "list_dir"
+    }
+
+    fn schema(&self) -> Value {
+        json!({
             "type": "function",
             "function": {
                 "name": "list_dir",
@@ -58,71 +156,12 @@ pub fn schemas() -> Value {
                     "required": ["path"]
                 }
             }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "read_file",
-                "description": "Lê o conteúdo de um arquivo de texto do projeto.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Caminho relativo ao projeto"}
-                    },
-                    "required": ["path"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "edit_file",
-                "description": "Substitui um trecho EXATO (`old`) por `new` em um arquivo existente. `old` deve aparecer exatamente uma vez no arquivo. O usuário confirma antes da alteração. Leia o arquivo antes de editar.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Caminho relativo ao projeto"},
-                        "old": {"type": "string", "description": "Trecho exato a ser substituído"},
-                        "new": {"type": "string", "description": "Novo texto"}
-                    },
-                    "required": ["path", "old", "new"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "create_file",
-                "description": "Cria um arquivo NOVO no projeto com o conteúdo dado. Falha se o arquivo já existir (use edit_file nesse caso). O usuário confirma antes da criação.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Caminho relativo ao projeto, ex.: fib.py"},
-                        "content": {"type": "string", "description": "Conteúdo completo do arquivo"}
-                    },
-                    "required": ["path", "content"]
-                }
-            }
-        }
-    ])
-}
+        })
+    }
 
-// Executa uma ferramenta e devolve o resultado verificável.
-pub fn execute(root: &Path, name: &str, args: &Value, auto_yes: bool) -> Outcome {
-    let result: Result<Outcome, String> = match name {
-        "list_dir" => list_dir(root, args).map(Outcome::Done),
-        "read_file" => read_file(root, args).map(Outcome::Done),
-        "edit_file" => edit_file(root, args, auto_yes),
-        "create_file" => create_file(root, args, auto_yes),
-        other => Err(format!("ferramenta desconhecida: {other}")),
-    };
-    result.unwrap_or_else(Outcome::Error)
-}
-
-fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("argumento '{key}' ausente ou inválido"))
+    fn run(&self, root: &Path, args: &Value, _approver: &dyn Approver) -> Outcome {
+        wrap(list_dir(root, args).map(Outcome::Done))
+    }
 }
 
 fn list_dir(root: &Path, args: &Value) -> Result<String, String> {
@@ -140,6 +179,35 @@ fn list_dir(root: &Path, args: &Value) -> Result<String, String> {
     Ok(entries.join("\n"))
 }
 
+pub struct ReadFile;
+
+impl Tool for ReadFile {
+    fn name(&self) -> &'static str {
+        "read_file"
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Lê o conteúdo de um arquivo de texto do projeto.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Caminho relativo ao projeto"}
+                    },
+                    "required": ["path"]
+                }
+            }
+        })
+    }
+
+    fn run(&self, root: &Path, args: &Value, _approver: &dyn Approver) -> Outcome {
+        wrap(read_file(root, args).map(Outcome::Done))
+    }
+}
+
 fn read_file(root: &Path, args: &Value) -> Result<String, String> {
     let path = resolve(root, str_arg(args, "path")?)?;
     let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
@@ -153,7 +221,42 @@ fn read_file(root: &Path, args: &Value) -> Result<String, String> {
     Ok(content)
 }
 
-fn edit_file(root: &Path, args: &Value, auto_yes: bool) -> Result<Outcome, String> {
+pub struct EditFile;
+
+impl Tool for EditFile {
+    fn name(&self) -> &'static str {
+        "edit_file"
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "function",
+            "function": {
+                "name": "edit_file",
+                "description": "Substitui um trecho EXATO (`old`) por `new` em um arquivo existente. `old` deve aparecer exatamente uma vez no arquivo. O usuário confirma antes da alteração. Leia o arquivo antes de editar.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Caminho relativo ao projeto"},
+                        "old": {"type": "string", "description": "Trecho exato a ser substituído"},
+                        "new": {"type": "string", "description": "Novo texto"}
+                    },
+                    "required": ["path", "old", "new"]
+                }
+            }
+        })
+    }
+
+    fn mutates(&self) -> bool {
+        true
+    }
+
+    fn run(&self, root: &Path, args: &Value, approver: &dyn Approver) -> Outcome {
+        wrap(edit_file(root, args, approver))
+    }
+}
+
+fn edit_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Outcome, String> {
     let rel = str_arg(args, "path")?;
     let old = str_arg(args, "old")?;
     let new = str_arg(args, "new")?;
@@ -174,7 +277,7 @@ fn edit_file(root: &Path, args: &Value, auto_yes: bool) -> Result<Outcome, Strin
     let updated = content.replacen(old, new, 1);
 
     show_edit_preview(rel, &updated, content[..at].matches('\n').count(), old, new);
-    if !auto_yes && !confirm()? {
+    if !approver.approve() {
         return Ok(Outcome::Refused("usuário recusou a edição; nada foi alterado".into()));
     }
 
@@ -192,7 +295,41 @@ fn edit_file(root: &Path, args: &Value, auto_yes: bool) -> Result<Outcome, Strin
     )))
 }
 
-fn create_file(root: &Path, args: &Value, auto_yes: bool) -> Result<Outcome, String> {
+pub struct CreateFile;
+
+impl Tool for CreateFile {
+    fn name(&self) -> &'static str {
+        "create_file"
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "function",
+            "function": {
+                "name": "create_file",
+                "description": "Cria um arquivo NOVO no projeto com o conteúdo dado. Falha se o arquivo já existir (use edit_file nesse caso). O usuário confirma antes da criação.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Caminho relativo ao projeto, ex.: fib.py"},
+                        "content": {"type": "string", "description": "Conteúdo completo do arquivo"}
+                    },
+                    "required": ["path", "content"]
+                }
+            }
+        })
+    }
+
+    fn mutates(&self) -> bool {
+        true
+    }
+
+    fn run(&self, root: &Path, args: &Value, approver: &dyn Approver) -> Outcome {
+        wrap(create_file(root, args, approver))
+    }
+}
+
+fn create_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Outcome, String> {
     let rel = str_arg(args, "path")?;
     let content = str_arg(args, "content")?;
     let path = resolve(root, rel)?;
@@ -205,7 +342,7 @@ fn create_file(root: &Path, args: &Value, auto_yes: bool) -> Result<Outcome, Str
     for line in content.lines() {
         eprintln!("\x1b[32m+ {line}\x1b[0m");
     }
-    if !auto_yes && !confirm()? {
+    if !approver.approve() {
         return Ok(Outcome::Refused("usuário recusou a criação; nenhum arquivo foi criado".into()));
     }
 
@@ -253,6 +390,14 @@ fn confirm() -> Result<bool, String> {
 mod tests {
     use super::*;
 
+    struct Refuse;
+
+    impl Approver for Refuse {
+        fn approve(&self) -> bool {
+            false
+        }
+    }
+
     fn root(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("bitclaw-tools-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -260,10 +405,14 @@ mod tests {
         dir.canonicalize().unwrap()
     }
 
+    fn run(root: &Path, name: &str, args: Value) -> Outcome {
+        Registry::default_set().execute(root, name, &args, &AutoApprover)
+    }
+
     #[test]
     fn create_file_creates_new_file() {
         let r = root("create");
-        let out = execute(&r, "create_file", &json!({"path": "a.py", "content": "x = 1\n"}), true);
+        let out = run(&r, "create_file", json!({"path": "a.py", "content": "x = 1\n"}));
         assert!(matches!(out, Outcome::Done(_)), "{out:?}");
         assert_eq!(fs::read_to_string(r.join("a.py")).unwrap(), "x = 1\n");
     }
@@ -272,7 +421,7 @@ mod tests {
     fn create_file_refuses_to_overwrite() {
         let r = root("overwrite");
         fs::write(r.join("a.py"), "antigo").unwrap();
-        let out = execute(&r, "create_file", &json!({"path": "a.py", "content": "novo"}), true);
+        let out = run(&r, "create_file", json!({"path": "a.py", "content": "novo"}));
         assert!(matches!(out, Outcome::Error(_)), "{out:?}");
         assert_eq!(fs::read_to_string(r.join("a.py")).unwrap(), "antigo");
     }
@@ -280,16 +429,30 @@ mod tests {
     #[test]
     fn edit_file_on_missing_file_is_error() {
         let r = root("missing");
-        let out = execute(&r, "edit_file", &json!({"path": "fib.py", "old": "a", "new": "b"}), true);
+        let out = run(&r, "edit_file", json!({"path": "fib.py", "old": "a", "new": "b"}));
         assert!(matches!(out, Outcome::Error(_)), "{out:?}");
         assert!(!r.join("fib.py").exists());
+    }
+
+    #[test]
+    fn refused_edit_leaves_file_unchanged() {
+        let r = root("refused");
+        fs::write(r.join("a.py"), "x = 1\n").unwrap();
+        let out = Registry::default_set().execute(
+            &r,
+            "edit_file",
+            &json!({"path": "a.py", "old": "x = 1", "new": "x = 2"}),
+            &Refuse,
+        );
+        assert!(matches!(out, Outcome::Refused(_)), "{out:?}");
+        assert_eq!(fs::read_to_string(r.join("a.py")).unwrap(), "x = 1\n");
     }
 
     #[test]
     fn read_file_truncates_large_files() {
         let r = root("big");
         fs::write(r.join("grande.txt"), "a".repeat(MAX_READ_BYTES * 3)).unwrap();
-        let out = execute(&r, "read_file", &json!({"path": "grande.txt"}), true);
+        let out = run(&r, "read_file", json!({"path": "grande.txt"}));
         let Outcome::Done(text) = out else { panic!("esperava Done") };
         assert!(text.contains("truncado em"));
         assert!(text.len() < MAX_READ_BYTES + 100);
@@ -299,13 +462,28 @@ mod tests {
     fn read_file_keeps_small_files_intact() {
         let r = root("small");
         fs::write(r.join("p.txt"), "oi").unwrap();
-        assert_eq!(execute(&r, "read_file", &json!({"path": "p.txt"}), true), Outcome::Done("oi".into()));
+        assert_eq!(run(&r, "read_file", json!({"path": "p.txt"})), Outcome::Done("oi".into()));
     }
 
     #[test]
     fn unknown_tool_is_error() {
         let r = root("unknown");
-        let out = execute(&r, "make_file", &json!({}), true);
-        assert_eq!(out, Outcome::Error("ferramenta desconhecida: make_file".into()));
+        let out = run(&r, "make_file", json!({}));
+        assert!(matches!(out, Outcome::Error(ref e) if e.starts_with("ferramenta desconhecida: make_file")));
+    }
+
+    #[test]
+    fn mutating_tools_are_marked() {
+        let reg = Registry::default_set();
+        assert!(reg.mutates("create_file"));
+        assert!(reg.mutates("edit_file"));
+        assert!(!reg.mutates("read_file"));
+        assert!(!reg.mutates("list_dir"));
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicados")]
+    fn duplicate_names_are_rejected() {
+        Registry::new(vec![Box::new(ListDir), Box::new(ListDir)]);
     }
 }

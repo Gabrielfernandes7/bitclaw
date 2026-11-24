@@ -1,6 +1,7 @@
-//! Ciclo modelo → ferramentas → modelo. Não conhece o Ollama: recebe qualquer `ChatModel`.
+//! Ciclo modelo → ferramentas → modelo. Não conhece o Ollama nem nomes de ferramentas:
+//! recebe um `ChatModel` e um `Registry`.
 
-use crate::tools::{self, Outcome, NAMES};
+use crate::tools::{Approver, Outcome, Registry};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::Path;
@@ -18,14 +19,16 @@ impl ChatModel for crate::ollama::Client {
     }
 }
 
-/// Uma chamada de ferramenta feita pelo modelo e o que aconteceu com ela.
+// Uma chamada de ferramenta feita pelo modelo e o que aconteceu com ela.
 pub struct Action {
     pub name: String,
     pub args: Value,
     pub outcome: Outcome,
+    // Veio do registro: a ferramenta altera arquivos.
+    pub mutates: bool,
 }
 
-/// Registro do turno. O texto do modelo é só uma parte; as ações são o que o programa executou.
+// Registro do turno. O texto do modelo é só uma parte; as ações são o que o programa executou.
 #[derive(Default)]
 pub struct TurnReport {
     pub text: String,
@@ -34,37 +37,35 @@ pub struct TurnReport {
 }
 
 impl TurnReport {
-    /// Houve alteração de fato no disco neste turno.
+    // Houve alteração de fato no disco neste turno.
     pub fn changed(&self) -> bool {
-        self.actions.iter().any(|a| is_mutating(&a.name) && matches!(a.outcome, Outcome::Done(_)))
+        self.actions.iter().any(|a| a.mutates && matches!(a.outcome, Outcome::Done(_)))
     }
 
-    /// O modelo tentou alterar algo, com sucesso ou não.
+    // O modelo tentou alterar algo, com sucesso ou não.
     pub fn attempted_changes(&self) -> bool {
-        self.actions.iter().any(|a| is_mutating(&a.name))
+        self.actions.iter().any(|a| a.mutates)
     }
 }
 
-fn is_mutating(name: &str) -> bool {
-    matches!(name, "create_file" | "edit_file")
-}
-
-/// Roda o ciclo até o modelo responder sem chamar ferramentas.
-/// Erros de ferramenta e de nome desconhecido voltam ao modelo como texto e ficam no relatório.
+// Roda o ciclo até o modelo responder sem chamar ferramentas.
+// Erros de ferramenta e de nome desconhecido voltam ao modelo como texto e ficam no relatório.
 pub fn run_turn(
     model: &dyn ChatModel,
-    tools: &Value,
+    registry: &Registry,
     root: &Path,
     messages: &mut Vec<Value>,
-    auto_yes: bool,
+    approver: &dyn Approver,
 ) -> Result<TurnReport, String> {
+    let tools = registry.schemas();
     let mut report = TurnReport::default();
     let mut last_call: Option<String> = None;
     let mut repeats = 0;
-    let mut applied_edits = HashSet::new();
+    // Alterações já executadas neste turno. Repetir a mesma alteração não a reaplica.
+    let mut applied: HashSet<String> = HashSet::new();
 
     for _ in 0..MAX_STEPS {
-        let msg = model.complete(messages, tools)?;
+        let msg = model.complete(messages, &tools)?;
         messages.push(msg.clone());
 
         let mut calls = msg.get("tool_calls").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -95,22 +96,20 @@ pub fn run_turn(
             }
             last_call = Some(key.clone());
 
-            let outcome = if !NAMES.contains(&name.as_str()) {
-                Outcome::Error(format!("ferramenta desconhecida: {name}. Use uma destas: {}", NAMES.join(", ")))
-            } else if name == "edit_file" && !applied_edits.insert(key.clone()) {
-                // Edição idêntica já feita neste turno: não reaplica nem conta como ação nova.
+            let mutates = registry.mutates(&name);
+            if mutates && !applied.insert(key.clone()) {
+                // Alteração idêntica já feita neste turno: não reaplica nem conta como ação nova.
                 messages.push(json!({
                     "role": "tool",
                     "tool_name": name.clone(),
-                    "content": "esta edição já foi aplicada neste turno. Responda ao usuário sem chamar mais ferramentas."
+                    "content": "esta alteração já foi feita neste turno. Responda ao usuário sem chamar mais ferramentas."
                 }));
                 continue;
-            } else {
-                tools::execute(root, &name, &args, auto_yes)
-            };
+            }
 
+            let outcome = registry.execute(root, &name, &args, approver);
             messages.push(json!({"role": "tool", "tool_name": name.clone(), "content": outcome.text()}));
-            report.actions.push(Action { name, args, outcome });
+            report.actions.push(Action { name, args, outcome, mutates });
         }
     }
 
@@ -118,9 +117,9 @@ pub fn run_turn(
     Ok(report)
 }
 
-/// Fallback para modelos pequenos que escrevem a chamada como texto JSON,
-/// ex.: {"name": "read_file", "arguments": {"path": "a.txt"}}.
-/// Aceita qualquer nome: se a ferramenta não existir, o erro é devolvido ao modelo e ao usuário.
+// Fallback para modelos pequenos que escrevem a chamada como texto JSON,
+// ex.: {"name": "read_file", "arguments": {"path": "a.txt"}}.
+// Aceita qualquer nome: se a ferramenta não existir, o erro é devolvido ao modelo e ao usuário.
 fn calls_from_text(content: &str) -> Vec<Value> {
     content
         .lines()
@@ -137,7 +136,7 @@ fn calls_from_text(content: &str) -> Vec<Value> {
         .collect()
 }
 
-/// Alguns modelos devolvem `arguments` como objeto, outros como string JSON.
+// Alguns modelos devolvem `arguments` como objeto, outros como string JSON.
 fn normalize_args(raw: Option<&Value>) -> Value {
     match raw {
         Some(Value::String(s)) => serde_json::from_str(s).unwrap_or(json!({})),
@@ -149,11 +148,12 @@ fn normalize_args(raw: Option<&Value>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::{AutoApprover, Tool};
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::fs;
 
-    /// Modelo falso com respostas roteirizadas. Não usa rede.
+    // Modelo falso com respostas roteirizadas. Não usa rede.
     struct FakeModel {
         replies: RefCell<VecDeque<Value>>,
     }
@@ -166,6 +166,31 @@ mod tests {
 
     fn fake(replies: Vec<Value>) -> FakeModel {
         FakeModel { replies: RefCell::new(replies.into()) }
+    }
+
+    struct Refuse;
+
+    impl Approver for Refuse {
+        fn approve(&self) -> bool {
+            false
+        }
+    }
+
+    // Ferramenta de teste: prova que uma ferramenta nova funciona sem editar o loop.
+    struct Echo;
+
+    impl Tool for Echo {
+        fn name(&self) -> &'static str {
+            "echo"
+        }
+
+        fn schema(&self) -> Value {
+            json!({"type": "function", "function": {"name": "echo", "description": "ecoa", "parameters": {"type": "object", "properties": {}}}})
+        }
+
+        fn run(&self, _root: &Path, args: &Value, _approver: &dyn Approver) -> Outcome {
+            Outcome::Done(args.get("texto").and_then(Value::as_str).unwrap_or("").to_string())
+        }
     }
 
     fn text(s: &str) -> Value {
@@ -194,7 +219,7 @@ mod tests {
             call("create_file", json!({"path": "fib.py", "content": "print(1)\n"})),
             text("Pronto."),
         ]);
-        let report = run_turn(&model, &tools::schemas(), &r, &mut start(), true).unwrap();
+        let report = run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
         assert!(report.changed());
         assert_eq!(report.text, "Pronto.");
         assert_eq!(fs::read_to_string(r.join("fib.py")).unwrap(), "print(1)\n");
@@ -208,7 +233,7 @@ mod tests {
             text("Arquivo criado com sucesso."),
         ]);
         let mut msgs = start();
-        let report = run_turn(&model, &tools::schemas(), &r, &mut msgs, true).unwrap();
+        let report = run_turn(&model, &Registry::default_set(), &r, &mut msgs, &AutoApprover).unwrap();
         // O modelo afirmou sucesso, mas o relatório mostra que nada foi alterado.
         assert!(report.attempted_changes());
         assert!(!report.changed());
@@ -225,13 +250,47 @@ mod tests {
             text(r#"{"name": "make_file", "arguments": {"path": "a.py"}}"#),
             text("ok"),
         ]);
-        let report = run_turn(&model, &tools::schemas(), &r, &mut start(), true).unwrap();
+        let report = run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+        // Ferramenta desconhecida vira ação com erro, visível no relatório e devolvida ao modelo.
         assert_eq!(report.actions.len(), 1);
-        match &report.actions[0].outcome {
-            Outcome::Error(e) => assert!(e.contains("ferramenta desconhecida: make_file")),
-            other => panic!("esperava erro, veio {other:?}"),
-        }
+        assert!(matches!(&report.actions[0].outcome, Outcome::Error(e) if e.contains("ferramenta desconhecida: make_file")));
+        assert!(!report.attempted_changes());
         assert!(!report.changed());
+    }
+
+    #[test]
+    fn refused_change_is_not_reported_as_done() {
+        let r = root("refuse");
+        fs::write(r.join("a.py"), "x = 1\n").unwrap();
+        let model = fake(vec![
+            call("edit_file", json!({"path": "a.py", "old": "x = 1", "new": "x = 2"})),
+            text("Pronto."),
+        ]);
+        let report = run_turn(&model, &Registry::default_set(), &r, &mut start(), &Refuse).unwrap();
+        assert!(matches!(report.actions[0].outcome, Outcome::Refused(_)));
+        assert!(!report.changed());
+        assert!(report.attempted_changes());
+        assert_eq!(fs::read_to_string(r.join("a.py")).unwrap(), "x = 1\n");
+    }
+
+    #[test]
+    fn new_tool_works_without_editing_the_loop() {
+        let r = root("echo");
+        let registry = Registry::new(vec![Box::new(Echo)]);
+        let model = fake(vec![call("echo", json!({"texto": "oi"})), text("ok")]);
+        let report = run_turn(&model, &registry, &r, &mut start(), &AutoApprover).unwrap();
+        assert_eq!(report.actions[0].outcome, Outcome::Done("oi".into()));
+        assert!(!report.attempted_changes());
+    }
+
+    #[test]
+    fn same_change_is_not_applied_twice_in_one_turn() {
+        let r = root("dedupe");
+        let create = || call("create_file", json!({"path": "a.txt", "content": "x"}));
+        let model = fake(vec![create(), create(), text("ok")]);
+        let report = run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+        assert_eq!(report.actions.len(), 1);
+        assert!(report.changed());
     }
 
     #[test]
@@ -242,7 +301,7 @@ mod tests {
             .map(|i| call("list_dir", json!({"path": format!("d{i}")})))
             .collect();
         let model = fake(replies);
-        let report = run_turn(&model, &tools::schemas(), &r, &mut start(), true).unwrap();
+        let report = run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
         assert_eq!(report.actions.len(), MAX_STEPS);
         assert!(report.error.as_deref().is_some_and(|e| e.contains("limite")));
     }
@@ -251,7 +310,7 @@ mod tests {
     fn model_error_propagates() {
         let r = root("model-error");
         let model = fake(vec![]); // roteiro vazio: o modelo "falha" na primeira chamada
-        let result = run_turn(&model, &tools::schemas(), &r, &mut start(), true);
+        let result = run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover);
         assert!(result.is_err());
     }
 
@@ -260,7 +319,7 @@ mod tests {
         let r = root("repeat");
         let same = || call("list_dir", json!({"path": "."}));
         let model = fake(vec![same(), same(), same()]);
-        let report = run_turn(&model, &tools::schemas(), &r, &mut start(), true).unwrap();
+        let report = run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
         assert!(report.error.is_some());
     }
 }
