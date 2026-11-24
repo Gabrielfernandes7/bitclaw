@@ -1,0 +1,120 @@
+# BitClaw — documento de projeto
+
+Este documento registra o propósito, as decisões e o plano do BitClaw. Serve para retomar o trabalho sem perder o rumo. Atualize-o quando uma decisão mudar.
+
+## 1. Propósito
+
+BitClaw é um **Agent Core** experimental, modular e extensível: uma fundação para construir agentes de IA sem reimplementar a infraestrutura básica. Ele não é um agente especializado nem um clone do OpenClaw.
+
+Projetos previstos sobre o core: DevClaw, ResearchClaw, BusinessClaw. Outras pessoas também devem poder construir agentes sobre ele.
+
+## 2. Critério de sucesso
+
+> Alguém consegue construir um novo agente usando só a API pública do Core, sem modificar o Core.
+
+Esse critério é a métrica principal. Quantidade de funcionalidades não mede sucesso. Para avaliar uma mudança, pergunte:
+
+1. Isso pertence ao Core ou a um agente específico?
+2. Isso facilita construir o próximo agente sem editar o Core?
+
+## 3. Regras de fronteira
+
+- **Código específico de agente nunca entra no Core**, mesmo que seja conveniente.
+- **O Core não depende de um modelo específico.** Modelos entram por implementação de uma trait, nunca por código fixo.
+- **Ferramentas são extensões.** Adicionar uma ferramenta não deve exigir editar o loop do agente.
+- **Não há dependência de Ollama no loop.** O Ollama é um adaptador, como qualquer outro provedor.
+- **Cada funcionalidade nova precisa de teste automatizado** que não dependa de rede nem de modelo real.
+
+## 4. Fora do escopo por agora
+
+Cada item só entra quando sua dependência existir.
+
+| Item | Depende de |
+|---|---|
+| Skills | Trait `Tool`, configuração de agente como dado e um segundo agente para validar o formato |
+| Memória persistente | Gestão de contexto funcionando |
+| Dreaming (consolidação de conhecimento) | Memória persistente, e uma definição de contrato ainda inexistente |
+| Orquestração de modelos heterogêneos | Um único modelo validado no ciclo básico |
+| Interface gráfica ou web | Core estável e API pública documentada |
+
+## 5. Estado atual (MVP)
+
+Binário Rust em `src/`:
+
+- `main.rs`: CLI, loop modelo → ferramentas → modelo, prompt do sistema e limites como constantes.
+- `tools.rs`: três ferramentas (`list_dir`, `read_file`, `edit_file`), com esquemas e execução em `match`es fixos.
+- `ollama.rs`: cliente HTTP acoplado ao Ollama. Não define `num_ctx`.
+- `sandbox.rs`: resolução de caminhos, com testes contra `..`, caminhos absolutos e symlinks.
+
+Atualização: o ciclo agora está em `agent.rs`, separado do Ollama por uma trait `ChatModel`, com testes sem rede. Há também `create_file`, relatório de ações com o resultado real de cada ferramenta, `num_ctx` explícito (8192) e `read_file` limitado a 8 KB.
+
+Lacunas conhecidas:
+
+- Não há ferramenta de busca. A "pesquisa em arquivos" depende de `list_dir` e `read_file`.
+- O histórico de mensagens ainda cresce sem limite. Só o resultado de `read_file` é limitado. A política para o histórico que excede o contexto é a parte que falta da Fase 3.
+- Ferramentas, modelo e prompt ainda estão acoplados ao binário. `tools.rs` é um `match` fixo; falta a trait `Tool` (Fase 2).
+- Chamadas de ferramenta escritas como texto só são aceitas se o JSON for válido. Um modelo que erra a sintaxe perde a ação sem aviso além do texto da resposta.
+
+Modelos instalados localmente: `nemotron-3-nano:4b-mlx` (2,9 GB) e `qwen2.5-coder:3b` (1,9 GB). Máquina: Mac com M4 e 16 GB de memória unificada.
+
+## 6. Plano em fases
+
+Cada fase tem um critério de saída. Não avance sem cumprir o anterior.
+
+**Fase 1 — Loop testável.**
+Trait `Model` e um modelo falso com respostas roteirizadas. Testes para limite de passos, detecção de repetição, fallback de texto e erro do modelo.
+*Saída:* `cargo test` passa sem Ollama.
+
+**Fase 2 — Extensão por contrato.**
+Trait `Tool` (nome, esquema e execução juntos), registro consultado pelo loop, e `Approver` injetado no lugar da leitura direta do stdin. As três ferramentas atuais viram implementações.
+*Saída:* uma ferramenta de teste pode ser adicionada sem editar o loop.
+
+**Fase 3 — Contexto sob controle.**
+`num_ctx` explícito na chamada ao Ollama, limite de tamanho para resultados de ferramentas, e política para o histórico que excede o limite. Testado com o modelo falso.
+*Saída:* uma conversa longa não estoura o contexto nem perde o prompt do sistema sem aviso.
+
+**Fase 4 — Agente como dado e separação lib/bin.**
+Prompt, ferramentas, modelo e limites viram configuração. O Core vira biblioteca, e o binário só monta as peças.
+*Saída:* o binário não contém lógica de agente.
+
+**Fase 5 — Avaliação com modelos reais.**
+Conjunto fixo de 10 a 20 tarefas (listar, ler, editar, sequência de ferramentas, várias etapas), com verificação do resultado no disco. Rodar com `qwen2.5-coder:3b`, `nemotron-3-nano:4b-mlx` e `functiongemma`.
+Métricas: taxa de conclusão, chamadas inválidas, chamadas desnecessárias, número de passos, latência e uso de RAM.
+*Saída:* tabela comparativa que define o modelo padrão.
+*Pré-requisito a verificar:* a versão do Ollama (o FunctionGemma pode exigir 0.13.5 ou superior). Use `ollama --version`.
+
+**Fase 6 — Segundo agente como prova.**
+Um agente diferente do primeiro, construído só pela API pública. Exemplo: um agente que resume arquivos, sem ferramentas de escrita.
+*Saída:* o critério de sucesso é medido. Cada mudança que o Core precisou sofrer é registrada na seção de decisões.
+
+**Depois da Fase 6:** avaliar skills com base nos casos reais dos dois agentes; depois, memória; Dreaming por último.
+
+Smoke test manual com `qwen2.5-coder:3b` pode ser feito a qualquer momento pelo CLI atual, mas não substitui a Fase 5.
+
+## 7. Decisões tomadas
+
+- **Modelo inicial de referência:** Nemotron 3 Nano 4B, por ser de propósito geral com foco em agentes.
+- **Modelo padrão:** `nemotron-3-nano:4b-mlx`. Na avaliação de 5 tarefas, única execução, passou em 5/5 (`scripts/eval.sh`).
+- **Controle da avaliação:** `qwen2.5-coder:3b`, 2/5. Falhas: repetiu chamadas de leitura até a proteção de repetição interromper o turno, e editou um arquivo criado sem ser pedido. Não é padrão, mas fica como referência.
+- **FunctionGemma: não validado nesta integração, fora da avaliação padrão.** Em teste direto na API (Ollama 0.40.18, que declara suporte a `tools`), gerou 22 tokens e devolveu `content` vazio, sem `tool_calls`. O parser do Ollama não reconheceu a saída. Isso indica problema de template ou formato, não de capacidade de escolher ferramentas; a causa não foi investigada. Reabrir só depois de resolver o parser e rodar a avaliação de novo.
+- **Avaliação com 3 execuções por tarefa (5 tarefas, `scripts/eval.sh`):** Nemotron 15/15; Qwen 3/15 (só passou em `editar`, com 4 a 5 erros por execução). Falhas do Qwen: chamada de ferramenta como texto com JSON malformado (chave de fechamento faltando, descartada pelo fallback), repetição de `read_file`, e edição além do pedido. A execução única anterior tinha dado 2/5 para o Qwen, o que mostra a variância.
+- **Janela de contexto:** `num_ctx` = 8192 explícito. `read_file` limitado a 8 KB. Esses valores são escolhas iniciais, não medidas; reavaliar com a Fase 5 quando houver tarefas de várias etapas.
+- **Números de benchmark de terceiros** (ex.: BFCL do Google) não entram na decisão sem verificação. Vale a avaliação própria.
+- **FunctionGemma não substitui o Nemotron como modelo principal**, mesmo que volte a funcionar: planejamento e tarefas com várias etapas são outra capacidade.
+- **Não construir orquestração multimodelo agora.** Primeiro validar um único modelo no ciclo básico.
+- **Ordem de trabalho:** Fase 1 antes de qualquer nova funcionalidade.
+
+## 8. Próximos passos
+
+1. ~~Trait `Model` e modelo falso (Fase 1).~~ Feito como `ChatModel` em `agent.rs`.
+2. Testes do loop. Feitos: repetição, fallback de texto, ferramenta desconhecida, falso sucesso. Falta: limite de passos (`MAX_STEPS`) e erro do modelo (`complete` retornando `Err`).
+3. ~~Versão do Ollama e contexto.~~ Ollama 0.40.18 confirmado. `num_ctx` explícito. Falta verificar o efeito real de 8192 na memória (16 GB).
+4. Fase 3 restante: política para o histórico que excede o limite.
+5. Só então a Fase 2 (trait `Tool`).
+
+## 9. Questões em aberto
+
+- Qual o formato de configuração de agente (TOML, JSON ou código)? Decidir na Fase 4.
+- Política de licença do projeto? Não definida.
+- Nome e escopo da ferramenta de busca (Fase 2 ou depois).
+- O conjunto de tarefas da Fase 5 precisa de um projeto de exemplo fixo. Qual será?

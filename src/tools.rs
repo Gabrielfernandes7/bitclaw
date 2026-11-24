@@ -5,10 +5,44 @@ use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const MAX_READ_BYTES: usize = 100_000;
+// Limite do resultado de `read_file`. Com num_ctx de 8192 tokens, 100 KB estouraria o contexto de um modelo de 4B.
+pub const MAX_READ_BYTES: usize = 8_000;
 const BACKUP_DIR: &str = ".bitclaw/backup";
+const CONTEXT_LINES: usize = 2;
 
-/// Esquemas das ferramentas no formato que o Ollama espera.
+// Nomes de todas as ferramentas registradas. Qualquer outro nome é erro.
+pub const NAMES: [&str; 4] = ["list_dir", "read_file", "edit_file", "create_file"];
+
+// O que realmente aconteceu com uma chamada de ferramenta.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outcome {
+    /// A ferramenta executou e o resultado foi aplicado (ou lido).
+    Done(String),
+    /// O usuário recusou a alteração na confirmação.
+    Refused(String),
+    /// A ferramenta falhou; nada foi alterado.
+    Error(String),
+}
+
+impl Outcome {
+    // Texto devolvido ao modelo.
+    pub fn text(&self) -> String {
+        match self {
+            Outcome::Done(s) | Outcome::Refused(s) => s.clone(),
+            Outcome::Error(e) => format!("ERRO: {e}"),
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Outcome::Done(_) => "ok",
+            Outcome::Refused(_) => "recusada",
+            Outcome::Error(_) => "erro",
+        }
+    }
+}
+
+// Esquemas das ferramentas no formato que o Ollama espera.
 pub fn schemas() -> Value {
     json!([
         {
@@ -54,19 +88,35 @@ pub fn schemas() -> Value {
                     "required": ["path", "old", "new"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "create_file",
+                "description": "Cria um arquivo NOVO no projeto com o conteúdo dado. Falha se o arquivo já existir (use edit_file nesse caso). O usuário confirma antes da criação.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Caminho relativo ao projeto, ex.: fib.py"},
+                        "content": {"type": "string", "description": "Conteúdo completo do arquivo"}
+                    },
+                    "required": ["path", "content"]
+                }
+            }
         }
     ])
 }
 
-/// Executa uma ferramenta. Erros voltam como texto para o modelo poder se corrigir.
-pub fn execute(root: &Path, name: &str, args: &Value, auto_yes: bool) -> String {
-    let result = match name {
-        "list_dir" => list_dir(root, args),
-        "read_file" => read_file(root, args),
+// Executa uma ferramenta e devolve o resultado verificável.
+pub fn execute(root: &Path, name: &str, args: &Value, auto_yes: bool) -> Outcome {
+    let result: Result<Outcome, String> = match name {
+        "list_dir" => list_dir(root, args).map(Outcome::Done),
+        "read_file" => read_file(root, args).map(Outcome::Done),
         "edit_file" => edit_file(root, args, auto_yes),
+        "create_file" => create_file(root, args, auto_yes),
         other => Err(format!("ferramenta desconhecida: {other}")),
     };
-    result.unwrap_or_else(|e| format!("ERRO: {e}"))
+    result.unwrap_or_else(Outcome::Error)
 }
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -103,7 +153,7 @@ fn read_file(root: &Path, args: &Value) -> Result<String, String> {
     Ok(content)
 }
 
-fn edit_file(root: &Path, args: &Value, auto_yes: bool) -> Result<String, String> {
+fn edit_file(root: &Path, args: &Value, auto_yes: bool) -> Result<Outcome, String> {
     let rel = str_arg(args, "path")?;
     let old = str_arg(args, "old")?;
     let new = str_arg(args, "new")?;
@@ -112,26 +162,20 @@ fn edit_file(root: &Path, args: &Value, auto_yes: bool) -> Result<String, String
     }
     let path = resolve(root, rel)?;
     if !path.is_file() {
-        return Err("arquivo não existe (edit_file só altera arquivos existentes)".into());
+        return Err("arquivo não existe (edit_file só altera arquivos existentes; use create_file para criar)".into());
     }
 
     let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    match content.matches(old).count() {
+    let at = match content.matches(old).count() {
         0 => return Err("trecho 'old' não encontrado no arquivo. Use read_file e copie o trecho exato, caractere por caractere".into()),
-        1 => {}
+        1 => content.find(old).unwrap_or(0),
         n => return Err(format!("trecho 'old' aparece {n} vezes; torne-o mais específico")),
-    }
+    };
+    let updated = content.replacen(old, new, 1);
 
-    // Mostra a mudança e pede confirmação.
-    eprintln!("\n\x1b[1m── edição proposta em {rel} ──\x1b[0m");
-    for line in old.lines() {
-        eprintln!("\x1b[31m- {line}\x1b[0m");
-    }
-    for line in new.lines() {
-        eprintln!("\x1b[32m+ {line}\x1b[0m");
-    }
+    show_edit_preview(rel, &updated, content[..at].matches('\n').count(), old, new);
     if !auto_yes && !confirm()? {
-        return Ok("usuário recusou a edição".into());
+        return Ok(Outcome::Refused("usuário recusou a edição; nada foi alterado".into()));
     }
 
     // Backup antes de escrever.
@@ -142,10 +186,59 @@ fn edit_file(root: &Path, args: &Value, auto_yes: bool) -> Result<String, String
     let backup_path = backup_dir.join(format!("{backup_name}.{ts}.bak"));
     fs::write(&backup_path, &content).map_err(|e| e.to_string())?;
 
-    fs::write(&path, content.replacen(old, new, 1)).map_err(|e| e.to_string())?;
-    Ok(format!(
+    fs::write(&path, &updated).map_err(|e| e.to_string())?;
+    Ok(Outcome::Done(format!(
         "edição aplicada em {rel} (backup: {BACKUP_DIR}/). Não repita esta edição; se a tarefa estiver completa, responda ao usuário sem chamar mais ferramentas."
-    ))
+    )))
+}
+
+fn create_file(root: &Path, args: &Value, auto_yes: bool) -> Result<Outcome, String> {
+    let rel = str_arg(args, "path")?;
+    let content = str_arg(args, "content")?;
+    let path = resolve(root, rel)?;
+    // symlink_metadata também pega links quebrados, que `exists()` não enxerga.
+    if path.symlink_metadata().is_ok() {
+        return Err(format!("{rel} já existe; use edit_file para alterar um arquivo existente"));
+    }
+
+    eprintln!("\n\x1b[1m── novo arquivo {rel} ──\x1b[0m");
+    for line in content.lines() {
+        eprintln!("\x1b[32m+ {line}\x1b[0m");
+    }
+    if !auto_yes && !confirm()? {
+        return Ok(Outcome::Refused("usuário recusou a criação; nenhum arquivo foi criado".into()));
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(&path, content).map_err(|e| e.to_string())?;
+    Ok(Outcome::Done(format!("arquivo criado: {rel}")))
+}
+
+// Mostra a edição com algumas linhas de contexto do arquivo resultante,
+// para o usuário ver onde o trecho cai, não só o que foi removido e adicionado.
+fn show_edit_preview(rel: &str, updated: &str, start_line: usize, old: &str, new: &str) {
+    let lines: Vec<&str> = updated.lines().collect();
+    let len = lines.len();
+    let before_end = start_line.min(len);
+    let before_begin = before_end.saturating_sub(CONTEXT_LINES);
+    let after_begin = (start_line + new.lines().count()).min(len);
+    let after_end = (after_begin + CONTEXT_LINES).min(len);
+
+    eprintln!("\n\x1b[1m── edição proposta em {rel} ──\x1b[0m");
+    for line in &lines[before_begin..before_end] {
+        eprintln!("  {line}");
+    }
+    for line in old.lines() {
+        eprintln!("\x1b[31m- {line}\x1b[0m");
+    }
+    for line in new.lines() {
+        eprintln!("\x1b[32m+ {line}\x1b[0m");
+    }
+    for line in &lines[after_begin..after_end] {
+        eprintln!("  {line}");
+    }
 }
 
 fn confirm() -> Result<bool, String> {
@@ -154,4 +247,65 @@ fn confirm() -> Result<bool, String> {
     let mut line = String::new();
     io::stdin().lock().read_line(&mut line).map_err(|e| e.to_string())?;
     Ok(matches!(line.trim().to_lowercase().as_str(), "s" | "sim" | "y" | "yes"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn root(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("bitclaw-tools-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn create_file_creates_new_file() {
+        let r = root("create");
+        let out = execute(&r, "create_file", &json!({"path": "a.py", "content": "x = 1\n"}), true);
+        assert!(matches!(out, Outcome::Done(_)), "{out:?}");
+        assert_eq!(fs::read_to_string(r.join("a.py")).unwrap(), "x = 1\n");
+    }
+
+    #[test]
+    fn create_file_refuses_to_overwrite() {
+        let r = root("overwrite");
+        fs::write(r.join("a.py"), "antigo").unwrap();
+        let out = execute(&r, "create_file", &json!({"path": "a.py", "content": "novo"}), true);
+        assert!(matches!(out, Outcome::Error(_)), "{out:?}");
+        assert_eq!(fs::read_to_string(r.join("a.py")).unwrap(), "antigo");
+    }
+
+    #[test]
+    fn edit_file_on_missing_file_is_error() {
+        let r = root("missing");
+        let out = execute(&r, "edit_file", &json!({"path": "fib.py", "old": "a", "new": "b"}), true);
+        assert!(matches!(out, Outcome::Error(_)), "{out:?}");
+        assert!(!r.join("fib.py").exists());
+    }
+
+    #[test]
+    fn read_file_truncates_large_files() {
+        let r = root("big");
+        fs::write(r.join("grande.txt"), "a".repeat(MAX_READ_BYTES * 3)).unwrap();
+        let out = execute(&r, "read_file", &json!({"path": "grande.txt"}), true);
+        let Outcome::Done(text) = out else { panic!("esperava Done") };
+        assert!(text.contains("truncado em"));
+        assert!(text.len() < MAX_READ_BYTES + 100);
+    }
+
+    #[test]
+    fn read_file_keeps_small_files_intact() {
+        let r = root("small");
+        fs::write(r.join("p.txt"), "oi").unwrap();
+        assert_eq!(execute(&r, "read_file", &json!({"path": "p.txt"}), true), Outcome::Done("oi".into()));
+    }
+
+    #[test]
+    fn unknown_tool_is_error() {
+        let r = root("unknown");
+        let out = execute(&r, "make_file", &json!({}), true);
+        assert_eq!(out, Outcome::Error("ferramenta desconhecida: make_file".into()));
+    }
 }

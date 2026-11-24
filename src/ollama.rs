@@ -1,6 +1,21 @@
 use serde_json::{json, Value};
 use std::time::Duration;
 
+// Janela de contexto pedida explicitamente ao Ollama. Sem isso vale o padrão do Ollama, que é pequeno.
+pub const NUM_CTX: u32 = 8192;
+
+// Corpo da requisição `/api/chat`. Separado do envio para ser testável sem rede.
+pub fn build_body(model: &str, messages: &[Value], tools: &Value) -> Value {
+    json!({
+        "model": model,
+        "messages": messages,
+        "tools": tools,
+        "stream": false,
+        "think": false,
+        "options": { "temperature": 0.1, "num_ctx": NUM_CTX }
+    })
+}
+
 pub struct Client {
     http: reqwest::blocking::Client,
     base_url: String,
@@ -18,24 +33,55 @@ impl Client {
 
     /// Envia o histórico e as ferramentas; devolve a mensagem do assistente.
     pub fn chat(&self, messages: &[Value], tools: &Value) -> Result<Value, String> {
-        let body = json!({
-            "model": self.model,
-            "messages": messages,
-            "tools": tools,
-            "stream": false,
-            "think": false,
-            "options": { "temperature": 0.1 }
-        });
+        let body = build_body(&self.model, messages, tools);
         let resp = self
             .http
             .post(format!("{}/api/chat", self.base_url))
             .json(&body)
             .send()
             .map_err(|e| format!("falha ao conectar no Ollama ({}): {e}", self.base_url))?;
+        let status = resp.status();
+        if !status.is_success() {
+            // O corpo traz a causa real (ex.: "model not found"), então não é descartado.
+            let detail = resp.text().unwrap_or_default();
+            return Err(format!("Ollama respondeu HTTP {status}: {}", detail.trim()));
+        }
+        let v: Value = resp.json().map_err(|e| e.to_string())?;
+        Ok(v.get("message").cloned().unwrap_or(Value::Null))
+    }
+
+    /// Verifica se o modelo configurado está instalado no Ollama.
+    pub fn has_model(&self) -> Result<bool, String> {
+        let resp = self
+            .http
+            .get(format!("{}/api/tags", self.base_url))
+            .send()
+            .map_err(|e| format!("falha ao conectar no Ollama ({}): {e}", self.base_url))?;
         if !resp.status().is_success() {
             return Err(format!("Ollama respondeu HTTP {}", resp.status()));
         }
         let v: Value = resp.json().map_err(|e| e.to_string())?;
-        Ok(v.get("message").cloned().unwrap_or(Value::Null))
+        // Sem tag, o Ollama usa `:latest`.
+        let wanted = [self.model.clone(), format!("{}:latest", self.model)];
+        Ok(v.get("models")
+            .and_then(Value::as_array)
+            .is_some_and(|ms| {
+                ms.iter()
+                    .filter_map(|m| m.get("name").and_then(Value::as_str))
+                    .any(|n| wanted.iter().any(|w| w == n))
+            }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_sets_explicit_context_window() {
+        let body = build_body("m", &[], &json!([]));
+        assert_eq!(body["options"]["num_ctx"], NUM_CTX);
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["model"], "m");
     }
 }

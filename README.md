@@ -4,12 +4,14 @@ Agente de linha de comando, local e enxuto, que lê e edita arquivos de um proje
 
 ## Pré-requisitos
 - Rust (cargo)
-- Ollama rodando (`http://localhost:11434`) com um modelo que suporte tools, ex.: `qwen2.5-coder:3b` ou `nemotron-3-nano:4b-mlx`
+- Ollama rodando (`http://localhost:11434`) com um modelo que suporte tools. O padrão é `nemotron-3-nano:4b-mlx` (`ollama pull nemotron-3-nano:4b-mlx`).
 
 ## Uso
 ```sh
-cargo run -- --dir /caminho/do/projeto --model qwen2.5-coder:3b
+cargo run -- --dir /caminho/do/projeto
 ```
+
+Avaliação com modelos reais (tarefas fixas, verificadas no disco): `scripts/eval.sh [modelo ...]`.
 Opções: `--model`, `--url`, `--dir` (padrão: diretório atual), `--yes` (aplica edições sem confirmar; use com cuidado).
 
 No prompt, digite a tarefa. `/sair` encerra.
@@ -17,7 +19,10 @@ No prompt, digite a tarefa. `/sair` encerra.
 ## Ferramentas
 - `list_dir`: lista um diretório do projeto.
 - `read_file`: lê um arquivo (até 100 KB).
-- `edit_file`: troca um trecho exato que aparece uma única vez. Mostra o diff, pede confirmação e salva backup em `.bitclaw/backup/`.
+- `edit_file`: troca um trecho exato que aparece uma única vez. Mostra o diff com contexto, pede confirmação e salva backup em `.bitclaw/backup/`. Só altera arquivos existentes.
+- `create_file`: cria um arquivo novo com o conteúdo dado. Recusa sobrescrever um arquivo existente e pede confirmação.
+
+Ao fim de cada tarefa, o programa lista as ações executadas com `[ok]`, `[erro]` ou `[recusada]`. Se nenhuma alteração foi aplicada, ele avisa, mesmo que o modelo tenha dito o contrário.
 
 ## Segurança
 - Caminhos absolutos, `..` e symlinks que saiam do diretório do projeto são recusados (`src/sandbox.rs`, com testes).
