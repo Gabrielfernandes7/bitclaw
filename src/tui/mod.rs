@@ -662,4 +662,13 @@ mod tests {
         assert!(w.model_since.is_some(), "voltar ao modelo reabre a contagem");
         assert!(Work::new("montando AGENTS.md").model_since.is_none());
     }
+
+    #[test]
+    fn idle_shows_the_name_beside_the_mascot_and_working_swaps_it_for_the_status() {
+        let idle = screen(None, None, false);
+        assert!(idle[0].starts_with("██") && idle[0].contains("BitClaw"), "{idle:?}");
+        let busy = screen(Some(&work(false, false)), None, false);
+        assert!(busy.iter().all(|l| !l.contains("BitClaw")), "{busy:?}");
+        assert!(busy[1].contains("executando"), "{busy:?}");
+    }
 }

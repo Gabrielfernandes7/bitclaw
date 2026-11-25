@@ -1,6 +1,6 @@
 //! Saída para o scrollback do terminal: cabeçalho, avisos, prévias e relatório do turno.
 
-use super::{App, brand, markdown, theme::*, view::{aviso_line, note}};
+use super::{App, brand, markdown, theme::*, view::{self, aviso_line, note}};
 use super::locked;
 use bitclaw::agent::{INTERRUPTED, TurnReport};
 use bitclaw::tools::{Outcome, Preview, PreviewLine};
@@ -25,32 +25,23 @@ impl App {
         Ok(())
     }
 
+    // O nome, o projeto e o modelo ficam ao lado do mascote, na área fixa. Aqui vai só o que não cabe
+    // lá: as demais linhas de informação (skills, pastas ignoradas) e os avisos de partida.
     pub(super) fn print_header(&mut self) -> io::Result<()> {
-        let mut right = vec![Line::from(Span::styled(self.settings.title.clone(), bold(YELLOW)))];
-        right.extend(self.settings.info.iter().map(|l| Line::from(Span::styled(l.clone(), fg(GRAY)))));
-        let glyph = brand::crab();
-        let offset = glyph.len().saturating_sub(right.len()) / 2;
-        let mut lines: Vec<Line<'static>> = glyph
-            .into_iter()
-            .enumerate()
-            .map(|(i, g)| {
-                let mut spans = vec![Span::styled(g, fg(YELLOW)), Span::raw("  ")];
-                if let Some(text) = i.checked_sub(offset).and_then(|j| right.get(j)) {
-                    spans.extend(text.spans.clone());
-                }
-                Line::from(spans)
-            })
-            .collect();
-        lines.push(Line::default());
-        lines.push(note("Digite uma tarefa. Digite / para ver os comandos."));
-        lines.push(Line::default());
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        for extra in self.settings.info.iter().skip(view::INFO_ROWS - 1) {
+            lines.push(note(extra));
+        }
         if self.settings.auto_yes {
-            lines.insert(lines.len() - 1, aviso_line("--yes ativo: edições serão aplicadas sem confirmação"));
+            lines.push(aviso_line("--yes ativo: edições serão aplicadas sem confirmação"));
         }
         if !locked(&self.settings.effort).is_off() {
-            let at = lines.len() - 1;
-            lines.splice(at..at, self.warning(brand::THINK_WARNING)?);
+            lines.extend(self.warning(brand::THINK_WARNING)?);
         }
+        if lines.is_empty() {
+            return Ok(());
+        }
+        lines.push(Line::default());
         self.print(lines)
     }
 

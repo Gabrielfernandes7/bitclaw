@@ -1,9 +1,11 @@
 //! O que a interface desenha: a área fixa embaixo e os painéis.
 
+mod info;
 mod model_picker;
 mod picker;
 mod status;
 
+pub(in crate::tui) use self::info::*;
 pub(in crate::tui) use self::model_picker::*;
 pub(in crate::tui) use self::picker::*;
 pub(in crate::tui) use self::status::*;
@@ -108,8 +110,16 @@ pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
         }
         _ => text_area,
     };
-    let [_, middle, _] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).areas(text_area);
-    f.render_widget(Paragraph::new(status_line(v.work)), middle);
+    if v.work.is_none() {
+        // Ocioso: o nome, o projeto e o modelo ao lado do mascote.
+        let active = locked(&v.settings.model).id.clone();
+        let lines = info_lines(&v.settings.title, &v.settings.info, &active, &v.settings.default_model);
+        f.render_widget(Paragraph::new(lines), text_area);
+    } else {
+        let [_, middle, _] =
+            Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).areas(text_area);
+        f.render_widget(Paragraph::new(status_line(v.work)), middle);
+    }
 
     // Editor delimitado por réguas, como no Claude Code.
     let block = Block::new().borders(Borders::TOP | Borders::BOTTOM).border_style(fg(GRAY));
