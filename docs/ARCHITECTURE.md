@@ -248,8 +248,7 @@ Cada passo é um commit pequeno, com `cargo test` verde e comportamento inaltera
 | 4 | `Registry` injetável, `Session::builder`, `ToolContext`, schema neutro | Fork adiciona `Tool` sem editar o core |
 | 5 | `toolkit/claims.rs` como gancho; `init` para `app/` | Core sem política de arquivo nem de dev |
 | 6 | Teste de fronteira e `examples/legalclaw.rs` com uma `Tool` própria | Critério de sucesso provado |
-| 7 | (Opcional) Workspace Cargo: `bitclaw-core`, `bitclaw-ollama`, `bitclaw-toolkit`, `bitclaw` | O compilador impede o vazamento |
-| 8 | Adaptador `adapters/openrouter/` com chave via variável de ambiente (seção 5.1); depende dos passos 3 e 4 | Segundo provedor sem tocar no core |
+| 7 | Adaptador `adapters/openrouter/` com chave via variável de ambiente (seção 5.1); depende dos passos 3 e 4 | Segundo provedor sem tocar no core |
 
 ## 8. O que não muda
 
