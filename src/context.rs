@@ -40,6 +40,18 @@ impl ContextManager {
         Self { num_ctx, reserve_output_tokens, chars_per_token: DEFAULT_CHARS_PER_TOKEN }
     }
 
+    // Troca a janela total. Precisa sobrar espaço além do que fica reservado para a resposta.
+    pub fn set_num_ctx(&mut self, num_ctx: usize) -> Result<(), String> {
+        if num_ctx <= self.reserve_output_tokens {
+            return Err(format!(
+                "o contexto precisa ser maior que os {} tokens reservados para a resposta",
+                self.reserve_output_tokens
+            ));
+        }
+        self.num_ctx = num_ctx;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub fn chars_per_token(&self) -> f64 {
         self.chars_per_token
@@ -136,6 +148,16 @@ fn is_role(message: &Value, role: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_window_can_change_but_must_leave_room_for_the_answer() {
+        let mut ctx = ContextManager::new(16384, 1024);
+        assert!(ctx.set_num_ctx(32768).is_ok());
+        assert_eq!(ctx.usage(&[], &serde_json::json!([])).window, 32768);
+        let err = ctx.set_num_ctx(1000).unwrap_err();
+        assert!(err.contains("1024"), "{err}");
+        assert_eq!(ctx.usage(&[], &serde_json::json!([])).window, 32768, "a janela não muda se o valor é recusado");
+    }
+
     use super::*;
     use serde_json::json;
 

@@ -151,6 +151,11 @@ impl Session {
         self.model = model;
     }
 
+    // Troca a janela de contexto. O histórico não muda; só o orçamento a partir do próximo turno.
+    pub fn set_context_window(&mut self, num_ctx: usize) -> Result<(), String> {
+        self.ctx.set_num_ctx(num_ctx)
+    }
+
     // Uso atual da janela de contexto.
     pub fn usage(&self) -> Usage {
         self.ctx.usage(&self.messages, &self.registry.schemas())
@@ -185,7 +190,7 @@ mod tests {
     impl ChatModel for Scripted {
         fn complete(&self, _m: &[Value], _t: &Value) -> Result<Reply, String> {
             let message = self.0.borrow_mut().pop_front().ok_or("roteiro esgotado")?;
-            Ok(Reply { message, prompt_tokens: None })
+            Ok(Reply { message, prompt_tokens: None, output_tokens: None })
         }
     }
 
@@ -311,7 +316,7 @@ url = "http://unused"
                 .collect();
             self.seen.borrow_mut().push(roles);
             let message = self.replies.borrow_mut().pop_front().ok_or("roteiro esgotado")?;
-            Ok(Reply { message, prompt_tokens: None })
+            Ok(Reply { message, prompt_tokens: None, output_tokens: None })
         }
     }
 
@@ -390,7 +395,7 @@ url = "http://unused"
                 *failed = true;
                 return Err("falha ao conectar no Ollama".into());
             }
-            Ok(Reply { message: json!({"role": "assistant", "content": "ok"}), prompt_tokens: None })
+            Ok(Reply { message: json!({"role": "assistant", "content": "ok"}), prompt_tokens: None, output_tokens: None })
         }
     }
 
