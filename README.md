@@ -172,10 +172,16 @@ Os testes não dependem de rede nem de modelo: usam um modelo falso com resposta
 | `src/ollama.rs` | Adaptador do Ollama (implementa `ChatModel`). |
 | `src/sandbox.rs` | Validação de caminhos dentro do projeto. |
 | `src/main.rs` | Binário: lê a configuração, monta as peças e escolhe a interface. |
-| `src/tui.rs` | Interface de terminal (ratatui, viewport inline). O agente roda numa thread e fala por canais. |
-| `src/markdown.rs` | Renderização leve de Markdown para as respostas. |
-| `src/brand.rs` | Mascote e cabeçalho. |
-| `src/plain.rs` | Modo simples, sem terminal interativo. |
+| `src/tui/mod.rs` | Interface de terminal (ratatui, viewport inline): estado, laço de eventos e `run`. |
+| `src/tui/input.rs` | Teclas, painéis e comandos com `/`. |
+| `src/tui/print.rs` | Saída para o scrollback: cabeçalho, avisos, prévias e relatório. |
+| `src/tui/worker.rs` | Thread do agente e canais entre ela e a interface. |
+| `src/tui/commands.rs`, `history.rs` | Lista de comandos com `/` e histórico de entrada (↑ ↓). |
+| `src/tui/view/` | Desenho da área fixa e dos painéis `/skills` e `/model`. |
+| `src/tui/theme.rs` | Cores e estilos. |
+| `src/tui/brand.rs` | Mascote e cabeçalho. |
+| `src/tui/markdown.rs` | Renderização leve de Markdown para as respostas. |
+| `src/tui/plain.rs` | Modo simples, sem terminal interativo. |
 | `agents/bitclaw.toml` | Configuração do agente padrão. |
 | `scripts/eval.sh` | Avaliação com modelos reais. |
 | `docs/PROJETO.md` | Propósito, decisões e plano. |
