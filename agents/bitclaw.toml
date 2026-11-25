@@ -19,6 +19,9 @@ Faça uma alteração por vez. Responda em português, de forma curta.\
 # Ferramentas embutidas disponíveis: list_dir, read_file, edit_file, create_file, create_dir, delete_file.
 tools = ["list_dir", "read_file", "edit_file", "create_file", "create_dir", "delete_file"]
 
+# Pasta com skills (SKILL.md), relativa a onde o BitClaw roda. Remova a linha para desligar.
+skills_dir = "skills"
+
 [model]
 name = "nemotron-3-nano:4b-mlx"
 url = "http://localhost:11434"

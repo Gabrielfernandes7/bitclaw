@@ -226,6 +226,12 @@ pub fn run_turn_with(
             }
 
             messages.push(json!({"role": "tool", "tool_name": name.clone(), "content": outcome.text()}));
+            // Recusa do usuário encerra o turno: insistir na mesma alteração só o irrita e gasta passos.
+            if matches!(outcome, Outcome::Refused(_)) {
+                report.actions.push(Action { name: name.clone(), args, outcome, mutates });
+                report.error = Some("alteração recusada pelo usuário; turno encerrado sem aplicar mais nada".into());
+                return Ok(report);
+            }
             report.actions.push(Action { name: name.clone(), args, outcome, mutates });
 
             if let Some((_, count)) = &failing
@@ -438,6 +444,21 @@ mod tests {
         assert!(matches!(&report.actions[0].outcome, Outcome::Error(e) if e.contains("ferramenta desconhecida: make_file")));
         assert!(!report.attempted_changes());
         assert!(!report.changed());
+    }
+
+    #[test]
+    fn refusal_ends_the_turn_without_more_attempts() {
+        let r = root("refuse-stops");
+        fs::write(r.join("a.py"), "x = 1\n").unwrap();
+        let model = fake(vec![
+            call("edit_file", json!({"path": "a.py", "old": "x = 1", "new": "x = 2"})),
+            call("create_file", json!({"path": "b.py", "content": "y"})),
+            text("insisti"),
+        ]);
+        let report = run(&model, &Registry::default_set(), &r, &mut start(), &Refuse).unwrap();
+        assert_eq!(report.actions.len(), 1, "nenhuma nova tentativa depois da recusa");
+        assert!(report.error.as_deref().unwrap_or("").contains("recusada"));
+        assert!(!r.join("b.py").exists());
     }
 
     #[test]

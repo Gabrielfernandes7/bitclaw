@@ -7,6 +7,7 @@ mod plain;
 mod tui;
 
 use bitclaw::config::AgentConfig;
+use bitclaw::skills;
 use bitclaw::ollama::{self, Options};
 use bitclaw::session::Session;
 use bitclaw::tools::{Approver, AutoApprover};
@@ -93,13 +94,41 @@ fn run() -> Result<(), String> {
     }
 
     let root = args.dir.canonicalize().map_err(|e| format!("diretório inválido: {e}"))?;
-    let info = vec![format!("projeto {}", root.display()), model_line(&cfg, &think)];
+    // As skills são procuradas em relação ao diretório de execução, não ao `--dir`.
+    let skills_path = match cfg.skills_dir.as_deref() {
+        Some(d) => Some(std::env::current_dir().map_err(|e| e.to_string())?.join(d)),
+        None => None,
+    };
+    let (project_skills, ignored) = match &skills_path {
+        Some(p) => skills::load_with_ignored(p)?,
+        None => (Vec::new(), Vec::new()),
+    };
+    let skills = skills::with_builtins(project_skills);
+    let mut info = vec![format!("projeto {}", root.display()), model_line(&cfg, &think)];
+    match &skills_path {
+        Some(p) if skills.is_empty() && !p.is_dir() => {
+            info.push(format!("skills: pasta {} não encontrada", p.display()));
+        }
+        _ if !skills.is_empty() => {
+            let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+            info.push(format!("skills: {}", names.join(", ")));
+        }
+        _ => {}
+    }
+    if !ignored.is_empty() {
+        info.push(format!("ignoradas: {}", ignored.join(", ")));
+    }
+    let skill_lines = skills::summary(&skills);
+    // Skills desligadas no painel `/skills`: a interface e a sessão do agente compartilham este conjunto.
+    let skills_off = skills::new_disabled();
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
 
     if interactive {
         let settings = tui::Settings {
             title: cfg.name.clone(),
             info,
+            skills: skills.clone(),
+            skills_off: Arc::clone(&skills_off),
             model: cfg.model.name.clone(),
             auto_yes: args.auto_yes,
             color,
@@ -108,15 +137,15 @@ fn run() -> Result<(), String> {
         // A sessão é montada na thread do agente, que recebe o aprovador pronto.
         tui::run(settings, move |approver| {
             let client = build_client(&cfg, &think)?;
-            Session::from_config(&cfg, Box::new(client), approver, &root)
+            Ok(Session::from_config(&cfg, Box::new(client), approver, &root)?.with_skills(skills, skills_off))
         })
     } else {
         let approver: Box<dyn Approver> =
             if args.auto_yes { Box::new(AutoApprover) } else { Box::new(plain::StdinApprover) };
-        let mut session = Session::from_config(&cfg, Box::new(build_client(&cfg, &think)?), approver, &root)?;
+        let mut session = Session::from_config(&cfg, Box::new(build_client(&cfg, &think)?), approver, &root)?.with_skills(skills, skills::new_disabled());
         let mut header = vec![cfg.name.clone()];
         header.extend(info);
-        plain::run(&mut session, &header, args.auto_yes, &think)
+        plain::run(&mut session, &header, args.auto_yes, &think, &skill_lines)
     }
 }
 

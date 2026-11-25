@@ -13,6 +13,9 @@ pub struct AgentConfig {
     pub name: String,
     pub system_prompt: String,
     pub tools: Vec<String>,
+    // Pasta com skills (subpastas com SKILL.md), relativa ao diretório de execução. Sem valor, não há skills.
+    #[serde(default)]
+    pub skills_dir: Option<String>,
     pub model: ModelConfig,
     #[serde(default)]
     pub limits: LimitsConfig,
@@ -74,6 +77,9 @@ impl AgentConfig {
         }
         if self.system_prompt.trim().is_empty() {
             return Err("configuração: 'system_prompt' não pode ser vazio".into());
+        }
+        if self.skills_dir.as_deref().is_some_and(|d| d.trim().is_empty()) {
+            return Err("configuração: 'skills_dir' não pode ser vazio".into());
         }
         if self.model.name.trim().is_empty() {
             return Err("configuração: 'model.name' não pode ser vazio".into());

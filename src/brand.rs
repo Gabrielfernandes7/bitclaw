@@ -44,15 +44,20 @@ fn crab_width() -> usize {
 pub fn plain_header(lines: &[String]) -> String {
     let glyph = crab();
     let offset = glyph.len().saturating_sub(lines.len()) / 2;
-    glyph
+    let mut out: Vec<String> = glyph
         .iter()
         .enumerate()
         .map(|(i, g)| {
             let text = i.checked_sub(offset).and_then(|j| lines.get(j)).cloned().unwrap_or_default();
             format!("{g}  {text}")
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+    // Linhas que não cabem ao lado do mascote descem abaixo dele, alinhadas com o texto.
+    let pad = " ".repeat(glyph.first().map_or(0, |g| g.chars().count()) + 2);
+    for j in (glyph.len() - offset.min(glyph.len()))..lines.len() {
+        out.push(format!("{pad}{}", lines[j]));
+    }
+    out.join("\n")
 }
 
 #[cfg(test)]

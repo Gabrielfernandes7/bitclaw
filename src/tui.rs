@@ -11,6 +11,7 @@ use crate::markdown::{self, Palette};
 use bitclaw::agent::{INTERRUPTED, Progress, TurnReport};
 use bitclaw::context::Usage;
 use bitclaw::session::Session;
+use bitclaw::skills::{self, Disabled, Skill};
 use bitclaw::tools::{Approver, AutoApprover, Outcome, Preview, PreviewLine};
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
@@ -22,7 +23,7 @@ use crossterm::terminal::{Clear, ClearType};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget};
 use ratatui::backend::CrosstermBackend;
 use ratatui::{DefaultTerminal, Frame, Terminal, TerminalOptions, Viewport};
 use ratatui_textarea::TextArea;
@@ -57,10 +58,11 @@ struct Cmd {
     desc: &'static str,
 }
 
-const COMMANDS: [Cmd; 4] = [
+const COMMANDS: [Cmd; 5] = [
     Cmd { name: "/help", aliases: &[], desc: "mostra os comandos e as teclas" },
     Cmd { name: "/clear", aliases: &[], desc: "apaga o histórico e mantém o prompt do sistema" },
     Cmd { name: "/think", aliases: &[], desc: "liga ou desliga o raciocínio do modelo (gasta mais contexto)" },
+    Cmd { name: "/skills", aliases: &[], desc: "abre as skills para ligar e desligar" },
     Cmd { name: "/exit", aliases: &["/quit"], desc: "encerra o BitClaw" },
 ];
 
@@ -98,6 +100,10 @@ pub struct Settings {
     pub title: String,
     // Linhas ao lado do mascote, abaixo do nome.
     pub info: Vec<String>,
+    // Skills carregadas, para o painel `/skills`.
+    pub skills: Vec<Skill>,
+    // Nomes das skills desligadas no painel. Compartilhado com a sessão do agente.
+    pub skills_off: Disabled,
     pub model: String,
     pub auto_yes: bool,
     pub color: bool,
@@ -265,6 +271,8 @@ struct App {
     height: u16,
     menu_index: usize,
     history: History,
+    // Painel de skills aberto, se houver.
+    picker: Option<Picker>,
 }
 
 // Roda a interface até o usuário sair. `make_session` roda na thread do agente.
@@ -302,6 +310,7 @@ where
         height,
         menu_index: 0,
         history: History::default(),
+        picker: None,
     };
     let result = app.event_loop();
 
@@ -309,8 +318,10 @@ where
         let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
     }
     let _ = execute!(io::stdout(), DisableBracketedPaste);
-    let _ = app.terminal.clear();
+    // Sem `clear()`: ele apagaria a tela a partir do topo e a conversa visível sumiria.
+    // A área do TUI fica no lugar; o cursor só desce para uma linha abaixo dela.
     ratatui::restore();
+    println!();
     result
 }
 
@@ -328,8 +339,16 @@ impl App {
         loop {
             self.fit_viewport().map_err(|e| e.to_string())?;
             let menu = self.menu_matches();
-            let App { terminal, editor, work, usage, settings, menu_index, .. } = self;
-            let view = View { editor, work: work.as_ref(), usage: *usage, settings, menu, menu_index: *menu_index };
+            let App { terminal, editor, work, usage, settings, menu_index, picker, .. } = self;
+            let view = View {
+                editor,
+                work: work.as_ref(),
+                usage: *usage,
+                settings,
+                menu,
+                menu_index: *menu_index,
+                picker: picker.as_ref(),
+            };
             terminal.draw(|f| draw(f, &view)).map_err(|e| e.to_string())?;
             if event::poll(Duration::from_millis(80)).map_err(|e| e.to_string())? {
                 match event::read().map_err(|e| e.to_string())? {
@@ -363,7 +382,10 @@ impl App {
     // Ajusta a altura da área fixa ao editor e ao menu. O viewport inline tem altura fixa,
     // então recriar o terminal é o jeito de mudá-la.
     fn fit_viewport(&mut self) -> io::Result<()> {
-        let want = viewport_height(self.editor.lines().len(), self.menu_matches().len());
+        let want = match &self.picker {
+            Some(p) => picker_height(picker_rows(&self.settings.skills, p).len()),
+            None => viewport_height(self.editor.lines().len(), self.menu_matches().len()),
+        };
         if want != self.height {
             // Apaga a área antiga e deixa o cursor no topo dela: a nova começa no mesmo lugar,
             // sem deixar linhas em branco entre a transcrição e a área fixa.
@@ -376,6 +398,44 @@ impl App {
             self.height = want;
         }
         Ok(())
+    }
+
+    // Teclas do painel de skills. Devolve `true` para sair (o painel nunca sai do programa).
+    fn picker_key(&mut self, key: KeyEvent) -> io::Result<bool> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(p) = self.picker.as_ref() else { return Ok(false) };
+        let rows = picker_rows(&self.settings.skills, p);
+        let selected = rows.get(p.index).map(|&i| self.settings.skills[i].name.clone());
+        let last = rows.len().saturating_sub(1);
+        let Some(p) = self.picker.as_mut() else { return Ok(false) };
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => self.picker = None,
+            KeyCode::Char('c') if ctrl => self.picker = None,
+            KeyCode::Up => p.index = p.index.saturating_sub(1),
+            KeyCode::Down => p.index = (p.index + 1).min(last),
+            KeyCode::Tab => {
+                p.by_name = !p.by_name;
+                p.index = 0;
+            }
+            KeyCode::Backspace => {
+                p.query.pop();
+                p.index = 0;
+            }
+            KeyCode::Char(' ') => {
+                if let Some(name) = selected {
+                    let mut off = self.settings.skills_off.lock().unwrap_or_else(|e| e.into_inner());
+                    if !off.remove(&name) {
+                        off.insert(name);
+                    }
+                }
+            }
+            KeyCode::Char(c) if !ctrl => {
+                p.query.push(c);
+                p.index = 0;
+            }
+            _ => {}
+        }
+        Ok(false)
     }
 
     // Trata uma tecla. Devolve `true` para sair.
@@ -401,6 +461,11 @@ impl App {
                 _ => work.approval = Some(reply),
             }
             return Ok(false);
+        }
+
+        // Painel de skills aberto: ele recebe todas as teclas, inclusive ↑/↓ (que, sem isso, iam para o histórico do editor).
+        if self.picker.is_some() {
+            return self.picker_key(key);
         }
 
         let menu = self.menu_matches();
@@ -506,6 +571,13 @@ impl App {
                 let mut lines = if on { self.warning(brand::THINK_WARNING)? } else { vec![note("thinking desligado.")] };
                 lines.push(Line::default());
                 self.print(lines)?;
+            }
+            _ if command.is_some_and(|c| c.name == "/skills") => {
+                if self.settings.skills.is_empty() {
+                    self.print(vec![note("nenhuma skill carregada."), Line::default()])?;
+                } else {
+                    self.picker = Some(Picker { query: String::new(), index: 0, by_name: false });
+                }
             }
             _ if command.is_some_and(|c| c.name == "/help") => {
                 let mut lines: Vec<Line<'static>> =
@@ -729,9 +801,112 @@ struct View<'a> {
     settings: &'a Settings,
     menu: Vec<&'static Cmd>,
     menu_index: usize,
+    picker: Option<&'a Picker>,
+}
+
+// ---------- painel de skills (`/skills`) ----------
+
+// Estado do painel: o que foi digitado na busca, a linha escolhida e a ordem.
+struct Picker {
+    query: String,
+    index: usize,
+    by_name: bool,
+}
+
+// Linhas visíveis do painel, índices em `skills`. A busca olha nome e descrição.
+fn picker_rows(skills: &[Skill], p: &Picker) -> Vec<usize> {
+    let q = p.query.to_lowercase();
+    let mut rows: Vec<usize> = (0..skills.len())
+        .filter(|&i| {
+            q.is_empty()
+                || skills[i].name.to_lowercase().contains(&q)
+                || skills[i].description.to_lowercase().contains(&q)
+        })
+        .collect();
+    if p.by_name {
+        rows.sort_by(|&a, &b| skills[a].name.cmp(&skills[b].name));
+    }
+    rows
+}
+
+const PICKER_VISIBLE: usize = 8;
+
+// Título (1), caixa de busca (3), lista (até PICKER_VISIBLE linhas) e dica (1).
+fn picker_height(rows: usize) -> u16 {
+    (1 + 3 + rows.clamp(1, PICKER_VISIBLE) + 1) as u16
+}
+
+fn draw_picker(f: &mut Frame, settings: &Settings, p: &Picker) {
+    let rows = picker_rows(&settings.skills, p);
+    let off = skills::disabled_now(&settings.skills_off);
+    let enabled: Vec<&Skill> = settings.skills.iter().filter(|s| !off.contains(&s.name)).collect();
+    let tokens: usize = enabled.iter().map(|s| skills::catalog_tokens(s)).sum();
+    let [title, search, list, hint] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(f.area());
+
+    let head = vec![
+        Span::styled(format!("{} skills", settings.skills.len()), bold(YELLOW)),
+        Span::styled(format!(" · {} ativas · ~{tokens} tokens no prompt", enabled.len()), fg(GRAY)),
+    ];
+    f.render_widget(Paragraph::new(Line::from(head)), title);
+
+    // Caixa arredondada com a busca, como no Claude Code.
+    let box_style = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(fg(GRAY));
+    let search_text = if p.query.is_empty() {
+        Line::from(Span::styled("⌕ Buscar skills…", fg(GRAY)))
+    } else {
+        Line::from(vec![Span::styled("⌕ ", fg(GRAY)), Span::raw(p.query.clone())])
+    };
+    f.render_widget(Paragraph::new(search_text).block(box_style), search);
+
+    // Largura da coluna de nomes: a maior entre todas as skills, para alinhar os metadados.
+    let name_w = settings.skills.iter().map(|s| s.name.chars().count()).max().unwrap_or(0).clamp(12, 36);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled("  nenhuma skill encontrada", fg(GRAY))));
+    } else {
+        let start = if p.index >= PICKER_VISIBLE { p.index + 1 - PICKER_VISIBLE } else { 0 };
+        for (pos, &i) in rows.iter().enumerate().skip(start).take(PICKER_VISIBLE) {
+            let skill = &settings.skills[i];
+            let selected = pos == p.index;
+            let on = !off.contains(&skill.name);
+            let origin = if skill.builtin { "embutida" } else { "projeto" };
+            let (cursor, name_style) = if selected {
+                ("❯ ", bold(YELLOW))
+            } else if on {
+                ("  ", Style::default())
+            } else {
+                ("  ", fg(GRAY))
+            };
+            let mark = if on { "✔ " } else { "○ " };
+            let mark_style = if on { fg(YELLOW) } else { fg(GRAY) };
+            lines.push(Line::from(vec![
+                Span::styled(cursor, fg(YELLOW)),
+                Span::styled(mark, mark_style),
+                Span::styled(format!("{:<name_w$}", skill.name), name_style),
+                Span::styled(
+                    format!("  {origin} · ~{} tokens", skills::catalog_tokens(skill)),
+                    fg(GRAY),
+                ),
+            ]));
+        }
+    }
+    f.render_widget(Paragraph::new(lines), list);
+
+    let help = "↑/↓ navega · espaço liga/desliga · digite para buscar · tab ordena · esc fecha";
+    f.render_widget(Paragraph::new(Line::from(Span::styled(help, fg(GRAY)))), hint);
 }
 
 fn draw(f: &mut Frame, v: &View) {
+    if let Some(picker) = v.picker {
+        draw_picker(f, v.settings, picker);
+        return;
+    }
     let editor_rows = v.editor.lines().len().clamp(1, MAX_EDITOR_ROWS) as u16;
     let [status, composer, menu, footer] = Layout::vertical([
         Constraint::Length(1),
@@ -831,6 +1006,8 @@ mod tests {
         Settings {
             title: "BitClaw".into(),
             info: vec![],
+            skills: vec![],
+            skills_off: skills::new_disabled(),
             model: "m:1b".into(),
             auto_yes,
             color: false,
@@ -849,7 +1026,7 @@ mod tests {
         let height = viewport_height(editor.lines().len(), menu.len());
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let settings = settings(auto_yes);
-        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0 };
+        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0, picker: None };
         terminal.draw(|f| draw(f, &view)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height)
@@ -889,12 +1066,35 @@ mod tests {
     }
 
     #[test]
+    fn skills_picker_filters_by_name_and_description_and_sorts_by_name() {
+        let skill = |name: &str, desc: &str| Skill {
+            name: name.into(),
+            description: desc.into(),
+            dir: Default::default(),
+            body: String::new(),
+            files: vec![],
+            builtin: false,
+        };
+        let skills = vec![skill("zeta", "gera relatórios"), skill("alfa", "revisa testes")];
+        let mut p = Picker { query: String::new(), index: 0, by_name: false };
+        assert_eq!(picker_rows(&skills, &p), vec![0, 1], "sem busca, ordem original");
+        p.by_name = true;
+        assert_eq!(picker_rows(&skills, &p), vec![1, 0], "ordenado por nome");
+        p.by_name = false;
+        p.query = "TESTES".into();
+        assert_eq!(picker_rows(&skills, &p), vec![1], "busca ignora maiúsculas e olha a descrição");
+        p.query = "nada".into();
+        assert!(picker_rows(&skills, &p).is_empty());
+    }
+
+    #[test]
     fn typing_a_slash_lists_every_command_below_the_editor() {
         let lines = screen_with(100, "/", None, None, false);
         assert_eq!(lines.len(), 5 + COMMANDS.len());
         assert!(lines[4].starts_with("› /help") && lines[4].contains("mostra os comandos"), "{lines:?}");
         assert!(lines[5].starts_with("  /clear") && lines[6].starts_with("  /think"), "{lines:?}");
-        assert!(lines[7].starts_with("  /exit"), "{lines:?}");
+        assert!(lines[7].starts_with("  /skills"), "{lines:?}");
+        assert!(lines[8].starts_with("  /exit"), "{lines:?}");
         assert!(lines.last().unwrap().contains("tab completa · enter executa"));
     }
 
@@ -951,7 +1151,7 @@ mod tests {
         let mut cfg = settings(false);
         cfg.think = Arc::new(AtomicBool::new(true));
         let mut terminal = Terminal::new(TestBackend::new(100, viewport_height(1, 0))).unwrap();
-        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0 };
+        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0, picker: None };
         terminal.draw(|f| draw(f, &view)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         let footer: String = (0..100).map(|x| buffer[(x, 4)].symbol().to_string()).collect();

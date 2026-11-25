@@ -5,6 +5,9 @@
 use crate::agent::{self, Limits, Progress, TurnReport};
 use crate::config::AgentConfig;
 use crate::context::{self, ContextManager, Usage};
+use crate::skills::{self, Disabled, Skill};
+use std::collections::HashSet;
+use std::sync::Arc;
 use crate::tools::{Approver, Registry};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -17,6 +20,12 @@ pub struct Session {
     limits: Limits,
     ctx: ContextManager,
     messages: Vec<Value>,
+    // Prompt do sistema sem o catálogo de skills, e todas as skills carregadas.
+    base_system: String,
+    all_skills: Vec<Skill>,
+    // Skills desligadas pelo usuário, e as que já estão refletidas no prompt do sistema.
+    disabled: Disabled,
+    applied: Option<HashSet<String>>,
 }
 
 impl Session {
@@ -36,7 +45,65 @@ impl Session {
         };
         let ctx = ContextManager::new(cfg.model.num_ctx as usize, cfg.limits.reserve_output_tokens);
         let messages = vec![json!({"role": "system", "content": cfg.system_prompt})];
-        Ok(Self { model, registry, approver, root, limits, ctx, messages })
+        let base_system = cfg.system_prompt.clone();
+        Ok(Self {
+            model,
+            registry,
+            approver,
+            root,
+            limits,
+            ctx,
+            messages,
+            base_system,
+            all_skills: Vec::new(),
+            disabled: skills::new_disabled(),
+            applied: None,
+        })
+    }
+
+    // Oferece skills ao modelo: o catálogo vai ao prompt do sistema e `load_skill` é registrada.
+    // Sem skills, a sessão não muda.
+    pub fn with_skills(mut self, skills: Vec<Skill>, disabled: Disabled) -> Self {
+        if skills.is_empty() {
+            return self;
+        }
+        self.registry = self.registry.with_tool(Box::new(skills::LoadSkill::new(skills.clone(), Arc::clone(&disabled))));
+        self.all_skills = skills;
+        self.disabled = disabled;
+        self.apply_skills();
+        self
+    }
+
+    // Reconstrói o prompt do sistema com o catálogo das skills ligadas, se a escolha mudou.
+    fn apply_skills(&mut self) {
+        let off = skills::disabled_now(&self.disabled);
+        if self.applied.as_ref() == Some(&off) {
+            return;
+        }
+        let enabled: Vec<Skill> = self.all_skills.iter().filter(|s| !off.contains(&s.name)).cloned().collect();
+        let catalog = skills::catalog(&enabled);
+        let content = if catalog.is_empty() {
+            self.base_system.clone()
+        } else {
+            format!("{}\n\n{catalog}", self.base_system)
+        };
+        if let Some(system) = self.messages.first_mut() {
+            system["content"] = Value::String(content);
+        }
+        self.applied = Some(off);
+    }
+
+    // Anexa o corpo de cada skill ligada cujo nome aparece na tarefa. Não depende de o modelo chamar `load_skill`.
+    fn with_named_skills(&self, input: &str) -> String {
+        let lower = input.to_lowercase();
+        let mut text = input.to_string();
+        let off = skills::disabled_now(&self.disabled);
+        for skill in self.all_skills.iter().filter(|s| !off.contains(&s.name)) {
+            if lower.contains(&skill.name.to_lowercase()) {
+                text.push_str(&format!("\n\n[Instruções da skill {}]\n{}", skill.name, skill.body));
+            }
+        }
+        text
     }
 
     // Envia uma tarefa e roda o ciclo até a resposta final (ou um limite).
@@ -44,6 +111,7 @@ impl Session {
     // Se o turno falhar (ex.: o provedor do modelo está fora), o histórico volta ao estado anterior.
     // Assim, a tarefa que falhou não fica pendente e não é reenviada junto com a próxima.
     pub fn submit(&mut self, input: &str, progress: &dyn Progress) -> Result<TurnReport, String> {
+        self.apply_skills();
         // Cópia do histórico: o `trim` pode remover mensagens antigas durante o turno,
         // então desfazer por índice não seria seguro.
         let snapshot = self.messages.clone();
@@ -54,6 +122,7 @@ impl Session {
                 object.remove("thinking");
             }
         }
+        let input = self.with_named_skills(input);
         self.messages.push(json!({"role": "user", "content": input}));
         let result = agent::run_turn_with(
             self.model.as_ref(),
@@ -135,6 +204,70 @@ url = "http://unused"
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn skills_join_the_prompt_as_catalog_and_load_skill_serves_the_body() {
+        let dir = tempdir("skills");
+        let skill_dir = dir.join("skills/demo");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "---\nname: demo\ndescription: faz demo\n---\n\nPasso secreto.\n").unwrap();
+        let skills = crate::skills::load(&dir.join("skills")).unwrap();
+        let model = scripted(vec![
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "load_skill", "arguments": {"name": "demo"}}}
+            ]}),
+            json!({"role": "assistant", "content": "Li a skill."}),
+        ]);
+        let mut s = Session::from_config(&config(""), model, Box::new(AutoApprover), &dir)
+            .unwrap()
+            .with_skills(skills, skills::new_disabled());
+        let system = s.messages[0]["content"].as_str().unwrap().to_string();
+        assert!(system.starts_with("sistema de teste"));
+        assert!(system.contains("- demo: faz demo"));
+        assert!(!system.contains("Passo secreto"), "o corpo não entra no prompt");
+        let report = s.submit("use demo", &Silent).unwrap();
+        assert!(report.text.contains("Li a skill"));
+        assert!(s.messages.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains("Passo secreto"))));
+    }
+
+    #[test]
+    fn a_task_naming_a_skill_gets_its_body_without_load_skill() {
+        let dir = tempdir("named");
+        let skill_dir = dir.join("skills/demo");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "---\nname: demo\ndescription: faz demo\n---\n\nPasso secreto.\n").unwrap();
+        let skills = crate::skills::load(&dir.join("skills")).unwrap();
+        let model = scripted(vec![json!({"role": "assistant", "content": "Feito."})]);
+        let mut s = Session::from_config(&config(""), model, Box::new(AutoApprover), &dir)
+            .unwrap()
+            .with_skills(skills, skills::new_disabled());
+        s.submit("use a skill DEMO nesta tarefa", &Silent).unwrap();
+        let user = s.messages.iter().find(|m| m["role"] == "user").unwrap()["content"].as_str().unwrap().to_string();
+        assert!(user.contains("Passo secreto"), "o corpo da skill entra no turno");
+    }
+
+    #[test]
+    fn disabled_skill_leaves_the_prompt_and_cannot_be_loaded() {
+        let dir = tempdir("disabled");
+        let skill_dir = dir.join("skills/demo");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "---\nname: demo\ndescription: faz demo\n---\n\nPasso secreto.\n").unwrap();
+        let skills = crate::skills::load(&dir.join("skills")).unwrap();
+        let off = crate::skills::new_disabled();
+        let mut s = Session::from_config(&config(""), scripted(vec![]), Box::new(AutoApprover), &dir)
+            .unwrap()
+            .with_skills(skills, Arc::clone(&off));
+        assert!(s.messages[0]["content"].as_str().unwrap().contains("- demo:"));
+        off.lock().unwrap().insert("demo".into());
+        s.apply_skills();
+        let system = s.messages[0]["content"].as_str().unwrap();
+        assert!(!system.contains("demo"), "a skill desligada sai do catálogo");
+        s.submit("use demo", &Silent).ok();
+        assert!(!s.messages.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains("Passo secreto"))));
+        off.lock().unwrap().clear();
+        s.apply_skills();
+        assert!(s.messages[0]["content"].as_str().unwrap().contains("- demo:"), "ligar de novo volta ao catálogo");
     }
 
     #[test]
