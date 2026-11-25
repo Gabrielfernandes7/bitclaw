@@ -9,8 +9,9 @@
 mod brand;
 mod markdown;
 pub mod plain;
+mod theme;
 
-use self::markdown::Palette;
+use self::theme::{GRAY, GREEN, ORANGE, RED, YELLOW, bold, fg, palette};
 use bitclaw::agent::{ChatModel, INTERRUPTED, Progress, TurnReport};
 use bitclaw::models::{Effort, ModelCapabilities, ModelCatalog, ModelInfo, Reasoning, SharedEffort};
 use bitclaw::context::Usage;
@@ -25,7 +26,7 @@ use crossterm::cursor::MoveTo;
 use crossterm::execute;
 use crossterm::terminal::{Clear, ClearType};
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget};
 use ratatui::backend::CrosstermBackend;
@@ -38,13 +39,6 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
-
-const YELLOW: Color = Color::Rgb(255, 204, 0);
-const GRAY: Color = Color::Rgb(150, 150, 150);
-const GREEN: Color = Color::Rgb(0, 200, 120);
-const RED: Color = Color::Rgb(255, 77, 77);
-const ORANGE: Color = Color::Rgb(255, 150, 60);
-const CODE: Color = Color::Rgb(200, 200, 200);
 
 // A área fixa cresce e encolhe: status (1) + régua, editor e régua (2 + linhas do editor)
 // + menu de comandos + rodapé (1).
@@ -85,26 +79,6 @@ impl Cmd {
 
 // Comandos que aceitam um argumento depois do nome (`/model <id>`, `/effort <nível>`).
 const ARG_COMMANDS: &[&str] = &["/model", "/effort"];
-
-static COLOR: AtomicBool = AtomicBool::new(true);
-
-// Estilo com a cor pedida, ou sem cor se `--no-color` ou `NO_COLOR` estiverem ativos.
-fn fg(color: Color) -> Style {
-    if COLOR.load(Ordering::Relaxed) { Style::default().fg(color) } else { Style::default() }
-}
-
-fn bold(color: Color) -> Style {
-    fg(color).add_modifier(Modifier::BOLD)
-}
-
-fn palette() -> Palette {
-    Palette {
-        text: Style::default(),
-        code: fg(CODE),
-        heading: bold(YELLOW),
-        bullet: fg(YELLOW),
-    }
-}
 
 pub struct Settings {
     pub title: String,
@@ -342,7 +316,7 @@ pub fn run<F>(settings: Settings, make_session: F, make_model: ModelFactory) -> 
 where
     F: FnOnce(Box<dyn Approver>) -> Result<Session, String> + Send + 'static,
 {
-    COLOR.store(settings.color, Ordering::Relaxed);
+    theme::set_color(settings.color);
     let (commands, command_rx) = mpsc::channel();
     let (event_tx, events) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
