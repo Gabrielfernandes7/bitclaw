@@ -40,27 +40,26 @@ pub fn crab() -> Vec<String> {
     render(&base_map())
 }
 
-// Estados do mascote. Cada um tem a sua animação, calculada só a partir do tempo: sem estado
-// escondido, o que torna cada quadro testável.
+// Números de animação do mascote. Ele fica parado (`Idle` em 0 ms) e só se mexe ao abrir o
+// terminal e a cada clique. Cada quadro é calculado só a partir do tempo: sem estado escondido,
+// o que torna cada um testável.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mood {
-    // Esperando uma tarefa: pisca e olha em volta.
+    // Parado, de olhos abertos. Com tempo correndo, pisca e olha em volta.
     Idle,
-    // O modelo raciocina: os pinos do topo contam em binário, como bits virando.
+    // Cumprimento ao abrir: acorda com uma piscada, olha para os lados e estala as pinças.
+    Greet,
+    // Os pinos do topo contam em binário, como bits virando.
     Thinking,
-    // Uma ferramenta roda: as pinças batucam.
+    // As pinças batucam, uma de cada vez.
     Working,
-    // Espera a decisão do usuário: pinças em pé e pinos piscando devagar.
-    Waiting,
-    // Turno terminou bem: estala as pinças.
+    // Estala as pinças, de olhos fechados.
     Happy,
-    // Turno terminou com erro: pinças caídas, olhos fechados.
-    Sad,
 }
 
-// Quanto tempo as reações de fim de turno duram.
-pub const HAPPY_MS: u128 = 1600;
-pub const SAD_MS: u128 = 2400;
+// Quanto dura cada número, e a ordem em que os cliques os mostram.
+pub const TRICK_MS: u128 = 2200;
+pub const TRICKS: [Mood; 4] = [Mood::Happy, Mood::Thinking, Mood::Working, Mood::Greet];
 
 // Olhos: buracos no corpo (linha 2). Fechados, o buraco some; olhando de lado, ele anda um pixel.
 #[derive(Clone, Copy, PartialEq)]
@@ -74,7 +73,6 @@ enum Eyes {
 #[derive(Clone, Copy, PartialEq)]
 enum Claws {
     Up,
-    Down,
     // Só a esquerda ou só a direita caída: batucar.
     LeftDown,
     RightDown,
@@ -113,15 +111,20 @@ fn pose(mood: Mood, ms: u128) -> Pose {
             let claws = if tick(200) % 2 == 0 { Claws::LeftDown } else { Claws::RightDown };
             Pose { eyes: Eyes::Open, claws, studs: (true, true), step: tick(200) % 2 == 1 }
         }
-        Mood::Waiting => {
-            let on = tick(600) % 2 == 0;
-            Pose { eyes: Eyes::Open, claws: Claws::Up, studs: (on, on), step: false }
+        Mood::Greet => {
+            let eyes = match ms {
+                0..160 => Eyes::Closed,
+                400..800 => Eyes::Left,
+                800..1200 => Eyes::Right,
+                _ => Eyes::Open,
+            };
+            let claws = if (1300..2100).contains(&ms) && tick(200) % 2 == 1 { Claws::Snap } else { Claws::Up };
+            Pose { eyes, claws, studs: (true, true), step: false }
         }
         Mood::Happy => {
             let claws = if tick(200) % 2 == 0 { Claws::Snap } else { Claws::Up };
             Pose { eyes: Eyes::Closed, claws, studs: (true, true), step: tick(200) % 2 == 1 }
         }
-        Mood::Sad => Pose { eyes: Eyes::Closed, claws: Claws::Down, studs: (false, false), step: false },
     }
 }
 
@@ -136,9 +139,6 @@ pub fn frame(mood: Mood, ms: u128) -> Vec<String> {
     let mut set = |cols: &[usize], v: char| cols.iter().for_each(|&c| m[0][c] = v);
     match p.claws {
         Claws::Up => {}
-        Claws::Down => {
-            set(&[0, 1, 8, 9], '.');
-        }
         Claws::LeftDown => set(&[0, 1], '.'),
         Claws::RightDown => set(&[8, 9], '.'),
         Claws::Snap => {
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn every_mood_keeps_the_mascot_size_over_time() {
-        let moods = [Mood::Idle, Mood::Thinking, Mood::Working, Mood::Waiting, Mood::Happy, Mood::Sad];
+        let moods = [Mood::Idle, Mood::Greet, Mood::Thinking, Mood::Working, Mood::Happy];
         for mood in moods {
             for ms in (0..9000).step_by(40) {
                 let f = frame(mood, ms);
@@ -232,6 +232,20 @@ mod tests {
     }
 
     #[test]
+    fn greeting_wakes_up_looks_around_and_snaps_then_rests() {
+        assert_ne!(frame(Mood::Greet, 0), crab(), "acorda de olhos fechados");
+        assert_ne!(frame(Mood::Greet, 500), frame(Mood::Greet, 1000), "olha para um lado e para o outro");
+        assert_ne!(frame(Mood::Greet, 1500), crab(), "estala as pinças");
+        assert_eq!(frame(Mood::Greet, TRICK_MS - 1), crab(), "termina parado");
+    }
+
+    #[test]
+    fn clicks_cycle_through_every_trick() {
+        assert_eq!(TRICKS.len(), 4);
+        assert!(TRICKS.iter().all(|m| frame(*m, 300) != crab() || *m == Mood::Greet), "cada número mexe no mascote");
+    }
+
+    #[test]
     fn thinking_studs_count_in_binary() {
         let studs = |ms| {
             let f = frame(Mood::Thinking, ms);
@@ -245,7 +259,7 @@ mod tests {
     #[test]
     fn each_mood_looks_different() {
         let at = |m| frame(m, 100);
-        let frames = [at(Mood::Thinking), at(Mood::Working), at(Mood::Happy), at(Mood::Sad)];
+        let frames = [at(Mood::Thinking), at(Mood::Working), at(Mood::Happy), frame(Mood::Greet, 500)];
         for i in 0..frames.len() {
             for j in i + 1..frames.len() {
                 assert_ne!(frames[i], frames[j], "{i} e {j} iguais");

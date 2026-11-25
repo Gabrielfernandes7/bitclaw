@@ -24,6 +24,7 @@ struct Args {
     dir: PathBuf,
     auto_yes: bool,
     no_color: bool,
+    no_mouse: bool,
     think: bool,
 }
 
@@ -35,6 +36,7 @@ fn parse_args() -> Result<Args, String> {
         dir: std::env::current_dir().map_err(|e| e.to_string())?,
         auto_yes: false,
         no_color: false,
+        no_mouse: false,
         think: false,
     };
     let mut it = std::env::args().skip(1);
@@ -46,9 +48,10 @@ fn parse_args() -> Result<Args, String> {
             "--dir" => args.dir = PathBuf::from(it.next().ok_or("--dir precisa de valor")?),
             "--yes" => args.auto_yes = true,
             "--no-color" => args.no_color = true,
+            "--no-mouse" => args.no_mouse = true,
             "--think" => args.think = true,
             "-h" | "--help" => {
-                println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color] [--think]");
+                println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color] [--no-mouse] [--think]");
                 std::process::exit(0);
             }
             other => return Err(format!("argumento desconhecido: {other}")),
@@ -152,6 +155,7 @@ fn run() -> Result<(), String> {
             catalog: Arc::clone(&catalog),
             auto_yes: args.auto_yes,
             color,
+            mouse: !args.no_mouse,
         };
         // A sessão é montada na thread do agente, que recebe o aprovador pronto.
         let session_effort = Arc::clone(&effort);

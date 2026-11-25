@@ -6,7 +6,7 @@ mod picker;
 pub(in crate::tui) use self::model_picker::*;
 pub(in crate::tui) use self::picker::*;
 
-use super::brand::{self, HAPPY_MS, Mood, SAD_MS};
+use super::brand::{self, Mood, TRICK_MS};
 use super::commands::keyword_ranges;
 use super::{Cmd, MAX_EDITOR_ROWS, Settings, Work, locked, theme::*};
 use bitclaw::context::Usage;
@@ -52,27 +52,18 @@ pub(in crate::tui) struct Mascot {
     pub(in crate::tui) ms: u128,
 }
 
-// Estado do mascote: o turno em andamento manda; sem turno, vale a reação ao fim do último
-// (`ok`: terminou bem) enquanto durar, e depois ele fica parado.
-pub(in crate::tui) fn mascot_for(work: Option<&Work>, reaction: Option<(Instant, bool)>, born: Instant) -> Mascot {
-    if let Some(w) = work {
-        let mood = if w.approval.is_some() {
-            Mood::Waiting
-        } else if w.cancelling || w.activity == "pensando" {
-            Mood::Thinking
-        } else {
-            Mood::Working
-        };
-        return Mascot { mood, ms: w.started.elapsed().as_millis() };
+// O número que o mascote faz agora: o que foi disparado, enquanto durar. Fora disso ele fica parado.
+pub(in crate::tui) fn mascot_for(play: Option<(Instant, Mood)>) -> Mascot {
+    match play {
+        Some((at, mood)) if at.elapsed().as_millis() < TRICK_MS => Mascot { mood, ms: at.elapsed().as_millis() },
+        _ => Mascot { mood: Mood::Idle, ms: 0 },
     }
-    if let Some((at, ok)) = reaction {
-        let ms = at.elapsed().as_millis();
-        let (mood, lasts) = if ok { (Mood::Happy, HAPPY_MS) } else { (Mood::Sad, SAD_MS) };
-        if ms < lasts {
-            return Mascot { mood, ms };
-        }
-    }
-    Mascot { mood: Mood::Idle, ms: born.elapsed().as_millis() }
+}
+
+// Onde o mascote fica dentro da área fixa. Em janelas estreitas ele some e só sobra o status.
+pub(in crate::tui) fn mascot_rect(area: Rect) -> Option<Rect> {
+    (area.width >= brand::WIDTH + 2 + 12 && area.height >= MASCOT_ROWS)
+        .then(|| Rect::new(area.x, area.y, brand::WIDTH, MASCOT_ROWS))
 }
 
 pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
@@ -94,15 +85,17 @@ pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
     .areas(f.area());
 
     // Mascote à esquerda; o texto do turno fica ao lado, na linha do meio.
-    let room = status.width.saturating_sub(brand::WIDTH + 2);
-    let [mascot, _, text_area] =
-        Layout::horizontal([Constraint::Length(brand::WIDTH), Constraint::Length(2), Constraint::Min(0)]).areas(status);
-    if room >= 12 {
-        let lines: Vec<Line> =
-            brand::frame(v.mascot.mood, v.mascot.ms).into_iter().map(|l| Line::from(Span::styled(l, fg(YELLOW)))).collect();
-        f.render_widget(Paragraph::new(lines), mascot);
-    }
-    let text_area = if room >= 12 { text_area } else { status };
+    let text_area = match mascot_rect(status) {
+        Some(rect) => {
+            let lines: Vec<Line> = brand::frame(v.mascot.mood, v.mascot.ms)
+                .into_iter()
+                .map(|l| Line::from(Span::styled(l, fg(YELLOW))))
+                .collect();
+            f.render_widget(Paragraph::new(lines), rect);
+            Rect::new(status.x + brand::WIDTH + 2, status.y, status.width - brand::WIDTH - 2, status.height)
+        }
+        None => status,
+    };
     let [_, middle, _] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).areas(text_area);
     f.render_widget(Paragraph::new(status_line(v.work)), middle);
 

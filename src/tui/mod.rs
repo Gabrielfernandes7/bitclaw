@@ -29,12 +29,14 @@ use bitclaw::session::Session;
 use bitclaw::skills::{Disabled, Skill};
 use bitclaw::tools::Approver;
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode,
+    KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::cursor::MoveTo;
 use crossterm::execute;
 use crossterm::terminal::{Clear, ClearType};
+use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::backend::CrosstermBackend;
@@ -71,6 +73,8 @@ pub struct Settings {
     pub effort: SharedEffort,
     pub auto_yes: bool,
     pub color: bool,
+    // Captura o mouse, para o clique no mascote. Desligá-la devolve a seleção de texto ao terminal.
+    pub mouse: bool,
 }
 
 // Como criar o cliente de um modelo, para a troca em tempo de execução. Roda na thread do agente.
@@ -108,9 +112,9 @@ struct App {
     picker: Option<Picker>,
     // Painel de modelos aberto, se houver.
     model_picker: Option<ModelPicker>,
-    // Relógio das animações e a reação ao fim do último turno (`true`: terminou bem).
-    born: Instant,
-    reaction: Option<(Instant, bool)>,
+    // Número do mascote em andamento e quantos cliques já houve (decide o próximo número).
+    play: Option<(Instant, brand::Mood)>,
+    clicks: usize,
 }
 
 // Roda a interface até o usuário sair. `make_session` roda na thread do agente.
@@ -136,6 +140,10 @@ where
     let height = viewport_height(1, 0);
     let terminal = ratatui::init_with_options(TerminalOptions { viewport: Viewport::Inline(height) });
     let _ = execute!(io::stdout(), EnableBracketedPaste);
+    if settings.mouse {
+        let _ = execute!(io::stdout(), EnableMouseCapture);
+    }
+    let mouse = settings.mouse;
     if enhanced {
         let _ = execute!(io::stdout(), PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES));
     }
@@ -154,13 +162,17 @@ where
         history: History::default(),
         picker: None,
         model_picker: None,
-        born: Instant::now(),
-        reaction: None,
+        // Ao abrir, o mascote cumprimenta.
+        play: Some((Instant::now(), brand::Mood::Greet)),
+        clicks: 0,
     };
     let result = app.event_loop();
 
     if enhanced {
         let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+    }
+    if mouse {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
     }
     let _ = execute!(io::stdout(), DisableBracketedPaste);
     // Sem `clear()`: ele apagaria a tela a partir do topo e a conversa visível sumiria.
@@ -184,8 +196,8 @@ impl App {
         loop {
             self.fit_viewport().map_err(|e| e.to_string())?;
             let menu = self.menu_matches();
-            let App { terminal, editor, work, usage, settings, menu_index, picker, model_picker, born, reaction, .. } = self;
-            let mascot = mascot_for(work.as_ref(), *reaction, *born);
+            let App { terminal, editor, work, usage, settings, menu_index, picker, model_picker, play, .. } = self;
+            let mascot = mascot_for(*play);
             let view = View {
                 editor,
                 work: work.as_ref(),
@@ -205,6 +217,7 @@ impl App {
                             return Ok(());
                         }
                     }
+                    Event::Mouse(mouse) => self.on_mouse(mouse),
                     Event::Paste(text) if self.work.as_ref().is_none_or(|w| w.approval.is_none()) => {
                         self.editor.insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
                     }
@@ -217,6 +230,20 @@ impl App {
 
     // Comandos que combinam com o que está sendo digitado. Só aparecem com o editor ocioso e
     // uma única palavra começando por `/`.
+    // Clique no mascote: dispara o próximo número. Ignora cliques com um painel aberto.
+    fn on_mouse(&mut self, event: MouseEvent) {
+        if event.kind != MouseEventKind::Down(MouseButton::Left) || self.picker.is_some() || self.model_picker.is_some() {
+            return;
+        }
+        let area = self.terminal.get_frame().area();
+        let Some(rect) = mascot_rect(Rect::new(area.x, area.y, area.width, MASCOT_ROWS)) else { return };
+        if rect.contains(Position::new(event.column, event.row)) {
+            let mood = brand::TRICKS[self.clicks % brand::TRICKS.len()];
+            self.clicks += 1;
+            self.play = Some((Instant::now(), mood));
+        }
+    }
+
     fn menu_matches(&self) -> Vec<&'static Cmd> {
         let lines = self.editor.lines();
         match lines {
@@ -287,7 +314,6 @@ impl App {
                 }
                 UiEvent::Done { result, usage } => {
                     self.usage = Some(usage);
-                    self.reaction = Some((Instant::now(), matches!(&result, Ok(r) if r.error.is_none())));
                     self.work = None;
                     match result {
                         Ok(report) => self.print_report(&report),
@@ -320,6 +346,7 @@ mod tests {
     use super::*;
     use bitclaw::models::ModelCapabilities;
     use crate::tui::theme::KEYWORD;
+    use ratatui::layout::{Position, Rect};
     use ratatui::style::Color;
     use bitclaw::skills;
     use ratatui::Terminal;
@@ -337,6 +364,7 @@ mod tests {
             effort: Arc::new(Mutex::new(Effort::Off)),
             auto_yes,
             color: false,
+            mouse: false,
         }
     }
 
@@ -570,17 +598,20 @@ mod tests {
     }
 
     #[test]
-    fn the_mascot_follows_the_turn_and_reacts_when_it_ends() {
-        let born = Instant::now();
-        let mood = |w: Option<&Work>, r| mascot_for(w, r, born).mood;
-        assert_eq!(mood(None, None), brand::Mood::Idle);
-        assert_eq!(mood(Some(&work(false, false)), None), brand::Mood::Working, "ferramenta");
-        assert_eq!(mood(Some(&work(true, false)), None), brand::Mood::Waiting, "aprovação");
-        assert_eq!(mood(Some(&work(false, true)), None), brand::Mood::Thinking, "interrompendo");
-        assert_eq!(mood(None, Some((Instant::now(), true))), brand::Mood::Happy);
-        assert_eq!(mood(None, Some((Instant::now(), false))), brand::Mood::Sad);
-        let old = Instant::now() - Duration::from_secs(60);
-        assert_eq!(mood(None, Some((old, true))), brand::Mood::Idle, "a reação passa");
-        assert_eq!(mood(Some(&work(false, false)), Some((Instant::now(), true))), brand::Mood::Working, "turno novo manda");
+    fn the_mascot_rests_until_a_trick_is_played_and_goes_back_after_it() {
+        assert_eq!(mascot_for(None), Mascot { mood: brand::Mood::Idle, ms: 0 });
+        let playing = mascot_for(Some((Instant::now(), brand::Mood::Happy)));
+        assert_eq!(playing.mood, brand::Mood::Happy);
+        let old = Instant::now() - Duration::from_millis(brand::TRICK_MS as u64 + 100);
+        assert_eq!(mascot_for(Some((old, brand::Mood::Happy))), Mascot { mood: brand::Mood::Idle, ms: 0 }, "o número acaba");
+    }
+
+    #[test]
+    fn only_the_mascot_area_is_clickable_and_it_hides_in_narrow_windows() {
+        let status = Rect::new(0, 7, 80, MASCOT_ROWS);
+        let rect = mascot_rect(status).unwrap();
+        assert!(rect.contains(Position::new(0, 7)) && rect.contains(Position::new(9, 9)));
+        assert!(!rect.contains(Position::new(10, 7)) && !rect.contains(Position::new(0, 10)));
+        assert_eq!(mascot_rect(Rect::new(0, 0, 20, MASCOT_ROWS)), None);
     }
 }
