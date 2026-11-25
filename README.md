@@ -1,5 +1,7 @@
 # BitClaw
 
+<p align="center"><img src="assets/bitclaw-crab.svg" alt="Mascote do BitClaw" width="160"></p>
+
 Núcleo experimental de agente de IA, local e enxuto, escrito em Rust. Hoje ele funciona como um agente de linha de comando que lê e edita arquivos de um projeto, usando um modelo servido pelo [Ollama](https://ollama.com).
 
 O objetivo do projeto é um **core** reutilizável para construir agentes, não um produto. O plano e as decisões de arquitetura estão em [`docs/PROJETO.md`](docs/PROJETO.md).
