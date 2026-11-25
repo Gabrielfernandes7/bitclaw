@@ -1,3 +1,6 @@
+//! Resolve caminhos do agente dentro da pasta do projeto: recusa caminhos absolutos, `..` e
+//! symlinks que saem dela.
+
 use std::path::{Component, Path, PathBuf};
 
 // Resolve um caminho relativo dentro de `root` (já canonicalizado).
@@ -7,6 +10,11 @@ pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let rel = rel.trim();
     if rel.is_empty() {
         return Err("caminho vazio".into());
+    }
+    // ESC, CR, quebra de linha e afins nunca fazem parte de um nome legítimo. Aparecem em prévias,
+    // passos e erros, onde poderiam esconder texto ou injetar comandos de terminal.
+    if rel.chars().any(char::is_control) {
+        return Err("caminho com caracteres de controle não é permitido".into());
     }
     let p = Path::new(rel);
     if p.is_absolute() {
@@ -46,6 +54,15 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("sub")).unwrap();
         dir.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn rejects_control_characters_in_paths() {
+        let root = setup("ctrl");
+        for bad in ["a\x1b[2Jb.sh", "a\rb", "a\nb", "dir/\x07.txt"] {
+            assert!(resolve(&root, bad).is_err(), "{bad:?}");
+        }
+        assert!(resolve(&root, "com espaço/é-ã.txt").is_ok(), "acentos e espaços continuam valendo");
     }
 
     #[test]

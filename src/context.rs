@@ -1,8 +1,8 @@
-// Gerenciador de contexto: mantém o histórico dentro do orçamento da janela do modelo.
-// Descarta turnos antigos inteiros. Nunca descarta o prompt do sistema nem o turno atual.
-//
-// Tamanho medido em caracteres do JSON de cada mensagem. A estimativa de caracteres por token
-// começa conservadora e é calibrada com `prompt_eval_count`, que o Ollama devolve a cada chamada.
+//! Gerenciador de contexto: mantém o histórico dentro do orçamento da janela do modelo.
+//! Descarta turnos antigos inteiros. Nunca descarta o prompt do sistema nem o turno atual.
+//!
+//! Tamanho medido em caracteres do JSON de cada mensagem. A estimativa de caracteres por token
+//! começa conservadora e é calibrada com `prompt_eval_count`, que o Ollama devolve a cada chamada.
 
 use serde_json::Value;
 
@@ -38,6 +38,18 @@ impl ContextManager {
     // `num_ctx` é a janela total em tokens. `reserve_output_tokens` fica livre para a resposta do modelo.
     pub fn new(num_ctx: usize, reserve_output_tokens: usize) -> Self {
         Self { num_ctx, reserve_output_tokens, chars_per_token: DEFAULT_CHARS_PER_TOKEN }
+    }
+
+    // Troca a janela total. Precisa sobrar espaço além do que fica reservado para a resposta.
+    pub fn set_num_ctx(&mut self, num_ctx: usize) -> Result<(), String> {
+        if num_ctx <= self.reserve_output_tokens {
+            return Err(format!(
+                "o contexto precisa ser maior que os {} tokens reservados para a resposta",
+                self.reserve_output_tokens
+            ));
+        }
+        self.num_ctx = num_ctx;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -136,6 +148,16 @@ fn is_role(message: &Value, role: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_window_can_change_but_must_leave_room_for_the_answer() {
+        let mut ctx = ContextManager::new(16384, 1024);
+        assert!(ctx.set_num_ctx(32768).is_ok());
+        assert_eq!(ctx.usage(&[], &serde_json::json!([])).window, 32768);
+        let err = ctx.set_num_ctx(1000).unwrap_err();
+        assert!(err.contains("1024"), "{err}");
+        assert_eq!(ctx.usage(&[], &serde_json::json!([])).window, 32768, "a janela não muda se o valor é recusado");
+    }
+
     use super::*;
     use serde_json::json;
 

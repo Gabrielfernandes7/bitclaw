@@ -1,10 +1,20 @@
 //! Adaptador do Ollama: traduz o núcleo (modelos, esforço, ferramentas) para a API `/api/chat`.
 //! Tudo que é específico do Ollama fica aqui; o resto do BitClaw não sabe que ele existe.
 
-use crate::agent::{ChatModel, Reply};
+use crate::agent::{ChatModel, Chunk, Reply};
 use crate::models::{Effort, ModelCapabilities, ModelCatalog, ModelInfo, Reasoning, SharedEffort};
 use serde_json::{json, Value};
+use std::io::{BufRead, BufReader};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
+
+// Teto de uma chamada inteira ao modelo e tempo máximo sem receber nem uma linha do streaming.
+const MAX_CALL: Duration = Duration::from_secs(3600);
+const STALL: Duration = Duration::from_secs(300);
+// De quanto em quanto tempo a espera por texto confere se o turno foi cancelado.
+const TICK: Duration = Duration::from_millis(200);
 
 // Janela de contexto e temperatura padrão. Sem `num_ctx` explícito, o Ollama usa uma janela pequena.
 pub const NUM_CTX: u32 = 16384; // 16384 ou 8192
@@ -16,6 +26,9 @@ pub struct Options {
     pub num_ctx: u32,
     pub temperature: f32,
 }
+
+// Opções que a interface pode mudar com a sessão aberta (`/context`, `/temp`). O cliente lê a cada chamada.
+pub type SharedOptions = Arc<Mutex<Options>>;
 
 impl Default for Options {
     fn default() -> Self {
@@ -59,7 +72,7 @@ pub struct Client {
     http: reqwest::blocking::Client,
     base_url: String,
     pub model: String,
-    pub options: Options,
+    pub options: SharedOptions,
     caps: ModelCapabilities,
     effort: SharedEffort,
 }
@@ -77,47 +90,190 @@ impl ChatModel for Client {
     fn complete(&self, messages: &[Value], tools: &Value) -> Result<Reply, String> {
         self.chat(messages, tools)
     }
+
+    fn complete_streaming(
+        &self,
+        messages: &[Value],
+        tools: &Value,
+        on_chunk: &mut dyn FnMut(Chunk) -> bool,
+    ) -> Result<Reply, String> {
+        self.chat_stream(messages, tools, on_chunk)
+    }
+}
+
+// Causa completa de uma falha de rede: o texto do `reqwest` sozinho esconde o motivo (timeout,
+// conexão recusada, conexão cortada).
+fn describe(e: &reqwest::Error) -> String {
+    let mut text = e.to_string();
+    let mut source = std::error::Error::source(e);
+    while let Some(s) = source {
+        text.push_str(&format!(": {s}"));
+        source = s.source();
+    }
+    if e.is_timeout() {
+        text.push_str(" [tempo esgotado: o Ollama parou de responder]");
+    } else if e.is_connect() {
+        text.push_str(" [conexão recusada: o Ollama está rodando?]");
+    }
+    text
+}
+
+// Junta as linhas do streaming do `/api/chat` numa resposta só, entregando cada pedaço de texto a
+// `on_chunk`. Se ele devolve `false`, para de ler e fica com o que juntou até ali. Um item `None`
+// significa "ainda não chegou nada": vira `Chunk::Idle`, para o sink poder cancelar a espera.
+fn fold_stream(
+    lines: impl Iterator<Item = Result<Option<String>, String>>,
+    on_chunk: &mut dyn FnMut(Chunk) -> bool,
+) -> Result<Reply, String> {
+    let mut content = String::new();
+    let mut thinking = String::new();
+    let mut calls: Vec<Value> = Vec::new();
+    let (mut prompt_tokens, mut output_tokens) = (None, None);
+    for line in lines {
+        let Some(line) = line? else {
+            if !on_chunk(Chunk::Idle) {
+                break;
+            }
+            continue;
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: Value = serde_json::from_str(&line).map_err(|e| format!("resposta inválida do Ollama: {e}"))?;
+        if let Some(err) = v.get("error").and_then(Value::as_str) {
+            return Err(format!("Ollama: {err}"));
+        }
+        let message = v.get("message");
+        let text_of = |key: &str| message.and_then(|m| m.get(key)).and_then(Value::as_str).filter(|t| !t.is_empty());
+        if let Some(t) = text_of("thinking") {
+            thinking.push_str(t);
+            if !on_chunk(Chunk::Thinking(t)) {
+                break;
+            }
+        }
+        if let Some(c) = text_of("content") {
+            content.push_str(c);
+            if !on_chunk(Chunk::Content(c)) {
+                break;
+            }
+        }
+        if let Some(found) = message.and_then(|m| m.get("tool_calls")).and_then(Value::as_array) {
+            calls.extend(found.iter().cloned());
+        }
+        if v.get("done").and_then(Value::as_bool) == Some(true) {
+            prompt_tokens = v.get("prompt_eval_count").and_then(Value::as_u64);
+            output_tokens = v.get("eval_count").and_then(Value::as_u64);
+            break;
+        }
+    }
+    let mut message = json!({"role": "assistant", "content": content});
+    if !thinking.is_empty() {
+        message["thinking"] = json!(thinking);
+    }
+    if !calls.is_empty() {
+        message["tool_calls"] = json!(calls);
+    }
+    Ok(Reply { message, prompt_tokens, output_tokens })
 }
 
 impl Client {
     pub fn new(
         base_url: String,
         model: String,
-        options: Options,
+        options: SharedOptions,
         caps: ModelCapabilities,
         effort: SharedEffort,
     ) -> Result<Self, String> {
         let http = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(300))
+            .connect_timeout(Duration::from_secs(10))
+            // Teto de uma chamada inteira. O travamento é detectado antes, em `chat_stream`.
+            .timeout(MAX_CALL)
             .build()
             .map_err(|e| e.to_string())?;
         Ok(Self { http, base_url, model, options, caps, effort })
     }
 
-    /// Envia o histórico e as ferramentas; devolve a mensagem do assistente.
-    pub fn chat(&self, messages: &[Value], tools: &Value) -> Result<Reply, String> {
+    // Corpo da requisição para o esforço de raciocínio de agora.
+    fn chat_body(&self, messages: &[Value], tools: &Value) -> Value {
         let effort = *self.effort.lock().unwrap_or_else(|e| e.into_inner());
         let think = think_value(&self.caps, effort);
         // Modelo sem ferramentas recebe a conversa sem o catálogo: não tenta chamar nada.
         let no_tools = json!([]);
         let tools = if self.caps.tool_calling { tools } else { &no_tools };
-        let body = build_body(&self.model, messages, tools, &self.options, think);
+        let options = *self.options.lock().unwrap_or_else(|e| e.into_inner());
+        build_body(&self.model, messages, tools, &options, think)
+    }
+
+    // Envia o corpo ao `/api/chat` e devolve a resposta HTTP, já checada.
+    fn send_chat(&self, body: &Value) -> Result<reqwest::blocking::Response, String> {
         let resp = self
             .http
             .post(format!("{}/api/chat", self.base_url))
-            .json(&body)
+            .json(body)
             .send()
-            .map_err(|e| format!("falha ao conectar no Ollama ({}): {e}", self.base_url))?;
+            .map_err(|e| format!("falha ao falar com o Ollama ({}): {}", self.base_url, describe(&e)))?;
         let status = resp.status();
         if !status.is_success() {
             // O corpo traz a causa real (ex.: "model not found"), então não é descartado.
             let detail = resp.text().unwrap_or_default();
             return Err(format!("Ollama respondeu HTTP {status}: {}", detail.trim()));
         }
+        Ok(resp)
+    }
+
+    /// Como `chat`, mas lê a resposta aos poucos e entrega cada pedaço de texto a `on_chunk`.
+    pub fn chat_stream(
+        &self,
+        messages: &[Value],
+        tools: &Value,
+        on_chunk: &mut dyn FnMut(Chunk) -> bool,
+    ) -> Result<Reply, String> {
+        let mut body = self.chat_body(messages, tools);
+        body["stream"] = json!(true);
+        let resp = self.send_chat(&body)?;
+        // Uma thread lê as linhas; aqui se espera por elas com prazo, para notar um Ollama travado.
+        // Se a leitura parar antes do fim, o canal fecha, a thread sai e a conexão cai.
+        let (tx, rx) = mpsc::channel();
+        let reader = BufReader::new(resp);
+        thread::spawn(move || {
+            for line in reader.lines() {
+                let item = line.map_err(|e| format!("a resposta do Ollama foi cortada: {e}"));
+                if tx.send(item).is_err() {
+                    break;
+                }
+            }
+        });
+        // A espera acorda a cada `TICK` para o sink conferir o cancelamento: sem isso, o Esc só valeria
+        // depois do primeiro texto, e um modelo que ainda carrega ou processa o prompt levaria até
+        // `STALL` para ser interrompido.
+        let mut waited = Duration::ZERO;
+        let lines = std::iter::from_fn(|| match rx.recv_timeout(TICK) {
+            Ok(item) => {
+                waited = Duration::ZERO;
+                Some(item.map(Some))
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                waited += TICK;
+                if waited >= STALL {
+                    Some(Err(format!("o Ollama ficou {} s sem responder", STALL.as_secs())))
+                } else {
+                    Some(Ok(None))
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => None,
+        });
+        fold_stream(lines, on_chunk)
+    }
+
+    /// Envia o histórico e as ferramentas; devolve a mensagem do assistente.
+    pub fn chat(&self, messages: &[Value], tools: &Value) -> Result<Reply, String> {
+        let body = self.chat_body(messages, tools);
+        let resp = self.send_chat(&body)?;
         let v: Value = resp.json().map_err(|e| e.to_string())?;
         Ok(Reply {
             message: v.get("message").cloned().unwrap_or(Value::Null),
             prompt_tokens: v.get("prompt_eval_count").and_then(Value::as_u64),
+            output_tokens: v.get("eval_count").and_then(Value::as_u64),
         })
     }
 
@@ -231,6 +387,106 @@ pub fn model_from_tags(entry: &Value) -> Option<ModelInfo> {
 
 #[cfg(test)]
 mod tests {
+    // Linhas de um streaming, como o Ollama as manda.
+    fn stream(lines: &[Value]) -> impl Iterator<Item = Result<Option<String>, String>> + '_ {
+        lines.iter().map(|v| Ok(Some(v.to_string())))
+    }
+
+    #[test]
+    fn options_changed_while_running_reach_the_next_request() {
+        let options: SharedOptions = Arc::new(Mutex::new(Options::default()));
+        let caps = ModelCapabilities { tool_calling: true, reasoning: Reasoning::Unsupported, context_window: None };
+        let effort: SharedEffort = Arc::new(Mutex::new(Effort::Off));
+        let client = Client::new("http://x".into(), "m".into(), Arc::clone(&options), caps, effort).unwrap();
+        assert_eq!(client.chat_body(&[], &json!([]))["options"]["num_ctx"], NUM_CTX);
+        {
+            let mut o = options.lock().unwrap();
+            o.num_ctx = 32768;
+            o.temperature = 0.3;
+        }
+        let body = client.chat_body(&[], &json!([]));
+        assert_eq!(body["options"]["num_ctx"], 32768);
+        assert_eq!(body["options"]["temperature"], json!(0.3_f32));
+    }
+
+    #[test]
+    fn the_stream_is_folded_into_one_reply_and_each_piece_is_delivered() {
+        let lines = [
+            json!({"message": {"role": "assistant", "content": "", "thinking": "12 máquinas"}, "done": false}),
+            json!({"message": {"role": "assistant", "content": "", "thinking": " e 8 dias"}, "done": false}),
+            json!({"message": {"role": "assistant", "content": "18", "tool_calls": [{"function": {"name": "read_file", "arguments": {}}}]}, "done": false}),
+            json!({"message": {"role": "assistant", "content": " dias"}, "done": true, "prompt_eval_count": 40, "eval_count": 9}),
+        ];
+        let mut seen: Vec<String> = Vec::new();
+        let reply = fold_stream(stream(&lines), &mut |c| {
+            seen.push(format!("{c:?}"));
+            true
+        })
+        .unwrap();
+        assert_eq!(seen, ["Thinking(\"12 máquinas\")", "Thinking(\" e 8 dias\")", "Content(\"18\")", "Content(\" dias\")"]);
+        assert_eq!(reply.message["content"], "18 dias");
+        assert_eq!(reply.message["thinking"], "12 máquinas e 8 dias");
+        assert_eq!(reply.message["tool_calls"].as_array().unwrap().len(), 1);
+        assert_eq!((reply.prompt_tokens, reply.output_tokens), (Some(40), Some(9)));
+    }
+
+    #[test]
+    fn a_sink_that_says_stop_ends_the_stream_early() {
+        let lines = [
+            json!({"message": {"content": "um"}, "done": false}),
+            json!({"message": {"content": " dois"}, "done": false}),
+        ];
+        let reply = fold_stream(stream(&lines), &mut |_| false).unwrap();
+        assert_eq!(reply.message["content"], "um", "só o que chegou antes de parar");
+    }
+
+    #[test]
+    fn a_sink_can_stop_the_wait_before_any_text_arrives() {
+        use std::cell::Cell;
+        let late = json!({"message": {"content": "tarde demais"}, "done": true});
+        let read = Cell::new(0);
+        // Dois acordes sem texto e só depois a linha. O sink manda parar no segundo.
+        let items = (0..3).map(|i| {
+            read.set(read.get() + 1);
+            if i < 2 { Ok(None) } else { Ok(Some(late.to_string())) }
+        });
+        let mut idles = 0;
+        let reply = fold_stream(items, &mut |c| {
+            assert_eq!(c, Chunk::Idle, "antes do primeiro texto, só há acordes");
+            idles += 1;
+            idles < 2
+        })
+        .unwrap();
+        assert_eq!(idles, 2);
+        assert_eq!(read.get(), 2, "não leu a linha que chegaria depois do cancelamento");
+        assert_eq!(reply.message["content"], "");
+    }
+
+    #[test]
+    fn an_idle_tick_is_not_text_and_does_not_end_the_stream() {
+        let items = vec![
+            Ok(None),
+            Ok(Some(json!({"message": {"content": "oi"}, "done": false}).to_string())),
+            Ok(None),
+            Ok(Some(json!({"message": {"content": "!"}, "done": true, "eval_count": 2}).to_string())),
+        ];
+        let mut seen = Vec::new();
+        let reply = fold_stream(items.into_iter(), &mut |c| {
+            seen.push(format!("{c:?}"));
+            true
+        })
+        .unwrap();
+        assert_eq!(seen, ["Idle", "Content(\"oi\")", "Idle", "Content(\"!\")"]);
+        assert_eq!(reply.message["content"], "oi!");
+    }
+
+    #[test]
+    fn an_error_line_from_ollama_fails_the_call() {
+        let lines = [json!({"error": "model not found"})];
+        let Err(err) = fold_stream(stream(&lines), &mut |_| true) else { panic!("deveria falhar") };
+        assert!(err.contains("model not found"), "{err}");
+    }
+
     use super::*;
 
     fn levels() -> ModelCapabilities {

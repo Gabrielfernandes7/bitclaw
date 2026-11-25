@@ -20,6 +20,7 @@ pub mod init;
 pub mod models;
 pub mod ollama;
 pub mod sandbox;
+pub mod script;
 pub mod session;
 pub mod skills;
 pub mod tools;

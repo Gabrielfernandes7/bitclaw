@@ -4,7 +4,7 @@
 use crate::context::{self, ContextManager, Trim};
 use crate::tools::{Approver, Outcome, Registry};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 pub const MAX_STEPS: usize = 8;
@@ -21,11 +21,34 @@ pub struct Reply {
     pub message: Value,
     // Tokens de entrada avaliados pelo provedor, quando informados. Usado para calibrar o contexto.
     pub prompt_tokens: Option<u64>,
+    // Tokens gerados pelo modelo, quando informados.
+    pub output_tokens: Option<u64>,
+}
+
+// Um pedaço de texto que o modelo acabou de gerar: raciocínio ou resposta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Chunk<'a> {
+    Thinking(&'a str),
+    Content(&'a str),
+    // Nada chegou ainda: o provedor só acorda para o sink conferir se o turno foi cancelado. É o que
+    // deixa o Esc valer enquanto o modelo carrega ou processa o prompt, antes do primeiro texto.
+    Idle,
 }
 
 // Qualquer provedor capaz de completar uma conversa com ferramentas.
 pub trait ChatModel {
     fn complete(&self, messages: &[Value], tools: &Value) -> Result<Reply, String>;
+
+    // Igual a `complete`, mas entrega o texto à medida que o modelo o gera. Se `on_chunk` devolve
+    // `false`, o provedor para de gerar e devolve o que já tem. Quem não faz streaming usa este padrão.
+    fn complete_streaming(
+        &self,
+        messages: &[Value],
+        tools: &Value,
+        _on_chunk: &mut dyn FnMut(Chunk) -> bool,
+    ) -> Result<Reply, String> {
+        self.complete(messages, tools)
+    }
 }
 
 // Recebe sinais de progresso do loop, para a interface mostrar que o modelo está trabalhando.
@@ -35,11 +58,23 @@ pub trait Progress {
     // Uma ferramenta foi chamada, com os argumentos enviados pelo modelo.
     fn tool_call(&self, _name: &str, _args: &Value) {}
 
+    // A ferramenta terminou (ou foi recusada): a interface mostra o resultado na hora.
+    fn tool_done(&self, _name: &str, _args: &Value, _outcome: &Outcome) {}
+
     // O usuário pediu para interromper. O loop confere entre uma chamada ao modelo e outra:
     // uma requisição em andamento não é abortada, mas o turno para assim que ela volta.
     fn cancelled(&self) -> bool {
         false
     }
+
+    // Uma chamada ao modelo terminou: tokens de entrada e de saída, quando o provedor informou.
+    fn model_tokens(&self, _prompt: Option<u64>, _output: Option<u64>) {}
+
+    // O modelo raciocinou antes de responder: o texto do raciocínio, quando ele o enviou.
+    fn model_reasoning(&self, _text: &str) {}
+
+    // Texto que o modelo acabou de gerar, ainda no meio da chamada.
+    fn model_chunk(&self, _chunk: Chunk) {}
 }
 
 // Progresso que não mostra nada (útil em testes e em agentes sem terminal).
@@ -129,6 +164,81 @@ pub fn run_turn(
 // Motivo registrado quando o usuário interrompe o turno.
 pub const INTERRUPTED: &str = "interrompido pelo usuário";
 
+// Fim de turno quando o modelo repete o mesmo trecho sem parar.
+pub const LOOPING: &str =
+    "o modelo entrou em laço e repetiu o mesmo trecho; interrompi a geração. Reformule o pedido ou desligue o raciocínio com /think.";
+
+// Uma linha com pelo menos isto de letras e dígitos, repetida este número de vezes, é laço. Contar só
+// letras e dígitos deixa de fora separadores como `| --- | --- |` e `=======`, que se repetem à toa.
+const LOOP_MIN_ALNUM: usize = 20;
+// No raciocínio, repetir uma linha longa 3 vezes já é sinal de laço. Na resposta final é mais comum
+// repetir de verdade (linhas de código, itens parecidos), então pede mais.
+const LOOP_REPEATS_THINKING: usize = 3;
+const LOOP_REPEATS_CONTENT: usize = 5;
+// O fim do texto, com este tamanho, já ter aparecido este número de vezes também é laço: é um bloco se repetindo.
+const LOOP_TAIL_CHARS: usize = 160;
+const LOOP_TAIL_REPEATS: usize = 3;
+// De quantos em quantos bytes novos o texto é examinado.
+const LOOP_CHECK_EVERY: usize = 200;
+
+// O modelo está repetindo o mesmo trecho sem parar? Olha linhas iguais e blocos que se repetem no fim.
+//
+// As repetições não precisam ser seguidas: no laço real que medimos, o modelo chega à resposta,
+// duvida e recomeça a conta, repetindo as mesmas linhas espalhadas pelo texto (a maior repetição
+// seguida era de 1 linha). Exigir linhas consecutivas deixaria esse laço passar.
+pub fn is_looping(text: &str, line_repeats: usize) -> bool {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for line in text.lines() {
+        let line = line.trim().to_lowercase();
+        if line.chars().filter(|c| c.is_alphanumeric()).count() < LOOP_MIN_ALNUM {
+            continue;
+        }
+        let count = seen.entry(line).or_insert(0);
+        *count += 1;
+        if *count >= line_repeats {
+            return true;
+        }
+    }
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() >= LOOP_TAIL_CHARS * LOOP_TAIL_REPEATS {
+        let tail: String = chars[chars.len() - LOOP_TAIL_CHARS..].iter().collect();
+        return text.matches(&tail).count() >= LOOP_TAIL_REPEATS;
+    }
+    false
+}
+
+// Acompanha o texto que chega do modelo e avisa quando ele entra em laço.
+#[derive(Default)]
+struct LoopGuard {
+    thinking: String,
+    content: String,
+    unchecked: usize,
+    looping: bool,
+}
+
+impl LoopGuard {
+    // Devolve `true` se o texto até aqui já é um laço.
+    fn feed(&mut self, chunk: Chunk) -> bool {
+        let text = match chunk {
+            Chunk::Thinking(t) => {
+                self.thinking.push_str(t);
+                t
+            }
+            Chunk::Content(t) => {
+                self.content.push_str(t);
+                t
+            }
+            Chunk::Idle => return self.looping,
+        };
+        self.unchecked += text.len();
+        if self.unchecked >= LOOP_CHECK_EVERY {
+            self.unchecked = 0;
+            self.looping = is_looping(&self.thinking, LOOP_REPEATS_THINKING) || is_looping(&self.content, LOOP_REPEATS_CONTENT);
+        }
+        self.looping
+    }
+}
+
 // Roda o ciclo até o modelo responder sem chamar ferramentas.
 // Erros de ferramenta e de nome desconhecido voltam ao modelo como texto e ficam no relatório.
 #[allow(clippy::too_many_arguments)]
@@ -160,9 +270,22 @@ pub fn run_turn_with(
         }
         let sent_chars = context::size(messages) + context::value_size(&tools);
         progress.model_waiting(true);
-        let reply = model.complete(messages, &tools);
+        let mut guard = LoopGuard::default();
+        let reply = model.complete_streaming(messages, &tools, &mut |chunk| {
+            progress.model_chunk(chunk);
+            !progress.cancelled() && !guard.feed(chunk)
+        });
         progress.model_waiting(false);
         let reply = reply?;
+        progress.model_tokens(reply.prompt_tokens, reply.output_tokens);
+        if let Some(text) = reply.message.get("thinking").and_then(Value::as_str).filter(|t| !t.trim().is_empty()) {
+            progress.model_reasoning(text);
+        }
+        // Laço: o que veio é descartado, mas o raciocínio parcial já foi mostrado acima.
+        if guard.looping {
+            report.error = Some(LOOPING.into());
+            return Ok(report);
+        }
         // Interrompido durante a espera: descarta a resposta, sem deixar chamadas sem resultado no histórico.
         if progress.cancelled() {
             report.error = Some(INTERRUPTED.into());
@@ -214,6 +337,7 @@ pub fn run_turn_with(
             }
 
             let outcome = registry.execute(root, &name, &args, approver);
+            progress.tool_done(&name, &args, &outcome);
 
             // Falhas seguidas da mesma ferramenta, mesmo com argumentos diferentes, encerram o turno.
             if matches!(outcome, Outcome::Error(_)) {
@@ -293,7 +417,7 @@ mod tests {
     impl ChatModel for FakeModel {
         fn complete(&self, _messages: &[Value], _tools: &Value) -> Result<Reply, String> {
             let message = self.replies.borrow_mut().pop_front().ok_or_else(|| "roteiro esgotado".to_string())?;
-            Ok(Reply { message, prompt_tokens: None })
+            Ok(Reply { message, prompt_tokens: None, output_tokens: None })
         }
     }
 
@@ -585,13 +709,152 @@ mod tests {
         struct Counted;
         impl ChatModel for Counted {
             fn complete(&self, _m: &[Value], _t: &Value) -> Result<Reply, String> {
-                Ok(Reply { message: json!({"role": "assistant", "content": "ok"}), prompt_tokens: Some(500) })
+                Ok(Reply { message: json!({"role": "assistant", "content": "ok"}), prompt_tokens: Some(500), output_tokens: None })
             }
         }
         let r = root("calib");
         let mut c = ctx();
         run_turn(&Counted, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut c, &Silent).unwrap();
         assert_ne!(c.chars_per_token(), 3.0, "a calibração deveria ter mudado a estimativa");
+    }
+
+    #[test]
+    fn repetition_is_detected_but_ordinary_text_is_not() {
+        let think = LOOP_REPEATS_THINKING;
+        assert!(!is_looping("", think));
+        assert!(!is_looping("Taxa por máquina por dia = 800 / 144.\nTotal de máquina-dias = 12 * 12 = 144.\nLogo, 16,2 dias.", think));
+        let same_line = "Taxa: 144 máquina-dias produzem 800 apostilas.\n".repeat(3);
+        assert!(is_looping(&same_line, think), "a mesma linha longa três vezes");
+        assert!(!is_looping(&"Taxa: 144 máquina-dias produzem 800 apostilas.\n".repeat(2), think), "repetir o enunciado uma vez é normal");
+        let block = "Então calculamos de novo o total de dias, passo a passo, sem pressa alguma, e comparamos com o resultado anterior para conferir. ";
+        assert!(is_looping(&block.repeat(6), think), "um bloco inteiro se repetindo, mesmo sem quebra de linha");
+        assert!(!is_looping(&"curto\n".repeat(50), think), "linhas curtas repetidas não contam");
+    }
+
+    #[test]
+    fn separators_and_repeated_code_in_an_answer_are_not_a_loop() {
+        let content = LOOP_REPEATS_CONTENT;
+        let table = "| item | valor |\n| --- | --- | --- | --- | --- |\n| a | 1 |\n| --- | --- | --- | --- | --- |\n| b | 2 |\n| --- | --- | --- | --- | --- |\n";
+        assert!(!is_looping(table, LOOP_REPEATS_THINKING), "separador sem letras não conta, nem no raciocínio");
+        assert!(!is_looping(&"echo \"==============================\"\n".repeat(10), content), "régua de sinais não conta");
+        let prose = "Cada máquina imprime a mesma quantidade de apostilas por dia.\n";
+        assert!(!is_looping(&prose.repeat(3), content), "na resposta final, 3 linhas iguais são aceitáveis");
+        assert!(is_looping(&prose.repeat(5), content), "mas 5 já é repetição");
+    }
+
+    #[test]
+    fn the_real_loop_is_scattered_so_consecutive_repeats_would_miss_it() {
+        // Reproduz o formato do laço medido: as mesmas linhas voltam entre outras, nunca em sequência.
+        let round = "12 máquinas imprimem 800 em 12 dias.\nVamos conferir de outro jeito, com calma.\nPortanto, a resposta é 16.2 dias.\nMas talvez o problema espere um número inteiro de dias?\n";
+        let mut text = String::new();
+        for n in 0..3 {
+            text.push_str(&round.replace("jeito", &format!("jeito {n}")));
+        }
+        assert!(is_looping(&text, LOOP_REPEATS_THINKING), "linhas repetidas espalhadas são laço");
+    }
+
+    #[test]
+    fn a_cancel_while_waiting_for_the_first_chunk_stops_the_call() {
+        use std::cell::Cell;
+        // Um modelo que ainda está carregando: só acorda o sink, nunca entrega texto.
+        struct Loading(Cell<usize>);
+        impl ChatModel for Loading {
+            fn complete(&self, _m: &[Value], _t: &Value) -> Result<Reply, String> {
+                Err("só o streaming é usado".into())
+            }
+            fn complete_streaming(&self, _m: &[Value], _t: &Value, on_chunk: &mut dyn FnMut(Chunk) -> bool) -> Result<Reply, String> {
+                for _ in 0..1000 {
+                    self.0.set(self.0.get() + 1);
+                    if !on_chunk(Chunk::Idle) {
+                        break;
+                    }
+                }
+                Ok(Reply { message: json!({"role": "assistant", "content": ""}), prompt_tokens: None, output_tokens: None })
+            }
+        }
+        // O usuário aperta Esc na terceira conferência.
+        struct EscOnThird<'a>(&'a Cell<usize>);
+        impl Progress for EscOnThird<'_> {
+            fn model_waiting(&self, _waiting: bool) {}
+            fn cancelled(&self) -> bool {
+                self.0.get() >= 3
+            }
+        }
+        let r = root("idle");
+        let model = Loading(Cell::new(0));
+        let progress = EscOnThird(&model.0);
+        let report = run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut ctx(), &progress).unwrap();
+        assert_eq!(report.error.as_deref(), Some(INTERRUPTED));
+        assert!(model.0.get() <= 4, "parou logo depois do Esc, sem esperar texto: {} conferências", model.0.get());
+    }
+
+    #[test]
+    fn a_looping_model_is_cut_off_early_with_a_clear_reason() {
+        use std::cell::Cell;
+        struct Stuck(Cell<usize>);
+        impl ChatModel for Stuck {
+            fn complete(&self, _m: &[Value], _t: &Value) -> Result<Reply, String> {
+                Err("só o streaming é usado".into())
+            }
+            fn complete_streaming(&self, _m: &[Value], _t: &Value, on_chunk: &mut dyn FnMut(Chunk) -> bool) -> Result<Reply, String> {
+                let mut said = String::new();
+                for _ in 0..500 {
+                    let piece = "Taxa: 144 máquina-dias produzem 800 apostilas.\n";
+                    self.0.set(self.0.get() + 1);
+                    said.push_str(piece);
+                    if !on_chunk(Chunk::Thinking(piece)) {
+                        break;
+                    }
+                }
+                Ok(Reply { message: json!({"role": "assistant", "content": "", "thinking": said}), prompt_tokens: None, output_tokens: None })
+            }
+        }
+        let r = root("looping");
+        let stuck = Stuck(Cell::new(0));
+        let report = run_turn(&stuck, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut ctx(), &Silent).unwrap();
+        assert_eq!(report.error.as_deref(), Some(LOOPING));
+        assert!(stuck.0.get() < 20, "parou cedo: {} pedaços de 500", stuck.0.get());
+    }
+
+    #[test]
+    fn the_reasoning_of_each_call_reaches_the_progress() {
+        use std::cell::RefCell;
+        struct Thinker;
+        impl ChatModel for Thinker {
+            fn complete(&self, _m: &[Value], _t: &Value) -> Result<Reply, String> {
+                let message = json!({"role": "assistant", "content": "ok", "thinking": "300 / 8 = 37,5; 720 / 37,5 = 19,2"});
+                Ok(Reply { message, prompt_tokens: None, output_tokens: None })
+            }
+        }
+        struct Recorder(RefCell<Vec<String>>);
+        impl Progress for Recorder {
+            fn model_waiting(&self, _waiting: bool) {}
+            fn model_reasoning(&self, text: &str) {
+                self.0.borrow_mut().push(text.to_string());
+            }
+        }
+        let r = root("reasoning");
+        let rec = Recorder(RefCell::new(Vec::new()));
+        run_turn(&Thinker, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut ctx(), &rec).unwrap();
+        assert_eq!(rec.0.borrow().as_slice(), ["300 / 8 = 37,5; 720 / 37,5 = 19,2"]);
+    }
+
+    #[test]
+    fn each_tool_reports_its_outcome_as_it_finishes() {
+        use std::cell::RefCell;
+        struct Log(RefCell<Vec<String>>);
+        impl Progress for Log {
+            fn model_waiting(&self, _waiting: bool) {}
+            fn tool_done(&self, name: &str, _args: &Value, outcome: &Outcome) {
+                self.0.borrow_mut().push(format!("{name}:{}", outcome.label()));
+            }
+        }
+        let r = root("tool-done");
+        let registry = Registry::new(vec![Box::new(Echo)]);
+        let model = fake(vec![call("echo", json!({"texto": "oi"})), text("pronto")]);
+        let p = Log(RefCell::new(Vec::new()));
+        run_turn(&model, &registry, &r, &mut start(), &AutoApprover, &mut ctx(), &p).unwrap();
+        assert_eq!(*p.0.borrow(), vec!["echo:ok".to_string()]);
     }
 
     #[test]
