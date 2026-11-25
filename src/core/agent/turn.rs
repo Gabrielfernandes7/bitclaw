@@ -1,0 +1,179 @@
+//! O loop do turno: modelo → ferramentas → modelo, até a resposta final.
+
+use super::guard::{LOOPING, LoopGuard};
+use super::model::ChatModel;
+use super::report::{Action, Progress, TurnReport};
+use super::text_calls::{calls_from_text, normalize_args};
+use crate::core::context::{self, ContextManager};
+use crate::core::tool::{Approver, Outcome, Registry};
+use serde_json::{json, Value};
+use std::collections::HashSet;
+use std::path::Path;
+
+pub const MAX_STEPS: usize = 8;
+// Quantas falhas seguidas da mesma ferramenta encerram o turno.
+pub const MAX_CONSECUTIVE_FAILURES: usize = 2;
+
+// Limites de um turno. Os padrões são as constantes acima.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    pub max_steps: usize,
+    pub max_consecutive_failures: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self { max_steps: MAX_STEPS, max_consecutive_failures: MAX_CONSECUTIVE_FAILURES }
+    }
+}
+
+// Roda o ciclo com os limites padrão. Ver `run_turn_with`.
+pub fn run_turn(
+    model: &dyn ChatModel,
+    registry: &Registry,
+    root: &Path,
+    messages: &mut Vec<Value>,
+    approver: &dyn Approver,
+    ctx: &mut ContextManager,
+    progress: &dyn Progress,
+) -> Result<TurnReport, String> {
+    run_turn_with(model, registry, root, messages, approver, ctx, progress, Limits::default())
+}
+
+// Motivo registrado quando o usuário interrompe o turno.
+pub const INTERRUPTED: &str = "interrompido pelo usuário";
+
+
+// Roda o ciclo até o modelo responder sem chamar ferramentas.
+// Erros de ferramenta e de nome desconhecido voltam ao modelo como texto e ficam no relatório.
+#[allow(clippy::too_many_arguments)]
+pub fn run_turn_with(
+    model: &dyn ChatModel,
+    registry: &Registry,
+    root: &Path,
+    messages: &mut Vec<Value>,
+    approver: &dyn Approver,
+    ctx: &mut ContextManager,
+    progress: &dyn Progress,
+    limits: Limits,
+) -> Result<TurnReport, String> {
+    let tools = registry.schemas();
+    let mut report = TurnReport::default();
+    let mut last_call: Option<String> = None;
+    let mut repeats = 0;
+    let mut failing: Option<(String, usize)> = None;
+    // Alterações já executadas neste turno. Repetir a mesma alteração não a reaplica.
+    let mut applied: HashSet<String> = HashSet::new();
+
+    for _ in 0..limits.max_steps {
+        if progress.cancelled() {
+            report.error = Some(INTERRUPTED.into());
+            return Ok(report);
+        }
+        if let Some(trim) = ctx.fit(messages, &tools)? {
+            report.trims.push(trim);
+        }
+        let sent_chars = context::size(messages) + context::value_size(&tools);
+        progress.model_waiting(true);
+        let mut guard = LoopGuard::default();
+        let reply = model.complete_streaming(messages, &tools, &mut |chunk| {
+            progress.model_chunk(chunk);
+            !progress.cancelled() && !guard.feed(chunk)
+        });
+        progress.model_waiting(false);
+        let reply = reply?;
+        progress.model_tokens(reply.prompt_tokens, reply.output_tokens);
+        if let Some(text) = reply.message.get("thinking").and_then(Value::as_str).filter(|t| !t.trim().is_empty()) {
+            progress.model_reasoning(text);
+        }
+        // Laço: o que veio é descartado, mas o raciocínio parcial já foi mostrado acima.
+        if guard.looping {
+            report.error = Some(LOOPING.into());
+            return Ok(report);
+        }
+        // Interrompido durante a espera: descarta a resposta, sem deixar chamadas sem resultado no histórico.
+        if progress.cancelled() {
+            report.error = Some(INTERRUPTED.into());
+            return Ok(report);
+        }
+        if let Some(tokens) = reply.prompt_tokens {
+            ctx.calibrate(sent_chars, tokens);
+        }
+        let msg = reply.message;
+        messages.push(msg.clone());
+
+        let mut calls = msg.get("tool_calls").and_then(Value::as_array).cloned().unwrap_or_default();
+        if calls.is_empty() {
+            calls = calls_from_text(msg.get("content").and_then(Value::as_str).unwrap_or(""));
+        }
+        if calls.is_empty() {
+            report.text = msg.get("content").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            return Ok(report);
+        }
+
+        for call in calls {
+            let func = call.get("function").cloned().unwrap_or(Value::Null);
+            let name = func.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+            let args = normalize_args(func.get("arguments"));
+            progress.tool_call(&name, &args);
+
+            // Mesma chamada repetida: o modelo está preso, interrompe.
+            let key = format!("{name}{args}");
+            if last_call.as_deref() == Some(key.as_str()) {
+                repeats += 1;
+                if repeats >= 2 {
+                    report.error = Some("o modelo repetiu a mesma chamada; interrompendo".into());
+                    return Ok(report);
+                }
+            } else {
+                repeats = 0;
+            }
+            last_call = Some(key.clone());
+
+            let mutates = registry.mutates(&name);
+            if mutates && !applied.insert(key.clone()) {
+                // Alteração idêntica já feita neste turno: não reaplica nem conta como ação nova.
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_name": name.clone(),
+                    "content": "esta alteração já foi feita neste turno. Responda ao usuário sem chamar mais ferramentas."
+                }));
+                continue;
+            }
+
+            let outcome = registry.execute(root, &name, &args, approver);
+            progress.tool_done(&name, &args, &outcome);
+
+            // Falhas seguidas da mesma ferramenta, mesmo com argumentos diferentes, encerram o turno.
+            if matches!(outcome, Outcome::Error(_)) {
+                failing = match failing {
+                    Some((n, count)) if n == name => Some((n, count + 1)),
+                    _ => Some((name.clone(), 1)),
+                };
+            } else {
+                failing = None;
+            }
+
+            messages.push(json!({"role": "tool", "tool_name": name.clone(), "content": outcome.text()}));
+            // Recusa do usuário encerra o turno: insistir na mesma alteração só o irrita e gasta passos.
+            if matches!(outcome, Outcome::Refused(_)) {
+                report.actions.push(Action { name: name.clone(), args, outcome, mutates });
+                report.error = Some("alteração recusada pelo usuário; turno encerrado sem aplicar mais nada".into());
+                return Ok(report);
+            }
+            report.actions.push(Action { name: name.clone(), args, outcome, mutates });
+
+            if let Some((_, count)) = &failing
+                && *count >= limits.max_consecutive_failures
+            {
+                report.error = Some(format!(
+                    "a ferramenta {name} falhou {count} vezes seguidas; interrompendo para não repetir o erro"
+                ));
+                return Ok(report);
+            }
+        }
+    }
+
+    report.error = Some(format!("limite de {} passos atingido sem resposta final", limits.max_steps));
+    Ok(report)
+}
