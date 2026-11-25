@@ -51,9 +51,11 @@ tools = ["list_dir", "read_file", "edit_file", "create_file", "delete_file"]
 
 [model]
 name = "nemotron-3-nano:4b-mlx"
+context_window = 16384   # opcional
+
+[ollama]                 # opcional: dados do provedor
 url = "http://localhost:11434"
-num_ctx = 16384       # opcional
-temperature = 0.1     # opcional
+temperature = 0.1
 
 [limits]              # opcional
 max_steps = 8
@@ -61,21 +63,56 @@ max_consecutive_failures = 2
 reserve_output_tokens = 1024
 ```
 
-Campos desconhecidos, ferramentas inexistentes ou repetidas e valores incoerentes (ex.: `num_ctx` menor que `reserve_output_tokens`) são erros com mensagem clara. `--model` e `--url` sobrescrevem o arquivo.
+Campos desconhecidos, ferramentas inexistentes ou repetidas e valores incoerentes (ex.: `context_window` menor que `reserve_output_tokens`) são erros com mensagem clara. `--model` e `--url` sobrescrevem o arquivo.
+
+O core só conhece `[model]` e `[limits]`; `url` e `temperature` pertencem à seção do provedor (`[ollama]`). O formato antigo (`url`, `temperature` e `num_ctx` dentro de `[model]`) ainda é lido; `url` e `temperature` geram um aviso.
+
+### Usar o OpenRouter
+
+O padrão é o Ollama local. Para usar modelos hospedados no [OpenRouter](https://openrouter.ai), escolha o provedor na configuração e exporte a chave no ambiente:
+
+```toml
+[model]
+provider = "openrouter"
+name = "anthropic/claude-sonnet-4"
+context_window = 200000
+
+[openrouter]
+base_url = "https://openrouter.ai/api/v1"   # opcional
+api_key_env = "OPENROUTER_API_KEY"          # o NOME da variável, nunca a chave
+temperature = 0.1
+```
+
+```sh
+export OPENROUTER_API_KEY=...
+cargo run -- --config meu-agente.toml
+```
+
+- A chave **nunca** vai no TOML (ele é versionado e lido pelo `/init`). Se `api_key_env` parecer uma chave, a configuração é recusada sem repetir o valor. Se a variável faltar, o erro diz qual é.
+- `/model` lista os modelos do OpenRouter que chamam ferramentas. `/effort` vale para os que aceitam raciocínio com níveis.
+- `/context` só muda o orçamento do histórico: no OpenRouter a janela real é a do modelo.
+- Erros 401 (chave), 402 (créditos) e 429 (limite) viram mensagens legíveis. Nenhuma mensagem, `/status` ou log mostra a chave.
+- **Privacidade:** com um provedor remoto, o conteúdo dos arquivos que o agente ler e o histórico da conversa saem da sua máquina. O BitClaw avisa na abertura.
 
 ## Usar como biblioteca
 
-O crate `bitclaw` expõe o core. Um agente novo monta uma `Session` a partir de uma configuração e de um modelo, sem editar o core:
+O crate `bitclaw` expõe o core. Um agente novo monta uma `Session` com um modelo, um aprovador e um registro de ferramentas, sem editar o core:
 
 ```rust
-use bitclaw::{agent::Silent, config::AgentConfig, session::Session, tools::AutoApprover};
+use bitclaw::{agent::Silent, config::AgentConfig, session::Session, toolkit, tools::AutoApprover};
 
 let cfg = AgentConfig::from_toml(include_str!("agente.toml"))?;
-let mut sessao = Session::from_config(&cfg, modelo, Box::new(AutoApprover), Path::new("."))?;
+let tools = toolkit::registry_from_names(&cfg.tools)?.with_tool(Box::new(MinhaFerramenta));
+let mut sessao = Session::builder(&cfg)
+    .model(modelo)
+    .approver(Box::new(AutoApprover))
+    .tools(tools)
+    .root(".")
+    .build()?;
 let relatorio = sessao.submit("liste os arquivos", &Silent)?;
 ```
 
-`modelo` é qualquer implementação de `bitclaw::agent::ChatModel`. O adaptador do Ollama está em `bitclaw::ollama`, mas o core não depende dele. Ferramentas novas são implementações de `bitclaw::tools::Tool` registradas em `Registry`.
+`modelo` é qualquer implementação de `bitclaw::agent::ChatModel`. O adaptador do Ollama está em `bitclaw::ollama`, mas o core não depende dele. Uma ferramenta nova implementa `bitclaw::tools::Tool` (`name`, `spec` e `run`) e entra no `Registry`; `spec` descreve a ferramenta sem formato de provedor, e cada adaptador a traduz para a sua API. As ferramentas de arquivo e `run_script` vêm do `bitclaw::toolkit` e são opcionais. Um agente completo, com ferramenta, aprovador e modelo próprios, está em `examples/legalclaw.rs` (`cargo run --example legalclaw`).
 
 ## Uso no prompt
 
@@ -101,8 +138,8 @@ Digite `/` para abrir o menu de comandos. Setas escolhem, Tab completa, Enter ex
 - `/model`: abre a lista dos modelos instalados no Ollama, com busca (digite para filtrar, ↑/↓ e enter para escolher). Mostra o ativo, o padrão da configuração e as capacidades de cada um (ferramentas, raciocínio, janela). `/model load <id>` troca direto (`/model <id>` continua valendo). `/model show [id]` mostra a ficha do modelo pedido, ou do ativo, e funciona até durante uma tarefa. A troca mantém a conversa; a próxima tarefa vai para o novo modelo. Não é possível trocar durante uma tarefa. A escolha vale só para a sessão: o padrão continua o da configuração.
 - `/effort`: mostra o esforço de raciocínio atual e os níveis que o modelo aceita. `/effort <nível>` aplica, e só aceita níveis que o modelo tem (`off`, `on`, `low`, `medium` ou `high`). Modelos sem raciocínio só aceitam `off`. Ao trocar de modelo, um esforço que não existe no novo modelo cai para o nível mais próximo.
 - `/init`: cria um `AGENTS.md` com o que o próprio repositório diz sobre si: a descrição do README, a stack, os comandos, o que cada arquivo de `src/` faz (a primeira frase do comentário `//!` de abertura), a documentação, os scripts, as skills e os agentes. Não usa modelo: sai na hora, sem gastar tokens e sem inventar. Mostra a prévia e só grava depois da sua aprovação. Se o `AGENTS.md` já existe, ele nunca é sobrescrito: o `/init` só acrescenta ao fim as seções que faltam, e o que você escreveu fica como está. Para o `/init` descrever bem um módulo, comece o arquivo com `//!` e uma primeira frase que diga o que ele faz. As notas que só você sabe ficam para você preencher.
-- `/context [tokens|reset]`: mostra ou troca a janela de contexto (`16384`, `16k`). Sem argumento, explica o que muda ao aumentá-la: memória, recarga do modelo, velocidade, tokens gastos e qualidade. `reset` volta ao valor da configuração (`model.num_ctx`).
-- `/temp [0 a 2|reset]`: mostra ou troca a temperatura de geração e explica o efeito. `reset` volta ao valor da configuração (`model.temperature`).
+- `/context [tokens|reset]`: mostra ou troca a janela de contexto (`16384`, `16k`). Sem argumento, explica o que muda ao aumentá-la: memória, recarga do modelo, velocidade, tokens gastos e qualidade. `reset` volta ao valor da configuração (`model.context_window`).
+- `/temp [0 a 2|reset]`: mostra ou troca a temperatura de geração e explica o efeito. `reset` volta ao valor da configuração (`ollama.temperature`).
 - `/status`: painel em abas (Status, Config, Usage e Stats), com versão, modelo, esforço, contexto e contagens da sessão. ←/→ troca de aba, esc fecha.
 - `/think`: atalho de `/effort`. Liga no padrão do modelo ou desliga, e mostra o aviso de custo. O rodapé mostra `esforço <nível>` enquanto estiver ligado. O raciocínio de turnos anteriores sai do histórico, para não gastar contexto.
 - `/help`: mostra os comandos e as teclas.
@@ -135,7 +172,7 @@ Ao fim de cada tarefa, o programa lista as ações executadas: `✓` (feita), `�
 
 ## Contexto
 
-O histórico da conversa tem orçamento. Quando ele excede a janela (`num_ctx` = 16384 tokens no padrão, com 1024 reservados para a resposta), o programa descarta os turnos mais antigos inteiros e registra cada descarte no terminal. O prompt do sistema e o turno atual nunca são descartados. Se o próprio turno atual não couber, a tarefa é recusada com erro.
+O histórico da conversa tem orçamento. Quando ele excede a janela (`context_window` = 16384 tokens no padrão, com 1024 reservados para a resposta), o programa descarta os turnos mais antigos inteiros e registra cada descarte no terminal. O prompt do sistema e o turno atual nunca são descartados. Se o próprio turno atual não couber, a tarefa é recusada com erro.
 
 ## Avaliação com modelos reais
 
@@ -162,7 +199,7 @@ Os testes não dependem de rede nem de modelo: usam um modelo falso com resposta
 - `run_script` **sempre** pede confirmação, mesmo com `--yes`: o `--yes` vale só para edições. A confirmação mostra o script inteiro, com caracteres de controle escritos como `\xNN` (para não esconderem texto no terminal) e linhas longas quebradas. Scripts com mais de 120 linhas ou 32 KB são recusados, porque o usuário precisa conseguir revisá-los. Se o arquivo muda entre a confirmação e a execução, nada é executado.
 - O script roda com **as suas permissões e sem isolamento**: ele pode ler e apagar o que você pode, e usar a rede. Só a confirmação protege. Para um agente que não executa nada, tire `run_script` da lista `tools` da configuração.
 - O processo tem limite de 60 s (o grupo de processos inteiro é encerrado), saída limitada a 6 KB para o modelo e ambiente reduzido: só `PATH`, `HOME`, `USER`, `LANG`, `LC_ALL` e `TMPDIR` passam, então chaves de API e tokens do seu ambiente não chegam ao script.
-- Fora o que um script aprovado fizer, não há acesso à rede além do Ollama local.
+- Fora o que um script aprovado fizer, não há acesso à rede além do provedor escolhido: o Ollama local, por padrão. Com o OpenRouter, o conteúdo lido dos arquivos é enviado a um serviço remoto; a chave vem de uma variável de ambiente e não chega aos scripts (o ambiente deles é reduzido).
 
 ## Limites conhecidos
 
