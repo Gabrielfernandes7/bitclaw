@@ -13,6 +13,8 @@ use std::time::Duration;
 // Teto de uma chamada inteira ao modelo e tempo máximo sem receber nem uma linha do streaming.
 const MAX_CALL: Duration = Duration::from_secs(3600);
 const STALL: Duration = Duration::from_secs(300);
+// De quanto em quanto tempo a espera por texto confere se o turno foi cancelado.
+const TICK: Duration = Duration::from_millis(200);
 
 // Janela de contexto e temperatura padrão. Sem `num_ctx` explícito, o Ollama usa uma janela pequena.
 pub const NUM_CTX: u32 = 16384; // 16384 ou 8192
@@ -117,9 +119,10 @@ fn describe(e: &reqwest::Error) -> String {
 }
 
 // Junta as linhas do streaming do `/api/chat` numa resposta só, entregando cada pedaço de texto a
-// `on_chunk`. Se ele devolve `false`, para de ler e fica com o que juntou até ali.
+// `on_chunk`. Se ele devolve `false`, para de ler e fica com o que juntou até ali. Um item `None`
+// significa "ainda não chegou nada": vira `Chunk::Idle`, para o sink poder cancelar a espera.
 fn fold_stream(
-    lines: impl Iterator<Item = Result<String, String>>,
+    lines: impl Iterator<Item = Result<Option<String>, String>>,
     on_chunk: &mut dyn FnMut(Chunk) -> bool,
 ) -> Result<Reply, String> {
     let mut content = String::new();
@@ -127,7 +130,12 @@ fn fold_stream(
     let mut calls: Vec<Value> = Vec::new();
     let (mut prompt_tokens, mut output_tokens) = (None, None);
     for line in lines {
-        let line = line?;
+        let Some(line) = line? else {
+            if !on_chunk(Chunk::Idle) {
+                break;
+            }
+            continue;
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -235,10 +243,22 @@ impl Client {
                 }
             }
         });
-        let lines = std::iter::from_fn(|| match rx.recv_timeout(STALL) {
-            Ok(item) => Some(item),
+        // A espera acorda a cada `TICK` para o sink conferir o cancelamento: sem isso, o Esc só valeria
+        // depois do primeiro texto, e um modelo que ainda carrega ou processa o prompt levaria até
+        // `STALL` para ser interrompido.
+        let mut waited = Duration::ZERO;
+        let lines = std::iter::from_fn(|| match rx.recv_timeout(TICK) {
+            Ok(item) => {
+                waited = Duration::ZERO;
+                Some(item.map(Some))
+            }
             Err(RecvTimeoutError::Timeout) => {
-                Some(Err(format!("o Ollama ficou {} s sem responder", STALL.as_secs())))
+                waited += TICK;
+                if waited >= STALL {
+                    Some(Err(format!("o Ollama ficou {} s sem responder", STALL.as_secs())))
+                } else {
+                    Some(Ok(None))
+                }
             }
             Err(RecvTimeoutError::Disconnected) => None,
         });
@@ -368,8 +388,8 @@ pub fn model_from_tags(entry: &Value) -> Option<ModelInfo> {
 #[cfg(test)]
 mod tests {
     // Linhas de um streaming, como o Ollama as manda.
-    fn stream(lines: &[Value]) -> impl Iterator<Item = Result<String, String>> + '_ {
-        lines.iter().map(|v| Ok(v.to_string()))
+    fn stream(lines: &[Value]) -> impl Iterator<Item = Result<Option<String>, String>> + '_ {
+        lines.iter().map(|v| Ok(Some(v.to_string())))
     }
 
     #[test]
@@ -418,6 +438,46 @@ mod tests {
         ];
         let reply = fold_stream(stream(&lines), &mut |_| false).unwrap();
         assert_eq!(reply.message["content"], "um", "só o que chegou antes de parar");
+    }
+
+    #[test]
+    fn a_sink_can_stop_the_wait_before_any_text_arrives() {
+        use std::cell::Cell;
+        let late = json!({"message": {"content": "tarde demais"}, "done": true});
+        let read = Cell::new(0);
+        // Dois acordes sem texto e só depois a linha. O sink manda parar no segundo.
+        let items = (0..3).map(|i| {
+            read.set(read.get() + 1);
+            if i < 2 { Ok(None) } else { Ok(Some(late.to_string())) }
+        });
+        let mut idles = 0;
+        let reply = fold_stream(items, &mut |c| {
+            assert_eq!(c, Chunk::Idle, "antes do primeiro texto, só há acordes");
+            idles += 1;
+            idles < 2
+        })
+        .unwrap();
+        assert_eq!(idles, 2);
+        assert_eq!(read.get(), 2, "não leu a linha que chegaria depois do cancelamento");
+        assert_eq!(reply.message["content"], "");
+    }
+
+    #[test]
+    fn an_idle_tick_is_not_text_and_does_not_end_the_stream() {
+        let items = vec![
+            Ok(None),
+            Ok(Some(json!({"message": {"content": "oi"}, "done": false}).to_string())),
+            Ok(None),
+            Ok(Some(json!({"message": {"content": "!"}, "done": true, "eval_count": 2}).to_string())),
+        ];
+        let mut seen = Vec::new();
+        let reply = fold_stream(items.into_iter(), &mut |c| {
+            seen.push(format!("{c:?}"));
+            true
+        })
+        .unwrap();
+        assert_eq!(seen, ["Idle", "Content(\"oi\")", "Idle", "Content(\"!\")"]);
+        assert_eq!(reply.message["content"], "oi!");
     }
 
     #[test]

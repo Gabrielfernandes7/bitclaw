@@ -30,6 +30,9 @@ pub struct Reply {
 pub enum Chunk<'a> {
     Thinking(&'a str),
     Content(&'a str),
+    // Nada chegou ainda: o provedor só acorda para o sink conferir se o turno foi cancelado. É o que
+    // deixa o Esc valer enquanto o modelo carrega ou processa o prompt, antes do primeiro texto.
+    Idle,
 }
 
 // Qualquer provedor capaz de completar uma conversa com ferramentas.
@@ -225,6 +228,7 @@ impl LoopGuard {
                 self.content.push_str(t);
                 t
             }
+            Chunk::Idle => return self.looping,
         };
         self.unchecked += text.len();
         if self.unchecked >= LOOP_CHECK_EVERY {
@@ -747,6 +751,41 @@ mod tests {
             text.push_str(&round.replace("jeito", &format!("jeito {n}")));
         }
         assert!(is_looping(&text, LOOP_REPEATS_THINKING), "linhas repetidas espalhadas são laço");
+    }
+
+    #[test]
+    fn a_cancel_while_waiting_for_the_first_chunk_stops_the_call() {
+        use std::cell::Cell;
+        // Um modelo que ainda está carregando: só acorda o sink, nunca entrega texto.
+        struct Loading(Cell<usize>);
+        impl ChatModel for Loading {
+            fn complete(&self, _m: &[Value], _t: &Value) -> Result<Reply, String> {
+                Err("só o streaming é usado".into())
+            }
+            fn complete_streaming(&self, _m: &[Value], _t: &Value, on_chunk: &mut dyn FnMut(Chunk) -> bool) -> Result<Reply, String> {
+                for _ in 0..1000 {
+                    self.0.set(self.0.get() + 1);
+                    if !on_chunk(Chunk::Idle) {
+                        break;
+                    }
+                }
+                Ok(Reply { message: json!({"role": "assistant", "content": ""}), prompt_tokens: None, output_tokens: None })
+            }
+        }
+        // O usuário aperta Esc na terceira conferência.
+        struct EscOnThird<'a>(&'a Cell<usize>);
+        impl Progress for EscOnThird<'_> {
+            fn model_waiting(&self, _waiting: bool) {}
+            fn cancelled(&self) -> bool {
+                self.0.get() >= 3
+            }
+        }
+        let r = root("idle");
+        let model = Loading(Cell::new(0));
+        let progress = EscOnThird(&model.0);
+        let report = run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut ctx(), &progress).unwrap();
+        assert_eq!(report.error.as_deref(), Some(INTERRUPTED));
+        assert!(model.0.get() <= 4, "parou logo depois do Esc, sem esperar texto: {} conferências", model.0.get());
     }
 
     #[test]

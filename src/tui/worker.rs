@@ -73,6 +73,8 @@ impl Progress for ChannelProgress {
         let (thinking, text) = match chunk {
             Chunk::Thinking(t) => (true, t),
             Chunk::Content(t) => (false, t),
+            // Só serve para conferir o cancelamento; não há texto para mostrar.
+            Chunk::Idle => return,
         };
         let _ = self.tx.send(UiEvent::Chunk { thinking, text: text.to_string() });
     }
