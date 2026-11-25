@@ -21,7 +21,6 @@
 
 pub mod adapters;
 pub mod core;
-pub mod init;
 pub mod toolkit;
 
 // Caminhos antigos, mantidos durante a refatoração.

@@ -5,11 +5,6 @@ use crate::core::context::Trim;
 use crate::core::tool::Outcome;
 use serde_json::Value;
 
-// Palavras que indicam que o texto final afirma uma alteração. Heurística: gera aviso, não bloqueia.
-// Só formas que afirmam algo já feito. Infinitivos ("posso criar", "quer remover") são ofertas.
-const CHANGE_WORDS: [&str; 10] = ["criei", "criou", "criado", "criada", "alterei", "alterou", "editei", "editou", "alterado", "editado"];
-const DELETE_WORDS: [&str; 8] = ["removi", "removeu", "removido", "removida", "apaguei", "apagou", "excluí", "excluiu"];
-
 // Recebe sinais de progresso do loop, para a interface mostrar que o modelo está trabalhando.
 pub trait Progress {
     fn model_waiting(&self, waiting: bool);
@@ -60,6 +55,8 @@ pub struct TurnReport {
     pub error: Option<String>,
     // Descartes de histórico feitos durante o turno, para o terminal mostrar.
     pub trims: Vec<Trim>,
+    // Avisos sobre o turno, preenchidos pelos `TurnHook` da sessão depois que ele termina.
+    pub warnings: Vec<String>,
 }
 
 impl TurnReport {
@@ -68,28 +65,8 @@ impl TurnReport {
         self.actions.iter().any(|a| a.mutates && matches!(a.outcome, Outcome::Done(_)))
     }
 
-    // Algum arquivo foi removido de fato neste turno.
-    pub fn deleted(&self) -> bool {
-        self.actions.iter().any(|a| a.name == "delete_file" && matches!(a.outcome, Outcome::Done(_)))
-    }
-
     // O modelo tentou alterar algo, com sucesso ou não.
     pub fn attempted_changes(&self) -> bool {
         self.actions.iter().any(|a| a.mutates)
-    }
-
-    // Avisos sobre o texto final: ele afirma algo que as ações não confirmam.
-    pub fn warnings(&self) -> Vec<String> {
-        let text = self.text.to_lowercase();
-        let claims_delete = DELETE_WORDS.iter().any(|w| text.contains(w));
-        let claims_change = claims_delete || CHANGE_WORDS.iter().any(|w| text.contains(w));
-        let mut out = Vec::new();
-        if !self.changed() && (self.attempted_changes() || claims_change) {
-            out.push("nenhuma alteração foi aplicada neste turno.".to_string());
-        }
-        if claims_delete && !self.deleted() {
-            out.push("o texto diz que algo foi removido, mas nenhum arquivo foi removido.".to_string());
-        }
-        out
     }
 }

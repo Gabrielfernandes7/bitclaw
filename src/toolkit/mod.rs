@@ -3,6 +3,7 @@
 //! `builtin_catalog` resolve nomes (os do TOML) em ferramentas. Um fork soma as suas ao registro
 //! com `Registry::with_tool`, sem tocar no core.
 
+pub mod claims;
 pub mod fs;
 pub mod script;
 

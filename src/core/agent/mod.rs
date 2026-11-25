@@ -2,11 +2,13 @@
 //! recebe um `ChatModel`, um `Registry`, um `ContextManager` e um `Progress`.
 
 mod guard;
+mod hook;
 mod model;
 mod report;
 mod text_calls;
 mod turn;
 
+pub use hook::TurnHook;
 pub use guard::{LOOPING, is_looping};
 pub use model::{ChatModel, Chunk, Reply};
 pub use report::{Action, Progress, Silent, TurnReport};

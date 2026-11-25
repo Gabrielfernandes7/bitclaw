@@ -199,7 +199,7 @@ fn run() -> Result<(), String> {
 // Monta a sessão: as ferramentas vêm do toolkit, pelos nomes do TOML.
 fn build_session(cfg: &AgentConfig, client: ollama::Client, approver: Box<dyn Approver>, root: &std::path::Path) -> Result<Session, String> {
     let tools = toolkit::registry_from_names(&cfg.tools).map_err(|e| format!("configuração: {e}"))?;
-    Session::builder(cfg).model(Box::new(client)).approver(approver).tools(tools).root(root).build()
+    Session::builder(cfg).model(Box::new(client)).approver(approver).tools(tools).hook(Box::new(toolkit::claims::FileClaims)).root(root).build()
 }
 
 fn build_client(

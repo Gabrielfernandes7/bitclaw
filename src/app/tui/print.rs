@@ -157,7 +157,7 @@ impl App {
                 Line::from(Span::styled(format!("  interrompido: {e}"), fg(RED)))
             });
         }
-        for w in report.warnings() {
+        for w in &report.warnings {
             lines.push(aviso_line(&w));
         }
         lines.push(Line::default());

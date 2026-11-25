@@ -87,7 +87,7 @@ fn create_then_answer_reports_change() {
     let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
     assert!(report.changed());
     assert_eq!(report.text, "Pronto.");
-    assert!(report.warnings().is_empty());
+    assert!(crate::toolkit::claims::warnings(&report).is_empty());
     assert_eq!(fs::read_to_string(r.join("fib.py")).unwrap(), "print(1)\n");
 }
 
@@ -105,7 +105,7 @@ fn false_success_claim_is_visible_in_report() {
     assert!(matches!(report.actions[0].outcome, Outcome::Error(_)));
     assert!(!r.join("fib.py").exists());
     assert!(msgs.iter().any(|m| m["content"].as_str().is_some_and(|c| c.starts_with("ERRO:"))));
-    assert!(report.warnings().iter().any(|w| w.contains("nenhuma alteração")));
+    assert!(crate::toolkit::claims::warnings(&report).iter().any(|w| w.contains("nenhuma alteração")));
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn claim_of_removal_without_any_action_is_flagged() {
     let model = fake(vec![text("O arquivo mean.cpp foi removido.")]);
     let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
     assert!(report.actions.is_empty());
-    let w = report.warnings();
+    let w = crate::toolkit::claims::warnings(&report);
     assert!(w.iter().any(|x| x.contains("nenhuma alteração")), "{w:?}");
     assert!(w.iter().any(|x| x.contains("nenhum arquivo foi removido")), "{w:?}");
 }
@@ -131,7 +131,7 @@ fn removal_claim_after_only_an_edit_is_flagged() {
     ]);
     let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
     assert!(report.changed());
-    assert!(report.warnings().iter().any(|x| x.contains("nenhum arquivo foi removido")));
+    assert!(crate::toolkit::claims::warnings(&report).iter().any(|x| x.contains("nenhum arquivo foi removido")));
 }
 
 #[test]
@@ -143,8 +143,8 @@ fn delete_then_claim_has_no_warning() {
         text("Arquivo a.md removido."),
     ]);
     let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
-    assert!(report.deleted());
-    assert!(report.warnings().is_empty(), "{:?}", report.warnings());
+    assert!(crate::toolkit::claims::deleted(&report));
+    assert!(crate::toolkit::claims::warnings(&report).is_empty(), "{:?}", crate::toolkit::claims::warnings(&report));
     assert!(!r.join("a.md").exists());
 }
 
@@ -153,7 +153,7 @@ fn question_answered_in_text_has_no_warning() {
     let r = root("question");
     let model = fake(vec![text("No diretório há calc.py e fib.py.")]);
     let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
-    assert!(report.warnings().is_empty());
+    assert!(crate::toolkit::claims::warnings(&report).is_empty());
 }
 
 #[test]
@@ -516,8 +516,8 @@ fn cancelling_stops_the_turn_without_dangling_tool_calls() {
 fn offers_are_not_claims() {
     // Oferta com "remover" não é afirmação de remoção.
     let report = TurnReport { text: "Posso apenas criar, ler, editar ou remover arquivos. Deseja criar um?".into(), ..Default::default() };
-    assert!(report.warnings().is_empty(), "{:?}", report.warnings());
+    assert!(crate::toolkit::claims::warnings(&report).is_empty(), "{:?}", crate::toolkit::claims::warnings(&report));
     // Afirmação no passado sem a ação real continua sendo avisada.
     let claim = TurnReport { text: "Pronto, removi o arquivo.".into(), ..Default::default() };
-    assert_eq!(claim.warnings(), vec!["nenhuma alteração foi aplicada neste turno.", "o texto diz que algo foi removido, mas nenhum arquivo foi removido."]);
+    assert_eq!(crate::toolkit::claims::warnings(&claim), vec!["nenhuma alteração foi aplicada neste turno.", "o texto diz que algo foi removido, mas nenhum arquivo foi removido."]);
 }

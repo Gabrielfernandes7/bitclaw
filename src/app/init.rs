@@ -5,7 +5,7 @@
 //! nada é inventado nem resumido por um modelo, então sai na hora e sem gastar tokens. As notas que
 //! só a pessoa sabe (convenções, o que não mexer) ficam para ela preencher.
 
-use crate::core::tool::{Approver, Preview, PreviewLine};
+use bitclaw::tools::{Approver, Preview, PreviewLine};
 use std::fs;
 use std::path::Path;
 

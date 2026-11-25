@@ -1,6 +1,7 @@
 //! Modo simples: quando a entrada ou a saída não é um terminal (pipes, scripts), o BitClaw lê
 //! uma tarefa por linha e escreve texto puro, sem cores nem interface interativa.
 
+use super::init;
 use super::tui::brand;
 use bitclaw::agent::{Progress, TurnReport};
 use bitclaw::models::{Effort, ModelInfo, SharedEffort};
@@ -133,7 +134,7 @@ pub fn run(
                 continue;
             }
             "/init" => {
-                match session.init_agents() {
+                match init::write(session.root(), session.approver()) {
                     Ok(message) => println!("{message}\n"),
                     Err(e) => eprintln!("erro: {e}"),
                 }
@@ -199,7 +200,7 @@ fn print_report(report: &TurnReport) {
     if let Some(e) = &report.error {
         println!("interrompido: {e}");
     }
-    for w in report.warnings() {
+    for w in &report.warnings {
         println!("aviso: {w}");
     }
     println!();

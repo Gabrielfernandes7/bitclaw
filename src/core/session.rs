@@ -2,7 +2,7 @@
 //! É a API pública do core. Um agente novo monta uma `Session` e chama `submit`; não precisa
 //! conhecer o loop nem o adaptador de modelo.
 
-use crate::core::agent::{self, ChatModel, Limits, Progress, TurnReport};
+use crate::core::agent::{self, ChatModel, Limits, Progress, TurnHook, TurnReport};
 use crate::core::config::AgentConfig;
 use crate::core::context::{self, ContextManager, Usage};
 use crate::core::skill::{self as skills, Disabled, Skill};
@@ -16,6 +16,7 @@ pub struct Session {
     model: Box<dyn ChatModel>,
     registry: Registry,
     approver: Box<dyn Approver>,
+    hooks: Vec<Box<dyn TurnHook>>,
     root: PathBuf,
     limits: Limits,
     ctx: ContextManager,
@@ -44,6 +45,7 @@ pub struct SessionBuilder<'a> {
     model: Option<Box<dyn ChatModel>>,
     approver: Option<Box<dyn Approver>>,
     tools: Option<Registry>,
+    hooks: Vec<Box<dyn TurnHook>>,
     root: PathBuf,
 }
 
@@ -60,6 +62,12 @@ impl<'a> SessionBuilder<'a> {
 
     pub fn tools(mut self, tools: Registry) -> Self {
         self.tools = Some(tools);
+        self
+    }
+
+    // Liga um gancho que roda depois de cada turno e pode acrescentar avisos ao relatório.
+    pub fn hook(mut self, hook: Box<dyn TurnHook>) -> Self {
+        self.hooks.push(hook);
         self
     }
 
@@ -87,6 +95,7 @@ impl<'a> SessionBuilder<'a> {
             model,
             registry,
             approver,
+            hooks: self.hooks,
             root,
             limits,
             ctx,
@@ -101,7 +110,7 @@ impl<'a> SessionBuilder<'a> {
 
 impl Session {
     pub fn builder(cfg: &AgentConfig) -> SessionBuilder<'_> {
-        SessionBuilder { cfg, model: None, approver: None, tools: None, root: PathBuf::from(".") }
+        SessionBuilder { cfg, model: None, approver: None, tools: None, hooks: Vec::new(), root: PathBuf::from(".") }
     }
 
     // Oferece skills ao modelo: o catálogo vai ao prompt do sistema e `load_skill` é registrada.
@@ -180,12 +189,17 @@ impl Session {
         if result.is_err() {
             self.messages = snapshot;
         }
-        result
+        result.map(|mut report| {
+            for hook in &self.hooks {
+                report.warnings.extend(hook.after_turn(&report));
+            }
+            report
+        })
     }
 
-    // `/init`: cria o AGENTS.md do projeto, depois de aprovação. Não sobrescreve um arquivo existente.
-    pub fn init_agents(&self) -> Result<String, String> {
-        crate::init::write(&self.root, self.approver.as_ref())
+    // Quem aprova as alterações desta sessão (ex.: o `/init` do app a reaproveita).
+    pub fn approver(&self) -> &dyn Approver {
+        self.approver.as_ref()
     }
 
     // Troca o modelo no meio da conversa. O histórico é mensagens neutras de provedor, então segue
@@ -413,7 +427,7 @@ url = "http://unused"
         ]);
         let mut s = from_parts(&config(""), model, &dir).unwrap();
         let report = s.submit("apague", &Silent).unwrap();
-        assert!(!report.deleted());
+        assert!(!crate::toolkit::claims::deleted(&report));
         assert!(dir.join("a.txt").exists());
     }
 
@@ -543,5 +557,30 @@ url = "http://unused"
         assert!(err.contains("modelo"), "{err}");
         let err = Session::builder(&config("")).model(scripted(vec![])).approver(Box::new(AutoApprover)).build().err().unwrap();
         assert!(err.contains("ferramentas"), "{err}");
+    }
+
+    struct Flag;
+
+    impl TurnHook for Flag {
+        fn after_turn(&self, report: &TurnReport) -> Vec<String> {
+            vec![format!("gancho viu: {}", report.text)]
+        }
+    }
+
+    #[test]
+    fn hook_warnings_land_in_the_report() {
+        let dir = tempdir("hook");
+        let model = scripted(vec![json!({"role": "assistant", "content": "oi"})]);
+        let tools = crate::toolkit::registry_from_names(&["read_file"]).unwrap();
+        let mut s = Session::builder(&config(""))
+            .model(model)
+            .approver(Box::new(AutoApprover))
+            .tools(tools)
+            .hook(Box::new(Flag))
+            .root(&dir)
+            .build()
+            .unwrap();
+        let report = s.submit("x", &Silent).unwrap();
+        assert_eq!(report.warnings, vec!["gancho viu: oi"]);
     }
 }

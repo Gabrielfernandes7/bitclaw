@@ -162,7 +162,7 @@ pub(super) fn worker<F>(
                 let _ = tx.send(UiEvent::Notice(notice));
             }
             Command::Init => {
-                let result = session.init_agents();
+                let result = crate::app::init::write(session.root(), session.approver());
                 let _ = tx.send(UiEvent::InitDone(result));
             }
             Command::SwitchModel(model) => {
