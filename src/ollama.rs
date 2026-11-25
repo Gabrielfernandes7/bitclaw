@@ -3,8 +3,8 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 // Janela de contexto e temperatura padrão. Sem `num_ctx` explícito, o Ollama usa uma janela pequena.
-pub const NUM_CTX: u32 = 8192;
-pub const TEMPERATURE: f32 = 0.2;
+pub const NUM_CTX: u32 = 16384; // 16384 ou 8192
+pub const TEMPERATURE: f32 = 0.6;
 
 // Opções de geração enviadas ao Ollama. Vêm da configuração do agente.
 #[derive(Debug, Clone, Copy, PartialEq)]

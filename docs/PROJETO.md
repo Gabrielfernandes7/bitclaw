@@ -103,7 +103,7 @@ Smoke test manual com `qwen2.5-coder:3b` pode ser feito a qualquer momento pelo 
 - **Correções do diagnóstico de remoção:** `delete_file` (com backup e confirmação); regra no prompt para perguntas e remoções; avisos quando o texto final afirma criação, alteração ou remoção que as ações não confirmam (heurística por palavras, gera aviso e não bloqueia); parada após duas falhas seguidas da mesma ferramenta, mesmo com argumentos diferentes.
 - **Experiência no terminal:** informações do modelo na inicialização (via `/api/show`), uso da janela em percentual no prompt, indicador "modelo pensando" com tempo decorrido, e `/limpar-contexto` para apagar o contexto.
 - **Fronteira corrigida:** `agent.rs` não depende mais do Ollama. A implementação de `ChatModel` para o Ollama está em `ollama.rs`.
-- **Janela de contexto:** `num_ctx` = 8192 explícito. `read_file` limitado a 8 KB. Esses valores são escolhas iniciais, não medidas; reavaliar com a Fase 5 quando houver tarefas de várias etapas.
+- **Janela de contexto:** `num_ctx` = 16384 no padrão atual (configuração), antes 8192. `read_file` limitado a 8 KB. Esses valores são escolhas iniciais, não medidas; reavaliar com a Fase 5 quando houver tarefas de várias etapas.
 - **Números de benchmark de terceiros** (ex.: BFCL do Google) não entram na decisão sem verificação. Vale a avaliação própria.
 - **FunctionGemma não substitui o Nemotron como modelo principal**, mesmo que volte a funcionar: planejamento e tarefas com várias etapas são outra capacidade.
 - **Não construir orquestração multimodelo agora.** Primeiro validar um único modelo no ciclo básico.
@@ -117,6 +117,7 @@ Smoke test manual com `qwen2.5-coder:3b` pode ser feito a qualquer momento pelo 
 4. ~~Fase 2: trait `Tool`, `Registry`, `Approver`.~~ Feito. Critério de saída cumprido: um teste registra uma ferramenta nova (`Echo`) sem editar o loop (`agent.rs`).
 5. ~~Fase 3: política para o histórico.~~ Feito: `ContextManager` em `context.rs` (opção A de `docs/CHOICE.md`). Descarta turnos antigos inteiros, protege sistema e turno atual, calibra com `prompt_eval_count` e registra cada descarte no terminal. 39 testes sem rede.
    Medição de RAM com `num_ctx` 8192: `nemotron-3-nano:4b-mlx` ocupa **5,2 GB** (100% GPU) em um Mac de 16 GB. Medido com o modelo carregado e sem histórico cheio; um histórico no limite deve ser medido de novo na Fase 5.
+   **Estado atual:** o padrão da configuração (`agents/bitclaw.toml`) é `num_ctx = 16384`. Esse valor ainda não foi medido na memória. A constante `NUM_CTX` em `src/ollama.rs` só serve de padrão interno e não define a janela do binário.
 6. Ferramenta de busca: nome e escopo ainda em aberto. Agora é só registrar uma implementação de `Tool`.
 7. **Fase 4 (agente como dado e separação lib/bin): feita.**
    - `src/lib.rs` expõe o core. `src/main.rs` só lê a configuração, monta o adaptador do Ollama e abre o terminal.
@@ -126,6 +127,14 @@ Smoke test manual com `qwen2.5-coder:3b` pode ser feito a qualquer momento pelo 
    - Opções do Ollama (`num_ctx`, `temperature`) vêm da configuração.
    - `cargo test`: 64 testes unitários e 1 doctest, sem Ollama. Avaliação com nemotron: 5/5 PASS, igual antes da refatoração.
    - Critério de saída: o binário não tem lógica de agente (só monta peças). A prova de que a API basta é a Fase 6.
+8. **Fase 6 (segundo agente como prova): feita com lacunas registradas.**
+   - ResearcherClaw (`../ResearcherClaw`) é um agente de pesquisa somente leitura, em projeto separado, dependendo do `bitclaw` por caminho. Usa só a API pública (`Session`, `AgentConfig`, `ollama::Client`, `AutoApprover`, `Silent`).
+   - Nenhuma alteração no core foi necessária para o agente compilar nem para rodar. Teste real: respondeu sobre a configuração do ClawBit citando `agents/bitclaw.toml`. Ao tentar `create_file` (não configurada), a ferramenta foi recusada como desconhecida e nenhum arquivo foi criado.
+   - Somente leitura é garantida pela configuração (`tools = ["list_dir", "read_file"]`), não por código do agente.
+   - **Lacuna 1 (resolvida depois, ver abaixo):** a biblioteca imprime no terminal por conta própria: `eprintln!` em `agent.rs` (cada chamada de ferramenta) e em `tools.rs` (diffs e confirmação de edição, criação e remoção). Um agente sem terminal, ou que mostra a própria interface, não consegue silenciar isso. Correção prevista: eventos de execução por uma trait de observação, e o terminal fica no binário.
+   - **Lacuna 2 (core, menor):** `Progress` só sinaliza espera do modelo. Os passos das ferramentas chegam apenas no `TurnReport`, depois do turno. Resolve-se junto com a lacuna 1.
+   - Montagem do Ollama repetida em cada binário (opções, cliente). Aceitável por enquanto; um helper no core só se o terceiro agente repetir o código.
+9. **Interface de terminal (feita).** A biblioteca não imprime mais nada. Prévias de alteração viram dados (`Preview`), entregues ao `Approver`, e o progresso de ferramentas vai para `Progress::tool_call`. O binário tem o módulo `src/ui.rs`, com paleta amarela inspirada no crabe, cabeçalho em caixa, barra de contexto no prompt, relatório com `✓ ✗ ⊘` e ações antes do texto do modelo. Sem cor fora de terminal, com `NO_COLOR` ou `--no-color`. Não há dependência nova.
 
 ## 9. Questões em aberto
 

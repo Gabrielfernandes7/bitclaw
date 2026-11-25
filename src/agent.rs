@@ -30,6 +30,9 @@ pub trait ChatModel {
 // Recebe sinais de progresso do loop, para a interface mostrar que o modelo está trabalhando.
 pub trait Progress {
     fn model_waiting(&self, waiting: bool);
+
+    // Uma ferramenta foi chamada, com os argumentos enviados pelo modelo.
+    fn tool_call(&self, _name: &str, _args: &Value) {}
 }
 
 // Progresso que não mostra nada (útil em testes e em agentes sem terminal).
@@ -165,7 +168,7 @@ pub fn run_turn_with(
             let func = call.get("function").cloned().unwrap_or(Value::Null);
             let name = func.get("name").and_then(Value::as_str).unwrap_or("").to_string();
             let args = normalize_args(func.get("arguments"));
-            eprintln!("· {name} {args}");
+            progress.tool_call(&name, &args);
 
             // Mesma chamada repetida: o modelo está preso, interrompe.
             let key = format!("{name}{args}");
@@ -252,7 +255,7 @@ fn normalize_args(raw: Option<&Value>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::{AutoApprover, Tool};
+    use crate::tools::{AutoApprover, Preview, Tool};
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::fs;
@@ -280,7 +283,7 @@ mod tests {
     struct Refuse;
 
     impl Approver for Refuse {
-        fn approve(&self) -> bool {
+        fn approve(&self, _preview: &Preview) -> bool {
             false
         }
     }

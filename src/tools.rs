@@ -1,7 +1,6 @@
 use crate::sandbox::resolve;
 use serde_json::{json, Value};
 use std::fs;
-use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -39,26 +38,34 @@ impl Outcome {
     }
 }
 
-// Decide se uma alteração proposta pode ser aplicada. Injetado para não ler o stdin dentro da ferramenta.
+// Uma linha de prévia de uma alteração proposta.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PreviewLine {
+    Context(String),
+    Removed(String),
+    Added(String),
+    Note(String),
+}
+
+// Prévia de uma alteração: título e linhas. O core não a imprime; quem mostra é o `Approver`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Preview {
+    pub title: String,
+    pub lines: Vec<PreviewLine>,
+}
+
+// Decide se uma alteração proposta pode ser aplicada. Recebe a prévia para mostrar ao usuário.
+// Injetado para que o core não leia o stdin nem imprima nada.
 pub trait Approver {
-    fn approve(&self) -> bool;
+    fn approve(&self, preview: &Preview) -> bool;
 }
 
 // Aprova tudo (uso com `--yes` e testes).
 pub struct AutoApprover;
 
 impl Approver for AutoApprover {
-    fn approve(&self) -> bool {
+    fn approve(&self, _preview: &Preview) -> bool {
         true
-    }
-}
-
-// Pergunta no terminal.
-pub struct StdinApprover;
-
-impl Approver for StdinApprover {
-    fn approve(&self) -> bool {
-        confirm().unwrap_or(false)
     }
 }
 
@@ -311,8 +318,8 @@ fn edit_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Outco
     };
     let updated = content.replacen(old, new, 1);
 
-    show_edit_preview(rel, &updated, content[..at].matches('\n').count(), old, new);
-    if !approver.approve() {
+    let preview = edit_preview(rel, &updated, content[..at].matches('\n').count(), old, new);
+    if !approver.approve(&preview) {
         return Ok(Outcome::Refused("usuário recusou a edição; nada foi alterado".into()));
     }
 
@@ -408,9 +415,11 @@ fn delete_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Out
     }
 
     let content = fs::read_to_string(&path).unwrap_or_default();
-    eprintln!("\n\x1b[1m── remover arquivo {rel} ──\x1b[0m");
-    eprintln!("\x1b[31m{rel} será removido ({} linhas)\x1b[0m", content.lines().count());
-    if !approver.approve() {
+    let preview = Preview {
+        title: format!("remover arquivo {rel}"),
+        lines: vec![PreviewLine::Note(format!("{rel} será removido ({} linhas)", content.lines().count()))],
+    };
+    if !approver.approve(&preview) {
         return Ok(Outcome::Refused(format!("usuário recusou a remoção; {rel} foi mantido")));
     }
 
@@ -435,11 +444,11 @@ fn create_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Out
         return Err(format!("{rel} já existe; use edit_file para alterar um arquivo existente"));
     }
 
-    eprintln!("\n\x1b[1m── novo arquivo {rel} ──\x1b[0m");
-    for line in content.lines() {
-        eprintln!("\x1b[32m+ {line}\x1b[0m");
-    }
-    if !approver.approve() {
+    let preview = Preview {
+        title: format!("novo arquivo {rel}"),
+        lines: content.lines().map(|l| PreviewLine::Added(l.to_string())).collect(),
+    };
+    if !approver.approve(&preview) {
         return Ok(Outcome::Refused("usuário recusou a criação; nenhum arquivo foi criado".into()));
     }
 
@@ -450,9 +459,9 @@ fn create_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Out
     Ok(Outcome::Done(format!("arquivo criado: {rel}")))
 }
 
-// Mostra a edição com algumas linhas de contexto do arquivo resultante,
+// Monta a prévia de uma edição com algumas linhas de contexto do arquivo resultante,
 // para o usuário ver onde o trecho cai, não só o que foi removido e adicionado.
-fn show_edit_preview(rel: &str, updated: &str, start_line: usize, old: &str, new: &str) {
+fn edit_preview(rel: &str, updated: &str, start_line: usize, old: &str, new: &str) -> Preview {
     let lines: Vec<&str> = updated.lines().collect();
     let len = lines.len();
     let before_end = start_line.min(len);
@@ -460,27 +469,12 @@ fn show_edit_preview(rel: &str, updated: &str, start_line: usize, old: &str, new
     let after_begin = (start_line + new.lines().count()).min(len);
     let after_end = (after_begin + CONTEXT_LINES).min(len);
 
-    eprintln!("\n\x1b[1m── edição proposta em {rel} ──\x1b[0m");
-    for line in &lines[before_begin..before_end] {
-        eprintln!("  {line}");
-    }
-    for line in old.lines() {
-        eprintln!("\x1b[31m- {line}\x1b[0m");
-    }
-    for line in new.lines() {
-        eprintln!("\x1b[32m+ {line}\x1b[0m");
-    }
-    for line in &lines[after_begin..after_end] {
-        eprintln!("  {line}");
-    }
-}
-
-fn confirm() -> Result<bool, String> {
-    eprint!("Aplicar? [s/N] ");
-    io::stderr().flush().ok();
-    let mut line = String::new();
-    io::stdin().lock().read_line(&mut line).map_err(|e| e.to_string())?;
-    Ok(matches!(line.trim().to_lowercase().as_str(), "s" | "sim" | "y" | "yes"))
+    let mut out = Vec::new();
+    out.extend(lines[before_begin..before_end].iter().map(|l| PreviewLine::Context(l.to_string())));
+    out.extend(old.lines().map(|l| PreviewLine::Removed(l.to_string())));
+    out.extend(new.lines().map(|l| PreviewLine::Added(l.to_string())));
+    out.extend(lines[after_begin..after_end].iter().map(|l| PreviewLine::Context(l.to_string())));
+    Preview { title: format!("edição proposta em {rel}"), lines: out }
 }
 
 #[cfg(test)]
@@ -490,7 +484,7 @@ mod tests {
     struct Refuse;
 
     impl Approver for Refuse {
-        fn approve(&self) -> bool {
+        fn approve(&self, _preview: &Preview) -> bool {
             false
         }
     }

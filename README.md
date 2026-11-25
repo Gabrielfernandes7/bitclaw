@@ -27,7 +27,8 @@ Opções:
 | `--dir D` | diretório atual | Projeto que o agente pode ler e alterar. |
 | `--model M` | `nemotron-3-nano:4b-mlx` | Modelo do Ollama. |
 | `--url U` | `http://localhost:11434` | Endereço do Ollama. |
-| `--yes` | desligado | Aplica edições e criações sem pedir confirmação. Use com cuidado. |
+| `--yes` | desligado | Aplica edições, criações e remoções sem pedir confirmação. Use com cuidado. |
+| `--no-color` | desligado | Desliga as cores. Também é desligado com `NO_COLOR` e quando a saída não é um terminal. |
 | `-h`, `--help` | | Mostra a ajuda. |
 
 Ao iniciar, o programa mostra o modelo em uso e a janela de contexto. Se o modelo não estiver instalado no Ollama, ele avisa antes de começar.
@@ -48,7 +49,7 @@ tools = ["list_dir", "read_file", "edit_file", "create_file", "delete_file"]
 [model]
 name = "nemotron-3-nano:4b-mlx"
 url = "http://localhost:11434"
-num_ctx = 8192        # opcional
+num_ctx = 16384       # opcional
 temperature = 0.1     # opcional
 
 [limits]              # opcional
@@ -97,11 +98,11 @@ troque o nome da função soma por adiciona em calc.py
 - `create_file`: cria um arquivo novo com o conteúdo dado. Recusa sobrescrever um arquivo existente e pede confirmação.
 - `delete_file`: remove um arquivo, pede confirmação e salva um backup em `.bitclaw/backup/`. Não remove diretórios.
 
-Ao fim de cada tarefa, o programa lista as ações executadas com `[ok]`, `[erro]` ou `[recusada]`. Se nenhuma alteração foi aplicada, ele avisa, mesmo que o modelo tenha dito o contrário. Se o texto final afirma que algo foi removido sem que nenhum arquivo tenha sido removido, o aviso também aparece.
+Ao fim de cada tarefa, o programa lista as ações executadas: `✓` (feita), `✗` (erro) ou `⊘` (recusada pelo usuário). As ações aparecem antes do texto do modelo. Se nenhuma alteração foi aplicada, ele avisa, mesmo que o modelo tenha dito o contrário. Se o texto final afirma que algo foi removido sem que nenhum arquivo tenha sido removido, o aviso também aparece.
 
 ## Contexto
 
-O histórico da conversa tem orçamento. Quando ele excede a janela (`num_ctx` = 8192 tokens, com 1024 reservados para a resposta), o programa descarta os turnos mais antigos inteiros e registra cada descarte no terminal. O prompt do sistema e o turno atual nunca são descartados. Se o próprio turno atual não couber, a tarefa é recusada com erro.
+O histórico da conversa tem orçamento. Quando ele excede a janela (`num_ctx` = 16384 tokens no padrão, com 1024 reservados para a resposta), o programa descarta os turnos mais antigos inteiros e registra cada descarte no terminal. O prompt do sistema e o turno atual nunca são descartados. Se o próprio turno atual não couber, a tarefa é recusada com erro.
 
 ## Avaliação com modelos reais
 
