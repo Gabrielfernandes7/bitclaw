@@ -8,7 +8,8 @@
 
 use crate::brand;
 use crate::markdown::{self, Palette};
-use bitclaw::agent::{INTERRUPTED, Progress, TurnReport};
+use bitclaw::agent::{ChatModel, INTERRUPTED, Progress, TurnReport};
+use bitclaw::models::{Effort, ModelCapabilities, ModelCatalog, ModelInfo, Reasoning, SharedEffort};
 use bitclaw::context::Usage;
 use bitclaw::session::Session;
 use bitclaw::skills::{self, Disabled, Skill};
@@ -31,7 +32,7 @@ use serde_json::Value;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -58,8 +59,11 @@ struct Cmd {
     desc: &'static str,
 }
 
-const COMMANDS: [Cmd; 5] = [
+const COMMANDS: [Cmd; 8] = [
     Cmd { name: "/help", aliases: &[], desc: "mostra os comandos e as teclas" },
+    Cmd { name: "/model", aliases: &[], desc: "troca o modelo: busca e seleção entre os instalados" },
+    Cmd { name: "/effort", aliases: &[], desc: "esforço de raciocínio: só os níveis que o modelo aceita" },
+    Cmd { name: "/init", aliases: &[], desc: "cria o AGENTS.md com o resumo verificável do projeto" },
     Cmd { name: "/clear", aliases: &[], desc: "apaga o histórico e mantém o prompt do sistema" },
     Cmd { name: "/think", aliases: &[], desc: "liga ou desliga o raciocínio do modelo (gasta mais contexto)" },
     Cmd { name: "/skills", aliases: &[], desc: "abre as skills para ligar e desligar" },
@@ -75,6 +79,9 @@ impl Cmd {
         self.name.starts_with(prefix) || self.aliases.iter().any(|a| a.starts_with(prefix))
     }
 }
+
+// Comandos que aceitam um argumento depois do nome (`/model <id>`, `/effort <nível>`).
+const ARG_COMMANDS: &[&str] = &["/model", "/effort"];
 
 static COLOR: AtomicBool = AtomicBool::new(true);
 
@@ -104,11 +111,21 @@ pub struct Settings {
     pub skills: Vec<Skill>,
     // Nomes das skills desligadas no painel. Compartilhado com a sessão do agente.
     pub skills_off: Disabled,
-    pub model: String,
+    // Modelo ativo (troca com `/model`), o padrão da configuração e o catálogo do provedor.
+    pub model: Arc<Mutex<ModelInfo>>,
+    pub default_model: String,
+    pub catalog: Arc<dyn ModelCatalog + Send + Sync>,
+    // Esforço de raciocínio. Compartilhado com o cliente: `/effort` e `/think` o alteram.
+    pub effort: SharedEffort,
     pub auto_yes: bool,
     pub color: bool,
-    // Raciocínio do modelo ligado ou não. Compartilhado com o cliente; o `/think` o alterna.
-    pub think: Arc<AtomicBool>,
+}
+
+// Como criar o cliente de um modelo, para a troca em tempo de execução. Roda na thread do agente.
+pub type ModelFactory = Box<dyn Fn(&ModelInfo) -> Result<Box<dyn ChatModel>, String> + Send>;
+
+fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 // ---------- comunicação com o agente ----------
@@ -116,6 +133,8 @@ pub struct Settings {
 enum Command {
     Submit(String),
     Clear,
+    SwitchModel(ModelInfo),
+    Init,
 }
 
 enum UiEvent {
@@ -124,6 +143,10 @@ enum UiEvent {
     Done { result: Result<TurnReport, String>, usage: Usage },
     Usage(Usage),
     Fatal(String),
+    // Aviso curto para o histórico (troca de modelo, esforço ajustado, erro de troca).
+    Notice(String),
+    // Fim do `/init`: o texto de resultado ou o erro.
+    InitDone(Result<String, String>),
 }
 
 // Sinais do agente viram eventos para a interface.
@@ -165,8 +188,16 @@ impl Approver for ChannelApprover {
 }
 
 // A sessão é criada dentro da thread: ela não precisa ser `Send`.
-fn worker<F>(make: F, auto_yes: bool, commands: Receiver<Command>, tx: Sender<UiEvent>, cancel: Arc<AtomicBool>)
-where
+fn worker<F>(
+    make: F,
+    make_model: ModelFactory,
+    auto_yes: bool,
+    commands: Receiver<Command>,
+    tx: Sender<UiEvent>,
+    cancel: Arc<AtomicBool>,
+    active: Arc<Mutex<ModelInfo>>,
+    effort: SharedEffort,
+) where
     F: FnOnce(Box<dyn Approver>) -> Result<Session, String>,
 {
     let approver: Box<dyn Approver> =
@@ -190,6 +221,32 @@ where
             Command::Clear => {
                 session.clear();
                 let _ = tx.send(UiEvent::Usage(session.usage()));
+            }
+            Command::Init => {
+                let result = session.init_agents();
+                let _ = tx.send(UiEvent::InitDone(result));
+            }
+            Command::SwitchModel(model) => {
+                let notice = match make_model(&model) {
+                    Ok(client) => {
+                        session.set_model(client);
+                        // O esforço que não existe no modelo novo vai para o nível mais próximo que existe.
+                        let before = *locked(&effort);
+                        let after = model.capabilities.fit(before);
+                        *locked(&effort) = after;
+                        let mut text = format!("modelo: {}", model.id);
+                        if !model.capabilities.tool_calling {
+                            text.push_str(" · sem ferramentas: o agente só conversa");
+                        }
+                        if after != before {
+                            text.push_str(&format!(" · esforço ajustado para {}", after.as_str()));
+                        }
+                        *locked(&active) = model;
+                        text
+                    }
+                    Err(e) => format!("não consegui trocar para {}: {e}", model.id),
+                };
+                let _ = tx.send(UiEvent::Notice(notice));
             }
         }
     }
@@ -273,10 +330,12 @@ struct App {
     history: History,
     // Painel de skills aberto, se houver.
     picker: Option<Picker>,
+    // Painel de modelos aberto, se houver.
+    model_picker: Option<ModelPicker>,
 }
 
 // Roda a interface até o usuário sair. `make_session` roda na thread do agente.
-pub fn run<F>(settings: Settings, make_session: F) -> Result<(), String>
+pub fn run<F>(settings: Settings, make_session: F, make_model: ModelFactory) -> Result<(), String>
 where
     F: FnOnce(Box<dyn Approver>) -> Result<Session, String> + Send + 'static,
 {
@@ -287,7 +346,11 @@ where
     {
         let cancel = Arc::clone(&cancel);
         let auto_yes = settings.auto_yes;
-        thread::spawn(move || worker(make_session, auto_yes, command_rx, event_tx, cancel));
+        let active = Arc::clone(&settings.model);
+        let effort = Arc::clone(&settings.effort);
+        thread::spawn(move || {
+            worker(make_session, make_model, auto_yes, command_rx, event_tx, cancel, active, effort)
+        });
     }
 
     let enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
@@ -311,6 +374,7 @@ where
         menu_index: 0,
         history: History::default(),
         picker: None,
+        model_picker: None,
     };
     let result = app.event_loop();
 
@@ -339,7 +403,7 @@ impl App {
         loop {
             self.fit_viewport().map_err(|e| e.to_string())?;
             let menu = self.menu_matches();
-            let App { terminal, editor, work, usage, settings, menu_index, picker, .. } = self;
+            let App { terminal, editor, work, usage, settings, menu_index, picker, model_picker, .. } = self;
             let view = View {
                 editor,
                 work: work.as_ref(),
@@ -348,6 +412,7 @@ impl App {
                 menu,
                 menu_index: *menu_index,
                 picker: picker.as_ref(),
+                model_picker: model_picker.as_ref(),
             };
             terminal.draw(|f| draw(f, &view)).map_err(|e| e.to_string())?;
             if event::poll(Duration::from_millis(80)).map_err(|e| e.to_string())? {
@@ -382,9 +447,10 @@ impl App {
     // Ajusta a altura da área fixa ao editor e ao menu. O viewport inline tem altura fixa,
     // então recriar o terminal é o jeito de mudá-la.
     fn fit_viewport(&mut self) -> io::Result<()> {
-        let want = match &self.picker {
-            Some(p) => picker_height(picker_rows(&self.settings.skills, p).len()),
-            None => viewport_height(self.editor.lines().len(), self.menu_matches().len()),
+        let want = match (&self.model_picker, &self.picker) {
+            (Some(mp), _) => picker_height(model_rows(mp).len()),
+            (None, Some(p)) => picker_height(picker_rows(&self.settings.skills, p).len()),
+            (None, None) => viewport_height(self.editor.lines().len(), self.menu_matches().len()),
         };
         if want != self.height {
             // Apaga a área antiga e deixa o cursor no topo dela: a nova começa no mesmo lugar,
@@ -464,6 +530,9 @@ impl App {
         }
 
         // Painel de skills aberto: ele recebe todas as teclas, inclusive ↑/↓ (que, sem isso, iam para o histórico do editor).
+        if self.model_picker.is_some() {
+            return self.model_picker_key(key);
+        }
         if self.picker.is_some() {
             return self.picker_key(key);
         }
@@ -559,19 +628,22 @@ impl App {
     fn submit(&mut self, text: &str) -> io::Result<bool> {
         self.editor = new_editor();
         self.history.push(text);
-        let command = COMMANDS.iter().find(|c| c.is(text));
+        // Comando com argumento: `/model <id>` e `/effort <nível>`. O nome decide o comando; o resto é o argumento.
+        let (head, arg) = text.split_once(char::is_whitespace).map_or((text, ""), |(h, a)| (h, a.trim()));
+        let command = COMMANDS
+            .iter()
+            .find(|c| c.is(head))
+            .filter(|c| arg.is_empty() || ARG_COMMANDS.contains(&c.name));
         match text {
             _ if command.is_some_and(|c| c.name == "/exit") => return Ok(true),
             _ if command.is_some_and(|c| c.name == "/clear") => {
                 let _ = self.commands.send(Command::Clear);
                 self.clear_screen()?;
             }
-            _ if command.is_some_and(|c| c.name == "/think") => {
-                let on = !self.settings.think.fetch_xor(true, Ordering::Relaxed);
-                let mut lines = if on { self.warning(brand::THINK_WARNING)? } else { vec![note("thinking desligado.")] };
-                lines.push(Line::default());
-                self.print(lines)?;
-            }
+            _ if command.is_some_and(|c| c.name == "/think") => self.think_command()?,
+            _ if command.is_some_and(|c| c.name == "/model") => self.model_command(arg)?,
+            _ if command.is_some_and(|c| c.name == "/effort") => self.effort_command(arg)?,
+            _ if command.is_some_and(|c| c.name == "/init") => self.init_command()?,
             _ if command.is_some_and(|c| c.name == "/skills") => {
                 if self.settings.skills.is_empty() {
                     self.print(vec![note("nenhuma skill carregada."), Line::default()])?;
@@ -607,6 +679,118 @@ impl App {
     }
 
     // `/clear`: apaga a tela e o scrollback e recomeça com o cabeçalho, como no Claude Code.
+    fn active_model(&self) -> ModelInfo {
+        locked(&self.settings.model).clone()
+    }
+
+    fn switch_model(&self, model: ModelInfo) {
+        let _ = self.commands.send(Command::SwitchModel(model));
+    }
+
+    // `/think`: liga no padrão do modelo ou desliga. É um atalho de `/effort`.
+    fn think_command(&mut self) -> io::Result<()> {
+        let model = self.active_model();
+        if matches!(model.capabilities.reasoning, Reasoning::Unsupported) {
+            return self.print(vec![note("este modelo não tem raciocínio configurável."), Line::default()]);
+        }
+        let next = model.capabilities.toggle_think(*locked(&self.settings.effort));
+        *locked(&self.settings.effort) = next;
+        if next.is_off() {
+            return self.print(vec![note("thinking desligado."), Line::default()]);
+        }
+        let mut lines = self.warning(brand::THINK_WARNING)?;
+        lines.push(Line::default());
+        self.print(lines)
+    }
+
+    // `/init`: o agente monta o rascunho e pede aprovação; a prévia aparece como as outras edições.
+    fn init_command(&mut self) -> io::Result<()> {
+        if self.work.is_some() {
+            return self.print(vec![note("espere a tarefa terminar para criar o AGENTS.md."), Line::default()]);
+        }
+        self.cancel.store(false, Ordering::Relaxed);
+        let _ = self.commands.send(Command::Init);
+        self.work = Some(Work { started: Instant::now(), activity: "montando AGENTS.md".into(), approval: None, cancelling: false });
+        Ok(())
+    }
+
+    // `/effort`: sem argumento mostra o nível atual e os níveis deste modelo; com um, valida e aplica.
+    fn effort_command(&mut self, arg: &str) -> io::Result<()> {
+        let model = self.active_model();
+        if arg.is_empty() {
+            let current = *locked(&self.settings.effort);
+            let levels: Vec<&str> = model.capabilities.supported_efforts().into_iter().map(Effort::as_str).collect();
+            let text = format!("esforço {} · níveis deste modelo: {}", current.as_str(), levels.join(", "));
+            return self.print(vec![note(&text), Line::default()]);
+        }
+        let text = match model.capabilities.parse_for(arg) {
+            Ok(effort) => {
+                *locked(&self.settings.effort) = effort;
+                format!("esforço: {}", effort.as_str())
+            }
+            Err(msg) => msg,
+        };
+        self.print(vec![note(&text), Line::default()])
+    }
+
+    // `/model`: sem argumento abre o painel; com um id, troca direto. A troca espera a tarefa atual.
+    fn model_command(&mut self, arg: &str) -> io::Result<()> {
+        if self.work.is_some() {
+            return self.print(vec![note("espere a tarefa terminar para trocar de modelo."), Line::default()]);
+        }
+        if !arg.is_empty() {
+            return match self.settings.catalog.find(arg) {
+                Ok(Some(model)) => {
+                    self.switch_model(model);
+                    Ok(())
+                }
+                Ok(None) => self.print(vec![note(&format!("modelo não instalado: {arg}. Veja /model.")), Line::default()]),
+                Err(e) => self.print(vec![note(&format!("não consegui consultar os modelos: {e}")), Line::default()]),
+            };
+        }
+        match self.settings.catalog.list() {
+            Ok(models) if models.is_empty() => {
+                self.print(vec![note("nenhum modelo instalado. Instale com: ollama pull <modelo>"), Line::default()])
+            }
+            Ok(models) => {
+                self.model_picker = Some(ModelPicker { query: String::new(), index: 0, models });
+                Ok(())
+            }
+            Err(e) => self.print(vec![note(&format!("não consegui listar os modelos: {e}")), Line::default()]),
+        }
+    }
+
+    // Teclas do painel de modelos. Enter escolhe e fecha; Esc fecha sem trocar. Devolve `true` para sair (nunca sai).
+    fn model_picker_key(&mut self, key: KeyEvent) -> io::Result<bool> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(mp) = self.model_picker.as_mut() else { return Ok(false) };
+        let rows = model_rows(mp);
+        let last = rows.len().saturating_sub(1);
+        let chosen = rows.get(mp.index).map(|&i| mp.models[i].clone());
+        match key.code {
+            KeyCode::Esc => self.model_picker = None,
+            KeyCode::Char('c') if ctrl => self.model_picker = None,
+            KeyCode::Enter => {
+                self.model_picker = None;
+                if let Some(model) = chosen {
+                    self.switch_model(model);
+                }
+            }
+            KeyCode::Up => mp.index = mp.index.saturating_sub(1),
+            KeyCode::Down => mp.index = (mp.index + 1).min(last),
+            KeyCode::Backspace => {
+                mp.query.pop();
+                mp.index = 0;
+            }
+            KeyCode::Char(c) if !ctrl => {
+                mp.query.push(c);
+                mp.index = 0;
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
     fn clear_screen(&mut self) -> io::Result<()> {
         execute!(io::stdout(), Clear(ClearType::All), Clear(ClearType::Purge), MoveTo(0, 0))?;
         self.terminal = Terminal::with_options(
@@ -655,6 +839,17 @@ impl App {
                     }
                     .map_err(|e| e.to_string())?;
                 }
+                UiEvent::Notice(text) => {
+                    self.print(vec![note(&text), Line::default()]).map_err(|e| e.to_string())?;
+                }
+                UiEvent::InitDone(result) => {
+                    self.work = None;
+                    let text = match result {
+                        Ok(message) => message,
+                        Err(e) => format!("erro: {e}"),
+                    };
+                    self.print(vec![note(&text), Line::default()]).map_err(|e| e.to_string())?;
+                }
                 UiEvent::Fatal(e) => return Err(e),
             }
         }
@@ -699,7 +894,7 @@ impl App {
         if self.settings.auto_yes {
             lines.insert(lines.len() - 1, aviso_line("--yes ativo: edições serão aplicadas sem confirmação"));
         }
-        if self.settings.think.load(Ordering::Relaxed) {
+        if !locked(&self.settings.effort).is_off() {
             let at = lines.len() - 1;
             lines.splice(at..at, self.warning(brand::THINK_WARNING)?);
         }
@@ -802,6 +997,7 @@ struct View<'a> {
     menu: Vec<&'static Cmd>,
     menu_index: usize,
     picker: Option<&'a Picker>,
+    model_picker: Option<&'a ModelPicker>,
 }
 
 // ---------- painel de skills (`/skills`) ----------
@@ -902,7 +1098,96 @@ fn draw_picker(f: &mut Frame, settings: &Settings, p: &Picker) {
     f.render_widget(Paragraph::new(Line::from(Span::styled(help, fg(GRAY)))), hint);
 }
 
+// ---------- painel de modelos (`/model`) ----------
+
+// Lista de modelos do catálogo, lida quando o painel abre. A busca olha o id.
+struct ModelPicker {
+    query: String,
+    index: usize,
+    models: Vec<ModelInfo>,
+}
+
+// Linhas visíveis do painel de modelos, índices em `models`.
+fn model_rows(p: &ModelPicker) -> Vec<usize> {
+    let q = p.query.to_lowercase();
+    (0..p.models.len()).filter(|&i| q.is_empty() || p.models[i].id.to_lowercase().contains(&q)).collect()
+}
+
+// Capacidades numa linha só: é o que pesa na escolha.
+fn capabilities_text(caps: &ModelCapabilities) -> String {
+    let tools = if caps.tool_calling { "ferramentas" } else { "sem ferramentas" };
+    let reasoning = match &caps.reasoning {
+        Reasoning::Unsupported => "sem raciocínio".to_string(),
+        Reasoning::Toggle => "raciocínio liga/desliga".to_string(),
+        Reasoning::Levels(_) => {
+            let levels: Vec<&str> = caps.supported_efforts().into_iter().filter(|e| !e.is_off()).map(Effort::as_str).collect();
+            format!("raciocínio: {}", levels.join(", "))
+        }
+    };
+    let mut parts = vec![tools.to_string(), reasoning];
+    if let Some(window) = caps.context_window {
+        parts.push(format!("janela {window} tok"));
+    }
+    parts.join(" · ")
+}
+
+fn draw_model_picker(f: &mut Frame, settings: &Settings, p: &ModelPicker) {
+    let rows = model_rows(p);
+    let active = locked(&settings.model).id.clone();
+    let [title, search, list, hint] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(f.area());
+
+    let head = vec![
+        Span::styled(format!("{} modelos", p.models.len()), bold(YELLOW)),
+        Span::styled(format!(" · ativo {active} · padrão {}", settings.default_model), fg(GRAY)),
+    ];
+    f.render_widget(Paragraph::new(Line::from(head)), title);
+
+    let box_style = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(fg(GRAY));
+    let search_text = if p.query.is_empty() {
+        Line::from(Span::styled("⌕ Buscar modelos…", fg(GRAY)))
+    } else {
+        Line::from(vec![Span::styled("⌕ ", fg(GRAY)), Span::raw(p.query.clone())])
+    };
+    f.render_widget(Paragraph::new(search_text).block(box_style), search);
+
+    let name_w = p.models.iter().map(|m| m.id.chars().count()).max().unwrap_or(0).clamp(12, 36);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled("  nenhum modelo encontrado", fg(GRAY))));
+    } else {
+        let start = if p.index >= PICKER_VISIBLE { p.index + 1 - PICKER_VISIBLE } else { 0 };
+        for (pos, &i) in rows.iter().enumerate().skip(start).take(PICKER_VISIBLE) {
+            let model = &p.models[i];
+            let selected = pos == p.index;
+            let is_active = model.id == active;
+            let (cursor, name_style) = if selected { ("❯ ", bold(YELLOW)) } else { ("  ", Style::default()) };
+            let (mark, mark_style) = if is_active { ("● ", fg(YELLOW)) } else { ("○ ", fg(GRAY)) };
+            let default = if model.id == settings.default_model { " · padrão" } else { "" };
+            lines.push(Line::from(vec![
+                Span::styled(cursor, fg(YELLOW)),
+                Span::styled(mark, mark_style),
+                Span::styled(format!("{:<name_w$}", model.id), name_style),
+                Span::styled(format!("  {}{default}", capabilities_text(&model.capabilities)), fg(GRAY)),
+            ]));
+        }
+    }
+    f.render_widget(Paragraph::new(lines), list);
+
+    let help = "↑/↓ navega · enter escolhe · digite para buscar · esc fecha";
+    f.render_widget(Paragraph::new(Line::from(Span::styled(help, fg(GRAY)))), hint);
+}
+
 fn draw(f: &mut Frame, v: &View) {
+    if let Some(models) = v.model_picker {
+        draw_model_picker(f, v.settings, models);
+        return;
+    }
     if let Some(picker) = v.picker {
         draw_picker(f, v.settings, picker);
         return;
@@ -944,12 +1229,14 @@ fn draw(f: &mut Frame, v: &View) {
     f.render_widget(Paragraph::new(rows), menu);
 
     // Rodapé: modelo, modo e contexto à esquerda; atalhos à direita, na versão que couber.
+    let model_id = locked(&v.settings.model).id.clone();
     let mut info = vec![Span::styled(
-        format!("{} · {} · ", v.settings.model, if v.settings.auto_yes { "Automático" } else { "Manual" }),
+        format!("{} · {} · ", model_id, if v.settings.auto_yes { "Automático" } else { "Manual" }),
         fg(GRAY),
     )];
-    if v.settings.think.load(Ordering::Relaxed) {
-        info.push(Span::styled("thinking", fg(YELLOW)));
+    let effort = *locked(&v.settings.effort);
+    if !effort.is_off() {
+        info.push(Span::styled(format!("esforço {}", effort.as_str()), fg(YELLOW)));
         info.push(Span::styled(" · ", fg(GRAY)));
     }
     info.push(Span::styled("contexto ", fg(GRAY)));
@@ -1008,10 +1295,12 @@ mod tests {
             info: vec![],
             skills: vec![],
             skills_off: skills::new_disabled(),
-            model: "m:1b".into(),
+            model: Arc::new(Mutex::new(ModelInfo::unknown("m:1b"))),
+            default_model: "m:1b".into(),
+            catalog: Arc::new(StaticCatalog(Vec::new())),
+            effort: Arc::new(Mutex::new(Effort::Off)),
             auto_yes,
             color: false,
-            think: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1026,7 +1315,7 @@ mod tests {
         let height = viewport_height(editor.lines().len(), menu.len());
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let settings = settings(auto_yes);
-        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0, picker: None };
+        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0, picker: None, model_picker: None };
         terminal.draw(|f| draw(f, &view)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height)
@@ -1092,9 +1381,11 @@ mod tests {
         let lines = screen_with(100, "/", None, None, false);
         assert_eq!(lines.len(), 5 + COMMANDS.len());
         assert!(lines[4].starts_with("› /help") && lines[4].contains("mostra os comandos"), "{lines:?}");
-        assert!(lines[5].starts_with("  /clear") && lines[6].starts_with("  /think"), "{lines:?}");
-        assert!(lines[7].starts_with("  /skills"), "{lines:?}");
-        assert!(lines[8].starts_with("  /exit"), "{lines:?}");
+        assert!(lines[5].starts_with("  /model") && lines[6].starts_with("  /effort"), "{lines:?}");
+        assert!(lines[7].starts_with("  /init"), "{lines:?}");
+        assert!(lines[8].starts_with("  /clear") && lines[9].starts_with("  /think"), "{lines:?}");
+        assert!(lines[10].starts_with("  /skills"), "{lines:?}");
+        assert!(lines[11].starts_with("  /exit"), "{lines:?}");
         assert!(lines.last().unwrap().contains("tab completa · enter executa"));
     }
 
@@ -1145,17 +1436,17 @@ mod tests {
     #[test]
     fn footer_flags_thinking_only_when_it_is_on() {
         let off = screen_with(100, "", None, None, false).pop().unwrap();
-        assert!(!off.contains("thinking"), "{off}");
+        assert!(!off.contains("esforço"), "{off}");
         let mut editor = new_editor();
         editor.insert_str("");
-        let mut cfg = settings(false);
-        cfg.think = Arc::new(AtomicBool::new(true));
+        let cfg = settings(false);
+        *cfg.effort.lock().unwrap() = Effort::Medium;
         let mut terminal = Terminal::new(TestBackend::new(100, viewport_height(1, 0))).unwrap();
-        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0, picker: None };
+        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None };
         terminal.draw(|f| draw(f, &view)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         let footer: String = (0..100).map(|x| buffer[(x, 4)].symbol().to_string()).collect();
-        assert!(footer.starts_with("m:1b · Manual · thinking · contexto"), "{footer}");
+        assert!(footer.starts_with("m:1b · Manual · esforço medium · contexto"), "{footer}");
     }
 
     #[test]
@@ -1167,6 +1458,55 @@ mod tests {
         assert_eq!(name("/limpar"), None);
         assert_eq!(name("/sair"), None);
         assert_eq!(name("/ajuda"), None);
+    }
+
+    // Catálogo fixo para os testes: sem rede.
+    struct StaticCatalog(Vec<ModelInfo>);
+
+    impl ModelCatalog for StaticCatalog {
+        fn list(&self) -> Result<Vec<ModelInfo>, String> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn sample_models() -> Vec<ModelInfo> {
+        let levels = ModelCapabilities {
+            tool_calling: true,
+            reasoning: Reasoning::Levels(vec![Effort::Low, Effort::Medium, Effort::High]),
+            context_window: Some(32768),
+        };
+        let plain = ModelCapabilities { tool_calling: false, reasoning: Reasoning::Unsupported, context_window: None };
+        vec![
+            ModelInfo { id: "gpt-oss:20b".into(), provider: "ollama".into(), capabilities: levels },
+            ModelInfo { id: "qwen2.5-coder:3b".into(), provider: "ollama".into(), capabilities: plain },
+        ]
+    }
+
+    #[test]
+    fn model_picker_search_matches_the_id_only() {
+        let typed = ModelPicker { query: "CODER".into(), index: 0, models: sample_models() };
+        assert_eq!(model_rows(&typed), vec![1]);
+        let all = ModelPicker { query: String::new(), index: 0, models: sample_models() };
+        assert_eq!(model_rows(&all), vec![0, 1]);
+        let none = ModelPicker { query: "zzz".into(), index: 0, models: sample_models() };
+        assert!(model_rows(&none).is_empty());
+    }
+
+    #[test]
+    fn model_picker_marks_the_active_and_the_default_model() {
+        let models = sample_models();
+        let mut cfg = settings(false);
+        cfg.default_model = "gpt-oss:20b".into();
+        *cfg.model.lock().unwrap() = models[1].clone();
+        let picker = ModelPicker { query: String::new(), index: 0, models };
+        let mut terminal = Terminal::new(TestBackend::new(120, picker_height(2))).unwrap();
+        terminal.draw(|f| draw_model_picker(f, &cfg, &picker)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let row = |y: u16| -> String { (0..120).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string() };
+        assert!(row(0).contains("2 modelos · ativo qwen2.5-coder:3b · padrão gpt-oss:20b"), "{}", row(0));
+        assert!(row(4).contains("gpt-oss:20b") && row(4).contains("raciocínio: low, medium, high"), "{}", row(4));
+        assert!(row(4).ends_with("· padrão"), "{}", row(4));
+        assert!(row(5).contains("● qwen2.5-coder:3b") && row(5).contains("sem ferramentas"), "{}", row(5));
     }
 
     #[test]

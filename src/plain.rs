@@ -3,12 +3,12 @@
 
 use crate::brand;
 use bitclaw::agent::{Progress, TurnReport};
+use bitclaw::models::{Effort, ModelInfo, SharedEffort};
 use bitclaw::session::Session;
 use bitclaw::tools::{Approver, Outcome, Preview, PreviewLine};
 use serde_json::Value;
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 // Pergunta no terminal e lê a resposta da entrada padrão.
 pub struct StdinApprover;
@@ -50,14 +50,15 @@ pub fn run(
     session: &mut Session,
     header: &[String],
     auto_yes: bool,
-    think: &Arc<AtomicBool>,
+    active: &Arc<Mutex<ModelInfo>>,
+    effort: &SharedEffort,
     skills: &[String],
 ) -> Result<(), String> {
     println!("{}", brand::plain_header(header));
     if auto_yes {
         println!("aviso: --yes ativo: edições serão aplicadas sem confirmação");
     }
-    if think.load(Ordering::Relaxed) {
+    if !effort.lock().unwrap_or_else(|e| e.into_inner()).is_off() {
         println!("aviso: {}", brand::THINK_WARNING);
     }
     let interactive = io::stdin().is_terminal();
@@ -87,11 +88,42 @@ pub fn run(
                 continue;
             }
             "/think" => {
-                let on = !think.fetch_xor(true, Ordering::Relaxed);
-                if on {
-                    println!("aviso: {}\n", brand::THINK_WARNING);
-                } else {
+                let caps = active.lock().unwrap_or_else(|e| e.into_inner()).capabilities.clone();
+                if matches!(caps.reasoning, bitclaw::models::Reasoning::Unsupported) {
+                    println!("este modelo não tem raciocínio configurável.\n");
+                    continue;
+                }
+                let mut current = effort.lock().unwrap_or_else(|e| e.into_inner());
+                *current = caps.toggle_think(*current);
+                if current.is_off() {
                     println!("thinking desligado.\n");
+                } else {
+                    println!("aviso: {}\n", brand::THINK_WARNING);
+                }
+                continue;
+            }
+            "/init" => {
+                match session.init_agents() {
+                    Ok(message) => println!("{message}\n"),
+                    Err(e) => eprintln!("erro: {e}"),
+                }
+                continue;
+            }
+            _ if input == "/effort" || input.starts_with("/effort ") => {
+                let arg = input["/effort".len()..].trim();
+                let caps = active.lock().unwrap_or_else(|e| e.into_inner()).capabilities.clone();
+                if arg.is_empty() {
+                    let current = *effort.lock().unwrap_or_else(|e| e.into_inner());
+                    let levels: Vec<&str> = caps.supported_efforts().into_iter().map(Effort::as_str).collect();
+                    println!("esforço {} · níveis deste modelo: {}\n", current.as_str(), levels.join(", "));
+                } else {
+                    match caps.parse_for(arg) {
+                        Ok(chosen) => {
+                            *effort.lock().unwrap_or_else(|e| e.into_inner()) = chosen;
+                            println!("esforço: {}\n", chosen.as_str());
+                        }
+                        Err(msg) => println!("{msg}\n"),
+                    }
                 }
                 continue;
             }
