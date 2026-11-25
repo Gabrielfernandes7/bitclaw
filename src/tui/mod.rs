@@ -47,12 +47,12 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-// A área fixa cresce e encolhe: status (1) + régua, editor e régua (2 + linhas do editor)
+// A área fixa cresce e encolhe: mascote e status (3) + régua, editor e régua (2 + linhas do editor)
 // + menu de comandos + rodapé (1).
 const MAX_EDITOR_ROWS: usize = 6;
 
 fn viewport_height(editor_rows: usize, menu_rows: usize) -> u16 {
-    (1 + 2 + editor_rows.clamp(1, MAX_EDITOR_ROWS) + menu_rows + 1) as u16
+    (MASCOT_ROWS as usize + 2 + editor_rows.clamp(1, MAX_EDITOR_ROWS) + menu_rows + 1) as u16
 }
 
 pub struct Settings {
@@ -108,6 +108,9 @@ struct App {
     picker: Option<Picker>,
     // Painel de modelos aberto, se houver.
     model_picker: Option<ModelPicker>,
+    // Relógio das animações e a reação ao fim do último turno (`true`: terminou bem).
+    born: Instant,
+    reaction: Option<(Instant, bool)>,
 }
 
 // Roda a interface até o usuário sair. `make_session` roda na thread do agente.
@@ -151,6 +154,8 @@ where
         history: History::default(),
         picker: None,
         model_picker: None,
+        born: Instant::now(),
+        reaction: None,
     };
     let result = app.event_loop();
 
@@ -179,7 +184,8 @@ impl App {
         loop {
             self.fit_viewport().map_err(|e| e.to_string())?;
             let menu = self.menu_matches();
-            let App { terminal, editor, work, usage, settings, menu_index, picker, model_picker, .. } = self;
+            let App { terminal, editor, work, usage, settings, menu_index, picker, model_picker, born, reaction, .. } = self;
+            let mascot = mascot_for(work.as_ref(), *reaction, *born);
             let view = View {
                 editor,
                 work: work.as_ref(),
@@ -189,6 +195,7 @@ impl App {
                 menu_index: *menu_index,
                 picker: picker.as_ref(),
                 model_picker: model_picker.as_ref(),
+                mascot,
             };
             terminal.draw(|f| draw(f, &view)).map_err(|e| e.to_string())?;
             if event::poll(Duration::from_millis(80)).map_err(|e| e.to_string())? {
@@ -280,6 +287,7 @@ impl App {
                 }
                 UiEvent::Done { result, usage } => {
                     self.usage = Some(usage);
+                    self.reaction = Some((Instant::now(), matches!(&result, Ok(r) if r.error.is_none())));
                     self.work = None;
                     match result {
                         Ok(report) => self.print_report(&report),
@@ -343,7 +351,7 @@ mod tests {
         let height = viewport_height(editor.lines().len(), menu.len());
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let settings = settings(auto_yes);
-        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0, picker: None, model_picker: None };
+        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 } };
         terminal.draw(|f| draw(f, &view)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height)
@@ -368,18 +376,19 @@ mod tests {
     fn idle_screen_is_compact_with_one_editor_row() {
         let usage = Usage { tokens: 861, window: 16384, percent: 5.0 };
         let lines = screen(None, Some(usage), false);
-        assert_eq!(lines.len(), 5, "status, régua, 1 linha de editor, régua e rodapé: {lines:?}");
-        assert_eq!(lines[0], "", "sem status quando ocioso");
-        assert!(lines[1].starts_with('─') && lines[3].starts_with('─'));
-        assert!(lines[2].starts_with('›') && lines[2].contains("Digite uma tarefa…"), "{lines:?}");
-        assert!(lines[4].starts_with("m:1b · Manual · contexto 5% (861/16384)"), "{}", lines[4]);
-        assert!(lines[4].ends_with("enter envia · / comandos"), "versão curta dos atalhos em 80 colunas");
+        assert_eq!(lines.len(), 7, "mascote (3), régua, 1 linha de editor, régua e rodapé: {lines:?}");
+        assert!(lines[..3].iter().all(|l| !l.contains("pensando") && !l.contains("executando")), "sem status quando ocioso");
+        assert!(lines[0].contains('▀') || lines[1].contains('█'), "o mascote aparece: {lines:?}");
+        assert!(lines[3].starts_with('─') && lines[5].starts_with('─'));
+        assert!(lines[4].starts_with('›') && lines[4].contains("Digite uma tarefa…"), "{lines:?}");
+        assert!(lines[6].starts_with("m:1b · Manual · contexto 5% (861/16384)"), "{}", lines[6]);
+        assert!(lines[6].ends_with("enter envia · / comandos"), "versão curta dos atalhos em 80 colunas");
     }
 
     #[test]
     fn editor_grows_with_the_text_up_to_a_limit() {
-        assert_eq!(screen_with(80, "a\nb\nc", None, None, false).len(), 7);
-        assert_eq!(screen_with(80, &"x\n".repeat(20), None, None, false).len(), 5 + MAX_EDITOR_ROWS - 1);
+        assert_eq!(screen_with(80, "a\nb\nc", None, None, false).len(), 9);
+        assert_eq!(screen_with(80, &"x\n".repeat(20), None, None, false).len(), 7 + MAX_EDITOR_ROWS - 1);
     }
 
     #[test]
@@ -407,31 +416,31 @@ mod tests {
     #[test]
     fn typing_a_slash_lists_every_command_below_the_editor() {
         let lines = screen_with(100, "/", None, None, false);
-        assert_eq!(lines.len(), 5 + COMMANDS.len());
-        assert!(lines[4].starts_with("› /help") && lines[4].contains("mostra os comandos"), "{lines:?}");
-        assert!(lines[5].starts_with("  /model") && lines[6].starts_with("  /effort"), "{lines:?}");
-        assert!(lines[7].starts_with("  /init"), "{lines:?}");
-        assert!(lines[8].starts_with("  /clear") && lines[9].starts_with("  /think"), "{lines:?}");
-        assert!(lines[10].starts_with("  /skills"), "{lines:?}");
-        assert!(lines[11].starts_with("  /exit"), "{lines:?}");
+        assert_eq!(lines.len(), 7 + COMMANDS.len());
+        assert!(lines[6].starts_with("› /help") && lines[6].contains("mostra os comandos"), "{lines:?}");
+        assert!(lines[7].starts_with("  /model") && lines[8].starts_with("  /effort"), "{lines:?}");
+        assert!(lines[9].starts_with("  /init"), "{lines:?}");
+        assert!(lines[10].starts_with("  /clear") && lines[11].starts_with("  /think"), "{lines:?}");
+        assert!(lines[12].starts_with("  /skills"), "{lines:?}");
+        assert!(lines[13].starts_with("  /exit"), "{lines:?}");
         assert!(lines.last().unwrap().contains("tab completa · enter executa"));
     }
 
     #[test]
     fn the_menu_filters_by_name() {
         let lines = screen_with(100, "/cl", None, None, false);
-        assert_eq!(lines.len(), 6);
-        assert!(lines[4].starts_with("› /clear"), "{lines:?}");
+        assert_eq!(lines.len(), 8);
+        assert!(lines[6].starts_with("› /clear"), "{lines:?}");
         let lines = screen_with(100, "/ex", None, None, false);
-        assert!(lines[4].starts_with("› /exit"), "{lines:?}");
+        assert!(lines[6].starts_with("› /exit"), "{lines:?}");
         // Sem correspondência, não há menu.
-        assert_eq!(screen_with(100, "/zzz", None, None, false).len(), 5);
+        assert_eq!(screen_with(100, "/zzz", None, None, false).len(), 7);
     }
 
     #[test]
     fn the_think_command_explains_its_cost_in_the_menu() {
         let lines = screen_with(120, "/th", None, None, false);
-        assert!(lines[4].starts_with("› /think") && lines[4].contains("gasta mais contexto"), "{lines:?}");
+        assert!(lines[6].starts_with("› /think") && lines[6].contains("gasta mais contexto"), "{lines:?}");
     }
 
     #[test]
@@ -443,10 +452,10 @@ mod tests {
         let cfg = settings(false);
         *cfg.effort.lock().unwrap() = Effort::Medium;
         let mut terminal = Terminal::new(TestBackend::new(100, viewport_height(1, 0))).unwrap();
-        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None };
+        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 } };
         terminal.draw(|f| draw(f, &view)).unwrap();
         let buffer = terminal.backend().buffer().clone();
-        let footer: String = (0..100).map(|x| buffer[(x, 4)].symbol().to_string()).collect();
+        let footer: String = (0..100).map(|x| buffer[(x, 6)].symbol().to_string()).collect();
         assert!(footer.starts_with("m:1b · Manual · esforço medium · contexto"), "{footer}");
     }
 
@@ -513,23 +522,23 @@ mod tests {
     #[test]
     fn footer_shows_the_automatic_mode_and_unknown_usage() {
         let lines = screen(None, None, true);
-        assert!(lines[4].starts_with("m:1b · Automático · contexto —"), "{}", lines[4]);
+        assert!(lines[6].starts_with("m:1b · Automático · contexto —"), "{}", lines[6]);
     }
 
     #[test]
     fn working_screen_shows_the_activity_and_how_to_interrupt() {
         let lines = screen(Some(&work(false, false)), None, false);
-        assert!(lines[0].contains("executando read_file a.txt… 0s"), "{}", lines[0]);
-        assert!(lines[4].ends_with("esc interrompe"));
+        assert!(lines[1].contains("executando read_file a.txt… 0s"), "{}", lines[1]);
+        assert!(lines[6].ends_with("esc interrompe"));
         let lines = screen(Some(&work(false, true)), None, false);
-        assert!(lines[0].contains("interrompendo, aguardando o modelo"), "{}", lines[0]);
+        assert!(lines[1].contains("interrompendo, aguardando o modelo"), "{}", lines[1]);
     }
 
     #[test]
     fn approval_screen_asks_for_a_decision() {
         let lines = screen(Some(&work(true, false)), None, false);
-        assert!(lines[0].contains("Aplicar esta alteração? [s] sim · [n] não"), "{}", lines[0]);
-        assert!(lines[4].ends_with("s aplica · n recusa"));
+        assert!(lines[1].contains("Aplicar esta alteração? [s] sim · [n] não"), "{}", lines[1]);
+        assert!(lines[6].ends_with("s aplica · n recusa"));
     }
 
     #[test]
@@ -546,11 +555,11 @@ mod tests {
             editor.insert_str(typed);
             let mut terminal = Terminal::new(TestBackend::new(60, viewport_height(1, 0))).unwrap();
             let settings = settings(false);
-            let view = View { editor: &editor, work: None, usage: None, settings: &settings, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None };
+            let view = View { editor: &editor, work: None, usage: None, settings: &settings, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 } };
             terminal.draw(|f| draw(f, &view)).unwrap();
             let buffer = terminal.backend().buffer().clone();
-            // Linha do editor: status (1) + régua (1) → linha 2; o texto começa na coluna 2.
-            (0..typed.chars().count() as u16).map(|x| buffer[(2 + x, 2)].fg).map(|c| (c != Color::Reset).then_some(c)).collect()
+            // Linha do editor: mascote (3) + régua (1) → linha 4; o texto começa na coluna 2.
+            (0..typed.chars().count() as u16).map(|x| buffer[(2 + x, 4)].fg).map(|c| (c != Color::Reset).then_some(c)).collect()
         };
         let colors = cell_colors("/model load x");
         assert!(colors[..6].iter().all(|c| *c == Some(KEYWORD)), "comando: {colors:?}");
@@ -558,5 +567,20 @@ mod tests {
         assert_eq!(colors[12], None, "o argumento fica normal");
         assert!(cell_colors("/efort").iter().all(Option::is_none), "comando desconhecido não é destacado");
         assert!(cell_colors("model").iter().all(Option::is_none), "sem a barra, nada é destacado");
+    }
+
+    #[test]
+    fn the_mascot_follows_the_turn_and_reacts_when_it_ends() {
+        let born = Instant::now();
+        let mood = |w: Option<&Work>, r| mascot_for(w, r, born).mood;
+        assert_eq!(mood(None, None), brand::Mood::Idle);
+        assert_eq!(mood(Some(&work(false, false)), None), brand::Mood::Working, "ferramenta");
+        assert_eq!(mood(Some(&work(true, false)), None), brand::Mood::Waiting, "aprovação");
+        assert_eq!(mood(Some(&work(false, true)), None), brand::Mood::Thinking, "interrompendo");
+        assert_eq!(mood(None, Some((Instant::now(), true))), brand::Mood::Happy);
+        assert_eq!(mood(None, Some((Instant::now(), false))), brand::Mood::Sad);
+        let old = Instant::now() - Duration::from_secs(60);
+        assert_eq!(mood(None, Some((old, true))), brand::Mood::Idle, "a reação passa");
+        assert_eq!(mood(Some(&work(false, false)), Some((Instant::now(), true))), brand::Mood::Working, "turno novo manda");
     }
 }

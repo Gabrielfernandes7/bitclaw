@@ -23,6 +23,9 @@ fn cell(top: char, bottom: char) -> char {
     }
 }
 
+// Largura do mascote em colunas do terminal.
+pub const WIDTH: u16 = 10;
+
 // Linhas de terminal de um mapa de pixels: cada uma junta duas linhas do mapa.
 fn render(map: &[Vec<char>]) -> Vec<String> {
     map.chunks(2).map(|pair| pair[0].iter().zip(pair[1].iter()).map(|(t, b)| cell(*t, *b)).collect()).collect()
@@ -207,6 +210,11 @@ mod tests {
                 assert!(f.iter().all(|r| r.chars().count() == crab_width()), "{mood:?} em {ms} ms");
             }
         }
+    }
+
+    #[test]
+    fn width_constant_matches_the_map() {
+        assert_eq!(WIDTH as usize, crab_width());
     }
 
     #[test]

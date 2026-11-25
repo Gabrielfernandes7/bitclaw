@@ -6,6 +6,7 @@ mod picker;
 pub(in crate::tui) use self::model_picker::*;
 pub(in crate::tui) use self::picker::*;
 
+use super::brand::{self, HAPPY_MS, Mood, SAD_MS};
 use super::commands::keyword_ranges;
 use super::{Cmd, MAX_EDITOR_ROWS, Settings, Work, locked, theme::*};
 use bitclaw::context::Usage;
@@ -14,6 +15,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui_textarea::TextArea;
+use std::time::Instant;
 
 // Aviso: rótulo "aviso:" em laranja, sem glifo.
 pub(in crate::tui) fn aviso_line(text: &str) -> Line<'static> {
@@ -27,6 +29,9 @@ pub(in crate::tui) fn note(text: &str) -> Line<'static> {
 
 // área fixa embaixo
 
+// Altura da faixa do mascote.
+pub(in crate::tui) const MASCOT_ROWS: u16 = 3;
+
 // Tudo o que `draw` precisa, emprestado do estado da interface.
 pub(in crate::tui) struct View<'a> {
     pub(in crate::tui) editor: &'a TextArea<'static>,
@@ -37,6 +42,37 @@ pub(in crate::tui) struct View<'a> {
     pub(in crate::tui) menu_index: usize,
     pub(in crate::tui) picker: Option<&'a Picker>,
     pub(in crate::tui) model_picker: Option<&'a ModelPicker>,
+    pub(in crate::tui) mascot: Mascot,
+}
+
+// O estado do mascote e há quanto tempo ele dura, em ms.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::tui) struct Mascot {
+    pub(in crate::tui) mood: Mood,
+    pub(in crate::tui) ms: u128,
+}
+
+// Estado do mascote: o turno em andamento manda; sem turno, vale a reação ao fim do último
+// (`ok`: terminou bem) enquanto durar, e depois ele fica parado.
+pub(in crate::tui) fn mascot_for(work: Option<&Work>, reaction: Option<(Instant, bool)>, born: Instant) -> Mascot {
+    if let Some(w) = work {
+        let mood = if w.approval.is_some() {
+            Mood::Waiting
+        } else if w.cancelling || w.activity == "pensando" {
+            Mood::Thinking
+        } else {
+            Mood::Working
+        };
+        return Mascot { mood, ms: w.started.elapsed().as_millis() };
+    }
+    if let Some((at, ok)) = reaction {
+        let ms = at.elapsed().as_millis();
+        let (mood, lasts) = if ok { (Mood::Happy, HAPPY_MS) } else { (Mood::Sad, SAD_MS) };
+        if ms < lasts {
+            return Mascot { mood, ms };
+        }
+    }
+    Mascot { mood: Mood::Idle, ms: born.elapsed().as_millis() }
 }
 
 pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
@@ -50,14 +86,25 @@ pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
     }
     let editor_rows = v.editor.lines().len().clamp(1, MAX_EDITOR_ROWS) as u16;
     let [status, composer, menu, footer] = Layout::vertical([
-        Constraint::Length(1),
+        Constraint::Length(MASCOT_ROWS),
         Constraint::Length(editor_rows + 2),
         Constraint::Length(v.menu.len() as u16),
         Constraint::Length(1),
     ])
     .areas(f.area());
 
-    f.render_widget(Paragraph::new(status_line(v.work)), status);
+    // Mascote à esquerda; o texto do turno fica ao lado, na linha do meio.
+    let room = status.width.saturating_sub(brand::WIDTH + 2);
+    let [mascot, _, text_area] =
+        Layout::horizontal([Constraint::Length(brand::WIDTH), Constraint::Length(2), Constraint::Min(0)]).areas(status);
+    if room >= 12 {
+        let lines: Vec<Line> =
+            brand::frame(v.mascot.mood, v.mascot.ms).into_iter().map(|l| Line::from(Span::styled(l, fg(YELLOW)))).collect();
+        f.render_widget(Paragraph::new(lines), mascot);
+    }
+    let text_area = if room >= 12 { text_area } else { status };
+    let [_, middle, _] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).areas(text_area);
+    f.render_widget(Paragraph::new(status_line(v.work)), middle);
 
     // Editor delimitado por réguas, como no Claude Code.
     let block = Block::new().borders(Borders::TOP | Borders::BOTTOM).border_style(fg(GRAY));
