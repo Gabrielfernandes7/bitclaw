@@ -6,11 +6,12 @@ use bitclaw::agent::{Progress, TurnReport};
 use bitclaw::context::Usage;
 use bitclaw::tools::{Approver, Outcome, Preview, PreviewLine};
 use serde_json::Value;
+use indicatif::{ProgressBar, ProgressStyle};
+use owo_colors::OwoColorize;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::sync::Mutex;
+use std::time::Duration;
 
 static COLOR: AtomicBool = AtomicBool::new(false);
 
@@ -24,54 +25,80 @@ fn color_on() -> bool {
     COLOR.load(Ordering::Relaxed)
 }
 
-const YELLOW: &str = "38;2;255;204;0";
-const GREEN: &str = "38;2;0;200;120";
-const RED: &str = "38;2;255;77;77";
-const GRAY: &str = "38;2;170;170;170";
-
-// Aplica um código SGR ao texto, se cores estiverem ativas.
-fn paint(code: &str, text: &str) -> String {
-    if color_on() { format!("\x1b[{code}m{text}\x1b[0m") } else { text.to_string() }
-}
-
+// Cores via owo-colors, só quando ativas.
 pub fn yellow(t: &str) -> String {
-    paint(YELLOW, t)
+    if color_on() { t.truecolor(255, 204, 0).to_string() } else { t.to_string() }
 }
 
 pub fn bold_yellow(t: &str) -> String {
-    if color_on() { format!("\x1b[1;{YELLOW}m{t}\x1b[0m") } else { t.to_string() }
+    if color_on() { t.truecolor(255, 204, 0).bold().to_string() } else { t.to_string() }
 }
 
 pub fn gray(t: &str) -> String {
-    paint(GRAY, t)
+    if color_on() { t.truecolor(170, 170, 170).to_string() } else { t.to_string() }
 }
 
 fn green(t: &str) -> String {
-    paint(GREEN, t)
+    if color_on() { t.truecolor(0, 200, 120).to_string() } else { t.to_string() }
 }
 
 pub fn red(t: &str) -> String {
-    paint(RED, t)
+    if color_on() { t.truecolor(255, 77, 77).to_string() } else { t.to_string() }
 }
 
-// Cabeçalho em caixa arredondada, como o título do crabe.
-pub fn header(title: &str, lines: &[String]) -> String {
-    let mut body = vec![format!("🦀  {}", bold_yellow(title))];
-    body.extend(lines.iter().cloned());
-    let width = body.iter().map(|l| visible_len(l)).max().unwrap_or(0) + 4;
-    let border = |s: &str| yellow(s);
-    let mut out = String::new();
-    out.push_str(&border(&format!("╭{}╮", "─".repeat(width))));
-    out.push('\n');
-    for line in &body {
-        let pad = width - 2 - visible_len(line);
-        out.push_str(&format!("{} {}{} {}\n", border("│"), line, " ".repeat(pad), border("│")));
+// Mascote monocromático: mapa de pixels 10×6, renderizado em meio-blocos (3 linhas de terminal)
+// na cor da marca. Sinais de tijolo: dois pinos no topo e uma faixa de emenda (D) abaixo dos olhos.
+// Legenda: Y corpo, T pino, D emenda, S pé (preenchidos); E olho (buraco); '.' vazio.
+const CRAB: [&str; 6] = [
+    "YY.T..T.YY",
+    "YYYYYYYYYY",
+    "YYEYYYYEYY",
+    "YDDDDDDDDY",
+    "..YYYYYY..",
+    ".S.S..S.S.",
+];
+
+// Uma célula do terminal mostra dois pixels: o de cima e o de baixo (`▀`, `▄`, `█`).
+fn crab_cell(top: char, bottom: char) -> &'static str {
+    let on = |c: char| matches!(c, 'Y' | 'T' | 'D' | 'S');
+    match (on(top), on(bottom)) {
+        (true, true) => "█",
+        (true, false) => "▀",
+        (false, true) => "▄",
+        (false, false) => " ",
     }
-    out.push_str(&border(&format!("╰{}╯", "─".repeat(width))));
-    out
+}
+
+// Linhas de terminal do mascote: cada uma junta duas linhas do mapa.
+fn crab_rows() -> Vec<String> {
+    CRAB.chunks(2)
+        .map(|pair| {
+            let row: String = pair[0].chars().zip(pair[1].chars()).map(|(t, b)| crab_cell(t, b)).collect();
+            yellow(&row)
+        })
+        .collect()
+}
+
+// Cabeçalho sem caixa, no estilo da tela inicial do Claude Code: mascote à esquerda,
+// nome em destaque e informações em cinza à direita.
+pub fn header(title: &str, lines: &[String]) -> String {
+    let mut right = vec![bold_yellow(title)];
+    right.extend(lines.iter().map(|l| gray(l)));
+    let glyph = crab_rows();
+    let offset = glyph.len().saturating_sub(right.len()) / 2;
+    glyph
+        .iter()
+        .enumerate()
+        .map(|(i, g)| {
+            let text = i.checked_sub(offset).and_then(|j| right.get(j)).cloned().unwrap_or_default();
+            format!("{g}  {text}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // Tamanho visível de uma string, sem contar sequências ANSI. Conta caracteres, não bytes.
+#[cfg(test)]
 fn visible_len(s: &str) -> usize {
     let mut n = 0;
     let mut in_esc = false;
@@ -92,8 +119,9 @@ fn visible_len(s: &str) -> usize {
     n
 }
 
-// Prompt com barra de uso da janela. A cor muda conforme o nível.
-pub fn prompt(name: &str, usage: &Usage) -> String {
+// Entrada em duas linhas, como nos TUIs de agente: linha de status (uso da janela) e o `›`.
+// A cor da barra muda conforme o nível.
+pub fn prompt(_name: &str, usage: &Usage) -> String {
     let filled = ((usage.percent / 100.0) * 10.0).round().clamp(0.0, 10.0) as usize;
     let bar = format!("{}{}", "█".repeat(filled), "░".repeat(10 - filled));
     let colored = if usage.percent >= 90.0 {
@@ -104,10 +132,9 @@ pub fn prompt(name: &str, usage: &Usage) -> String {
         green(&bar)
     };
     format!(
-        "{} {} {} ",
-        bold_yellow(name),
-        gray(&format!("[{colored} {:.0}% · {}/{}]", usage.percent, usage.tokens, usage.window)),
-        yellow("›"),
+        "{}\n{} ",
+        gray(&format!("contexto {colored} {:.0}% · {}/{} tok", usage.percent, usage.tokens, usage.window)),
+        bold_yellow("›"),
     )
 }
 
@@ -125,56 +152,68 @@ impl Approver for StdinApprover {
                 PreviewLine::Note(t) => println!("{}", red(t)),
             }
         }
-        print!("{} ", yellow("Aplicar? [s/N]"));
-        io::stdout().flush().ok();
-        let mut answer = String::new();
-        if io::stdin().lock().read_line(&mut answer).is_err() {
-            return false;
-        }
-        matches!(answer.trim().to_lowercase().as_str(), "s" | "sim" | "y" | "yes")
+        ask_yes_no("Aplicar?")
     }
+}
+
+// Confirmação: seleção interativa num terminal; leitura de linha quando a entrada é um pipe.
+fn ask_yes_no(question: &str) -> bool {
+    if io::stdin().is_terminal() && io::stdout().is_terminal() {
+        return inquire::Confirm::new(question)
+            .with_default(false)
+            .with_parser(&|a| match a.trim().to_lowercase().as_str() {
+                "s" | "sim" | "y" | "yes" => Ok(true),
+                "n" | "nao" | "não" | "no" => Ok(false),
+                _ => Err(()),
+            })
+            .with_formatter(&|v| if v { "sim".into() } else { "não".into() })
+            .with_error_message("Responda s ou n.")
+            .prompt()
+            .unwrap_or(false);
+    }
+    print!("{} ", yellow(&format!("{question} [s/N]")));
+    io::stdout().flush().ok();
+    let mut answer = String::new();
+    if io::stdin().lock().read_line(&mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim().to_lowercase().as_str(), "s" | "sim" | "y" | "yes")
 }
 
 // Sinais do agente para o terminal: espera do modelo (spinner) e chamadas de ferramenta.
 pub struct Feedback {
-    slot: Mutex<Option<(Arc<AtomicBool>, JoinHandle<()>)>>,
+    spinner: Mutex<Option<ProgressBar>>,
 }
 
 impl Feedback {
     pub fn new() -> Self {
-        Self { slot: Mutex::new(None) }
+        Self { spinner: Mutex::new(None) }
     }
 }
 
 impl Progress for Feedback {
     fn model_waiting(&self, waiting: bool) {
-        let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        let mut slot = self.spinner.lock().unwrap_or_else(|e| e.into_inner());
         if waiting {
             if slot.is_some() || !io::stderr().is_terminal() {
                 return;
             }
-            let stop = Arc::new(AtomicBool::new(false));
-            let flag = Arc::clone(&stop);
-            let started = Instant::now();
-            let handle = thread::spawn(move || {
-                const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-                let mut i = 0;
-                while !flag.load(Ordering::Relaxed) {
-                    eprint!(
-                        "\r{}",
-                        gray(&format!("{} pensando… {}s", FRAMES[i % FRAMES.len()], started.elapsed().as_secs()))
-                    );
-                    io::stderr().flush().ok();
-                    i += 1;
-                    thread::sleep(Duration::from_millis(100));
-                }
-                eprint!("\r\x1b[K");
-                io::stderr().flush().ok();
-            });
-            *slot = Some((stop, handle));
-        } else if let Some((stop, handle)) = slot.take() {
-            stop.store(true, Ordering::Relaxed);
-            let _ = handle.join();
+            let bar = ProgressBar::new_spinner();
+            let template = if color_on() {
+                "{spinner:.yellow} {msg:.dim} {elapsed}"
+            } else {
+                "{spinner} {msg} {elapsed}"
+            };
+            bar.set_style(
+                ProgressStyle::with_template(template)
+                    .unwrap_or_else(|_| ProgressStyle::default_spinner())
+                    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "⠋"]),
+            );
+            bar.set_message("pensando…");
+            bar.enable_steady_tick(Duration::from_millis(100));
+            *slot = Some(bar);
+        } else if let Some(bar) = slot.take() {
+            bar.finish_and_clear();
         }
     }
 
@@ -221,4 +260,28 @@ pub fn report(report: &TurnReport) {
         println!("{}", yellow(&format!("⚠ {w}")));
     }
     println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crab_map_is_a_rectangle_and_rows_have_the_same_visible_width() {
+        assert_eq!(CRAB.len() % 2, 0);
+        assert!(CRAB.iter().all(|r| r.chars().count() == CRAB[0].chars().count()));
+        assert!(CRAB.iter().all(|r| r.chars().all(|c| ".YTDSE".contains(c))));
+        let rows = crab_rows();
+        assert_eq!(rows.len(), CRAB.len() / 2);
+        assert!(rows.iter().all(|r| visible_len(r) == CRAB[0].chars().count()));
+    }
+
+    #[test]
+    fn header_has_no_border_and_keeps_all_lines() {
+        COLOR.store(false, Ordering::Relaxed);
+        let text = header("BitClaw", &["projeto /tmp/x".into(), "modelo nemotron · janela 16384 tok".into()]);
+        assert_eq!(text.lines().count(), CRAB.len() / 2);
+        assert!(!text.contains('╭') && !text.contains('│'));
+        assert!(text.contains("BitClaw") && text.contains("projeto /tmp/x"));
+    }
 }

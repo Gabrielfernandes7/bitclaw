@@ -113,7 +113,7 @@ url = "http://localhost:11434"
     #[test]
     fn bundled_config_is_valid() {
         let cfg = AgentConfig::from_toml(BUNDLED).expect("agents/bitclaw.toml deve ser válido");
-        assert_eq!(cfg.name, "bitclaw");
+        assert_eq!(cfg.name, "BitClaw");
         assert_eq!(cfg.model.name, "nemotron-3-nano:4b-mlx");
         assert_eq!(cfg.tools.len(), 5);
     }

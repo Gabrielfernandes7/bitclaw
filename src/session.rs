@@ -40,9 +40,15 @@ impl Session {
     }
 
     // Envia uma tarefa e roda o ciclo até a resposta final (ou um limite).
+    //
+    // Se o turno falhar (ex.: o provedor do modelo está fora), o histórico volta ao estado anterior.
+    // Assim, a tarefa que falhou não fica pendente e não é reenviada junto com a próxima.
     pub fn submit(&mut self, input: &str, progress: &dyn Progress) -> Result<TurnReport, String> {
+        // Cópia do histórico: o `trim` pode remover mensagens antigas durante o turno,
+        // então desfazer por índice não seria seguro.
+        let snapshot = self.messages.clone();
         self.messages.push(json!({"role": "user", "content": input}));
-        agent::run_turn_with(
+        let result = agent::run_turn_with(
             self.model.as_ref(),
             &self.registry,
             &self.root,
@@ -51,7 +57,11 @@ impl Session {
             &mut self.ctx,
             progress,
             self.limits,
-        )
+        );
+        if result.is_err() {
+            self.messages = snapshot;
+        }
+        result
     }
 
     // Uso atual da janela de contexto.
@@ -167,6 +177,41 @@ url = "http://unused"
         let report = s.submit("leia", &Silent).unwrap();
         assert_eq!(report.actions.len(), 2);
         assert!(report.error.is_some());
+    }
+
+    // Modelo que falha na primeira chamada e responde nas seguintes.
+    struct FailsOnce(RefCell<bool>);
+
+    impl ChatModel for FailsOnce {
+        fn complete(&self, _m: &[Value], _t: &Value) -> Result<Reply, String> {
+            let mut failed = self.0.borrow_mut();
+            if !*failed {
+                *failed = true;
+                return Err("falha ao conectar no Ollama".into());
+            }
+            Ok(Reply { message: json!({"role": "assistant", "content": "ok"}), prompt_tokens: None })
+        }
+    }
+
+    #[test]
+    fn failed_turn_is_rolled_back_from_history() {
+        let dir = tempdir("rollback");
+        let mut s = Session::from_config(
+            &config(""),
+            Box::new(FailsOnce(RefCell::new(false))),
+            Box::new(AutoApprover),
+            &dir,
+        )
+        .unwrap();
+        let before = s.messages().len();
+        assert!(s.submit("tarefa que falhou", &Silent).is_err());
+        assert_eq!(s.messages().len(), before, "o histórico deve voltar ao estado anterior");
+        assert!(!s.messages().iter().any(|m| m["content"] == "tarefa que falhou"));
+
+        // A próxima tarefa é enviada sozinha: a que falhou não volta junto.
+        let report = s.submit("nova", &Silent).unwrap();
+        assert_eq!(report.text, "ok");
+        assert!(!s.messages().iter().any(|m| m["content"] == "tarefa que falhou"));
     }
 
     #[test]

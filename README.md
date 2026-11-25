@@ -42,7 +42,7 @@ cargo run -- --config meu-agente.toml
 ```
 
 ```toml
-name = "bitclaw"
+name = "BitClaw"
 system_prompt = "Você é ..."
 tools = ["list_dir", "read_file", "edit_file", "create_file", "delete_file"]
 

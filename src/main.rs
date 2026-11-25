@@ -75,6 +75,16 @@ fn run() -> Result<(), String> {
         cfg.model.url = u;
     }
 
+    // Sem o Ollama o agente não faz nada útil: falha já na inicialização, com a instrução de correção.
+    match build_client(&cfg)?.has_model() {
+        Ok(true) => {}
+        Ok(false) => eprintln!(
+            "{}",
+            ui::yellow(&format!("⚠ o modelo '{0}' não aparece no Ollama. Instale com: ollama pull {0}", cfg.model.name))
+        ),
+        Err(e) => return Err(format!("{e}. Inicie o Ollama com: ollama serve")),
+    }
+
     let client = build_client(&cfg)?;
     let approver: Box<dyn Approver> = if args.auto_yes { Box::new(AutoApprover) } else { Box::new(ui::StdinApprover) };
     let mut session = Session::from_config(&cfg, Box::new(client), approver, &args.dir)?;
@@ -82,16 +92,6 @@ fn run() -> Result<(), String> {
 
     let info = model_lines(&cfg);
     println!("{}", ui::header(&cfg.name, &[format!("projeto {}", session.root().display()), info]));
-    if let Err(e) = build_client(&cfg).and_then(|c| c.has_model()).map(|ok| {
-        if !ok {
-            eprintln!(
-                "{}",
-                ui::yellow(&format!("⚠ o modelo '{0}' não aparece no Ollama. Instale com: ollama pull {0}", cfg.model.name))
-            );
-        }
-    }) {
-        eprintln!("{}", ui::yellow(&format!("⚠ não consegui listar os modelos do Ollama: {e}")));
-    }
     if args.auto_yes {
         println!("{}", ui::yellow("⚠ --yes ativo: edições serão aplicadas sem confirmação"));
     }

@@ -1,7 +1,7 @@
 # Agente padrão do BitClaw. Executado com: cargo run -- (usa este arquivo).
 # Outro agente: cargo run -- --config caminho/do/agente.toml
 
-name = "bitclaw"
+name = "BitClaw"
 
 system_prompt = """\
 Você é o BitClaw, um assistente que lê e altera arquivos de um projeto local. \
