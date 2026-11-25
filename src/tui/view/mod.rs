@@ -12,6 +12,7 @@ pub(in crate::tui) use self::status::*;
 
 use super::brand::{self, Mood, TRICK_MS};
 use super::commands::keyword_ranges;
+use super::mention::Entry;
 use super::{Cmd, MAX_EDITOR_ROWS, Settings, Work, locked, theme::*};
 use bitclaw::context::Usage;
 use ratatui::Frame;
@@ -49,6 +50,8 @@ pub(in crate::tui) struct View<'a> {
     pub(in crate::tui) mascot: Mascot,
     pub(in crate::tui) transcript: &'a [Line<'static>],
     pub(in crate::tui) scroll_back: usize,
+    // Sugestões de arquivo para o `@` sob o cursor. Vazio quando não há menção.
+    pub(in crate::tui) mentions: Vec<Entry>,
 }
 
 // O estado do mascote e há quanto tempo ele dura, em ms.
@@ -86,7 +89,7 @@ pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
         Constraint::Length(MASCOT_ROWS),
         Constraint::Min(1),
         Constraint::Length(editor_rows + 2),
-        Constraint::Length(v.menu.len() as u16),
+        Constraint::Length(v.menu.len().max(v.mentions.len()) as u16),
         Constraint::Length(1),
     ])
     .areas(f.area());
@@ -144,6 +147,21 @@ pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
         .collect();
     f.render_widget(Paragraph::new(rows), menu);
 
+    // Sugestões de arquivo, no mesmo lugar do menu de comandos.
+    if !v.mentions.is_empty() {
+        let chosen = v.menu_index.min(v.mentions.len() - 1);
+        let rows: Vec<Line> = v
+            .mentions
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let (mark, style) = if i == chosen { ("› ", bold(YELLOW)) } else { ("  ", fg(if e.is_dir { KEYWORD } else { GRAY })) };
+                Line::from(vec![Span::styled(mark, style), Span::styled(format!("@{}", e.path), style)])
+            })
+            .collect();
+        f.render_widget(Paragraph::new(rows), menu);
+    }
+
     // Rodapé: modelo, modo e contexto à esquerda; atalhos à direita, na versão que couber.
     let model_id = locked(&v.settings.model).id.clone();
     let mut info = vec![Span::styled(
@@ -167,6 +185,7 @@ pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
     let info_width: usize = info.iter().map(Span::width).sum();
     let room = (footer.width as usize).saturating_sub(info_width + 2);
     let hints: &[&str] = match v.work {
+        _ if !v.mentions.is_empty() => &["↑↓ escolhe · tab ou enter completa · esc fecha", "tab completa · esc fecha", ""],
         _ if !v.menu.is_empty() => &["↑↓ escolhe · tab completa · enter executa", "tab completa · enter executa", ""],
         None => &["enter envia · shift+enter nova linha · / comandos", "enter envia · / comandos", ""],
         Some(w) if w.approval.is_some() => &["s aplica · n recusa", ""],

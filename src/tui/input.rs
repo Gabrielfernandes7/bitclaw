@@ -1,6 +1,7 @@
 //! Entrada do usuário: teclas, painéis e comandos com `/`.
 
 use super::*;
+use ratatui_textarea::CursorMove;
 
 impl App {
     // Teclas do painel de skills. Devolve `true` para sair (o painel nunca sai do programa).
@@ -88,6 +89,35 @@ impl App {
             _ => {}
         }
 
+        // Sugestões de arquivo (`@`): ficam com ↑/↓, Tab, Enter e Esc enquanto aparecem.
+        if let Some(m) = self.mention_matches() {
+            let n = m.entries.len();
+            let chosen = self.menu_index.min(n - 1);
+            match key.code {
+                KeyCode::Up => {
+                    self.menu_index = (chosen + n - 1) % n;
+                    return Ok(false);
+                }
+                KeyCode::Down => {
+                    self.menu_index = (chosen + 1) % n;
+                    return Ok(false);
+                }
+                KeyCode::Tab => {
+                    self.accept_mention(&m, chosen);
+                    return Ok(false);
+                }
+                KeyCode::Enter if !key.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) => {
+                    self.accept_mention(&m, chosen);
+                    return Ok(false);
+                }
+                KeyCode::Esc => {
+                    self.mention_off = true;
+                    return Ok(false);
+                }
+                _ => {}
+            }
+        }
+
         let menu = self.menu_matches();
         if menu.is_empty() && self.work.is_none() {
             let row = self.editor.cursor().0;
@@ -162,10 +192,35 @@ impl App {
             _ => {
                 self.editor.input(key);
                 self.menu_index = 0;
+                self.mention_off = false;
                 self.history.edited();
             }
         }
         Ok(false)
+    }
+
+    // A menção `@` sob o cursor e as sugestões para ela. `None` se não há menção, se `Esc` a fechou
+    // ou se o agente está trabalhando.
+    pub(super) fn mention_matches(&self) -> Option<Mention> {
+        if self.work.is_some() || self.mention_off {
+            return None;
+        }
+        let ratatui_textarea::DataCursor(row, col) = self.editor.cursor();
+        let (start, token) = mention::token_at(self.editor.lines().get(row)?, col)?;
+        let entries = mention::suggest(&self.settings.root, &token);
+        (!entries.is_empty()).then_some(Mention { start, entries })
+    }
+
+    // Troca a menção pela sugestão escolhida e deixa o cursor depois dela.
+    pub(super) fn accept_mention(&mut self, m: &Mention, chosen: usize) {
+        let ratatui_textarea::DataCursor(row, col) = self.editor.cursor();
+        let mut lines: Vec<String> = self.editor.lines().to_vec();
+        let (line, new_col) = mention::apply(&lines[row], m.start, col, &m.entries[chosen]);
+        lines[row] = line;
+        self.editor = new_editor();
+        self.editor.insert_str(lines.join("\n"));
+        self.editor.move_cursor(CursorMove::Jump(row as u16, new_col as u16));
+        self.menu_index = 0;
     }
 
     // Rola a conversa: positivo sobe, negativo desce. Fica entre o início e o fim.

@@ -9,6 +9,7 @@
 mod brand;
 mod commands;
 mod history;
+mod mention;
 mod input;
 mod print;
 mod markdown;
@@ -19,6 +20,7 @@ mod worker;
 
 use self::commands::{ARG_COMMANDS, COMMANDS, Cmd, ModelAction, parse_model_arg};
 use self::history::History;
+use self::mention::Mention;
 use self::view::*;
 use self::worker::{Command, UiEvent, worker};
 use self::theme::{GRAY, RED, YELLOW, bold, fg, palette};
@@ -70,6 +72,8 @@ pub struct Settings {
     pub color: bool,
     // Captura o mouse, para o clique no mascote. Desligá-la devolve a seleção de texto ao terminal.
     pub mouse: bool,
+    // Pasta do projeto, de onde vêm as sugestões de arquivo do `@`.
+    pub root: std::path::PathBuf,
 }
 
 // Como criar o cliente de um modelo, para a troca em tempo de execução. Roda na thread do agente.
@@ -147,6 +151,8 @@ struct App {
     // Número do mascote em andamento e quantos cliques já houve (decide o próximo número).
     play: Option<(Instant, brand::Mood)>,
     clicks: usize,
+    // `Esc` fechou as sugestões de `@`; voltam ao digitar de novo.
+    mention_off: bool,
 }
 
 // Roda a interface até o usuário sair. `make_session` roda na thread do agente.
@@ -198,6 +204,7 @@ where
         // Ao abrir, o mascote cumprimenta.
         play: Some((Instant::now(), brand::Mood::Greet)),
         clicks: 0,
+        mention_off: false,
     };
     let result = app.event_loop();
 
@@ -225,6 +232,7 @@ impl App {
         self.print_header().map_err(|e| e.to_string())?;
         loop {
             let menu = self.menu_matches();
+            let mentions = self.mention_matches().map(|m| m.entries).unwrap_or_default();
             let App { terminal, editor, work, usage, settings, menu_index, picker, model_picker, play, transcript, scroll_back, .. } = self;
             let mascot = mascot_for(*play);
             let view = View {
@@ -239,6 +247,7 @@ impl App {
                 mascot,
                 transcript,
                 scroll_back: *scroll_back,
+                mentions,
             };
             terminal.draw(|f| draw(f, &view)).map_err(|e| e.to_string())?;
             if event::poll(Duration::from_millis(80)).map_err(|e| e.to_string())? {
@@ -386,6 +395,7 @@ mod tests {
             auto_yes,
             color: false,
             mouse: false,
+            root: std::env::temp_dir(),
         }
     }
 
@@ -400,7 +410,7 @@ mod tests {
         let height = viewport_height(editor.lines().len(), menu.len());
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let settings = settings(auto_yes);
-        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0 };
+        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
         terminal.draw(|f| draw(f, &view)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height)
@@ -499,7 +509,7 @@ mod tests {
         let cfg = settings(false);
         *cfg.effort.lock().unwrap() = Effort::Medium;
         let mut terminal = Terminal::new(TestBackend::new(100, viewport_height(1, 0))).unwrap();
-        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0 };
+        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
         terminal.draw(|f| draw(f, &view)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         let footer: String = (0..100).map(|x| buffer[(x, 8)].symbol().to_string()).collect();
@@ -602,7 +612,7 @@ mod tests {
             editor.insert_str(typed);
             let mut terminal = Terminal::new(TestBackend::new(60, viewport_height(1, 0))).unwrap();
             let settings = settings(false);
-            let view = View { editor: &editor, work: None, usage: None, settings: &settings, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0 };
+            let view = View { editor: &editor, work: None, usage: None, settings: &settings, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
             terminal.draw(|f| draw(f, &view)).unwrap();
             let buffer = terminal.backend().buffer().clone();
             // Linha do editor: cabeçalho (3) + conversa (2) + régua (1) → linha 6; o texto começa na coluna 2.
@@ -676,6 +686,7 @@ mod tests {
             mascot: Mascot { mood: brand::Mood::Idle, ms: 0 },
             transcript: &transcript,
             scroll_back: back,
+            mentions: Vec::new(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, height)).unwrap();
         terminal.draw(|f| draw(f, &view)).unwrap();
@@ -716,5 +727,39 @@ mod tests {
         assert_eq!(visible_range(10, 4, 0), (6, 10));
         assert_eq!(visible_range(10, 4, 3), (3, 7));
         assert_eq!(visible_range(10, 4, 99), (0, 4));
+    }
+
+    #[test]
+    fn file_suggestions_appear_below_the_editor_with_their_own_hint() {
+        let mut editor = new_editor();
+        editor.insert_str("leia @do");
+        let mentions = vec![
+            mention::Entry { path: "docs/".into(), is_dir: true },
+            mention::Entry { path: "README.md".into(), is_dir: false },
+        ];
+        let settings = settings(false);
+        let view = View {
+            editor: &editor,
+            work: None,
+            usage: None,
+            settings: &settings,
+            menu: Vec::new(),
+            menu_index: 0,
+            picker: None,
+            model_picker: None,
+            mascot: Mascot { mood: brand::Mood::Idle, ms: 0 },
+            transcript: &[],
+            scroll_back: 0,
+            mentions,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 14)).unwrap();
+        terminal.draw(|f| draw(f, &view)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let rows: Vec<String> = (0..14)
+            .map(|y| (0..80).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
+            .collect();
+        let at = rows.iter().position(|r| r.starts_with("› @docs/")).unwrap_or_else(|| panic!("{rows:?}"));
+        assert_eq!(rows[at + 1], "  @README.md", "{rows:?}");
+        assert!(rows.last().unwrap().contains("tab ou enter completa"), "{rows:?}");
     }
 }

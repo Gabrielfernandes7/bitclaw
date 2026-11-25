@@ -156,6 +156,7 @@ fn run() -> Result<(), String> {
             auto_yes: args.auto_yes,
             color,
             mouse: !args.no_mouse,
+            root: root.clone(),
         };
         // A sessão é montada na thread do agente, que recebe o aprovador pronto.
         let session_effort = Arc::clone(&effort);
