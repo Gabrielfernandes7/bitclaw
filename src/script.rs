@@ -379,6 +379,15 @@ mod tests {
     }
 
     #[test]
+    fn a_path_with_control_characters_never_reaches_the_approval() {
+        let root = project("ctrl");
+        let approver = yes();
+        let out = run(&root, json!({"path": "x\x1b[2J.sh"}), &approver, RUN_TIMEOUT);
+        assert!(matches!(out, Outcome::Error(_)), "{out:?}");
+        assert!(approver.0.borrow().is_none(), "o usuário não chegou a ver uma prévia com o caminho forjado");
+    }
+
+    #[test]
     fn a_script_too_long_to_review_is_not_run() {
         let root = project("long");
         script(&root, "g.sh", &format!("#!/bin/sh\n{}", "echo oi\n".repeat(MAX_SCRIPT_LINES)));
