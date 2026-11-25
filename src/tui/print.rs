@@ -1,4 +1,4 @@
-//! Saída para o scrollback do terminal: cabeçalho, avisos, prévias e relatório do turno.
+//! Saída para a conversa: cabeçalho, avisos, prévias e relatório do turno.
 
 use super::{App, brand, markdown, theme::*, view::{self, aviso_line, note}};
 use super::locked;
@@ -6,7 +6,6 @@ use bitclaw::agent::{INTERRUPTED, TurnReport};
 use bitclaw::tools::{Outcome, Preview, PreviewLine};
 use serde_json::Value;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget};
 use std::io;
 
 impl App {
@@ -14,13 +13,15 @@ impl App {
         Ok(self.terminal.size()?.width as usize)
     }
 
+    // Acrescenta linhas à conversa. Se o usuário rolou para cima, a tela fica onde está.
     pub(super) fn print(&mut self, lines: Vec<Line<'static>>) -> io::Result<()> {
-        // Em pedaços, para nunca passar da altura da tela de uma vez.
-        let chunk = usize::from(self.terminal.size()?.height.saturating_sub(self.height).max(1));
-        for part in lines.chunks(chunk) {
-            let part = part.to_vec();
-            self.terminal
-                .insert_before(part.len() as u16, |buf| Paragraph::new(part).render(buf.area, buf))?;
+        if self.scroll_back > 0 {
+            self.scroll_back += lines.len();
+        }
+        self.transcript.extend(lines);
+        let extra = self.transcript.len().saturating_sub(super::MAX_TRANSCRIPT);
+        if extra > 0 {
+            self.transcript.drain(..extra);
         }
         Ok(())
     }

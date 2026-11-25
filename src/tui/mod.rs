@@ -1,7 +1,7 @@
 //! Interface de terminal do BitClaw, com ratatui em viewport inline.
 //!
-//! O cabeçalho e a transcrição entram no scrollback normal do terminal (rolar, selecionar e
-//! copiar funcionam como sempre). Só uma área fixa fica embaixo: status, editor e rodapé.
+//! Tela cheia: o mascote com o nome e o status ficam no topo, a conversa no meio (rola com
+//! PageUp/PageDown e a roda do mouse) e o editor com o rodapé embaixo.
 //!
 //! O agente roda numa thread própria e fala com a interface por canais. Só este módulo escreve
 //! na tela: a biblioteca continua sem imprimir nada.
@@ -33,14 +33,11 @@ use crossterm::event::{
     KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
-use crossterm::cursor::MoveTo;
 use crossterm::execute;
-use crossterm::terminal::{Clear, ClearType};
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::backend::CrosstermBackend;
-use ratatui::{DefaultTerminal, Terminal, TerminalOptions, Viewport};
+use ratatui::DefaultTerminal;
 use ratatui_textarea::TextArea;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,13 +46,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-// A área fixa cresce e encolhe: mascote e status (3) + régua, editor e régua (2 + linhas do editor)
-// + menu de comandos + rodapé (1).
+// Máximo de linhas do editor. Passando disso, ele rola por dentro.
 const MAX_EDITOR_ROWS: usize = 6;
 
-fn viewport_height(editor_rows: usize, menu_rows: usize) -> u16 {
-    (MASCOT_ROWS as usize + 2 + editor_rows.clamp(1, MAX_EDITOR_ROWS) + menu_rows + 1) as u16
-}
+// Máximo de linhas guardadas na conversa. As mais antigas saem primeiro.
+const MAX_TRANSCRIPT: usize = 20_000;
 
 pub struct Settings {
     pub title: String,
@@ -138,9 +133,12 @@ struct App {
     commands: Sender<Command>,
     events: Receiver<UiEvent>,
     cancel: Arc<AtomicBool>,
-    // Altura atual da área fixa e item escolhido no menu de comandos.
-    height: u16,
+    // Item escolhido no menu de comandos.
     menu_index: usize,
+    // A conversa, mostrada entre o cabeçalho e o editor, e quantas linhas ela está rolada para cima
+    // (0 acompanha o fim).
+    transcript: Vec<Line<'static>>,
+    scroll_back: usize,
     history: History,
     // Painel de skills aberto, se houver.
     picker: Option<Picker>,
@@ -171,8 +169,8 @@ where
     }
 
     let enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
-    let height = viewport_height(1, 0);
-    let terminal = ratatui::init_with_options(TerminalOptions { viewport: Viewport::Inline(height) });
+    // Tela cheia: a conversa fica entre o cabeçalho e o editor.
+    let terminal = ratatui::init();
     let _ = execute!(io::stdout(), EnableBracketedPaste);
     if settings.mouse {
         let _ = execute!(io::stdout(), EnableMouseCapture);
@@ -191,8 +189,9 @@ where
         commands,
         events,
         cancel,
-        height,
         menu_index: 0,
+        transcript: Vec::new(),
+        scroll_back: 0,
         history: History::default(),
         picker: None,
         model_picker: None,
@@ -209,10 +208,7 @@ where
         let _ = execute!(io::stdout(), DisableMouseCapture);
     }
     let _ = execute!(io::stdout(), DisableBracketedPaste);
-    // Sem `clear()`: ele apagaria a tela a partir do topo e a conversa visível sumiria.
-    // A área do TUI fica no lugar; o cursor só desce para uma linha abaixo dela.
     ratatui::restore();
-    println!();
     result
 }
 
@@ -228,9 +224,8 @@ impl App {
     fn event_loop(&mut self) -> Result<(), String> {
         self.print_header().map_err(|e| e.to_string())?;
         loop {
-            self.fit_viewport().map_err(|e| e.to_string())?;
             let menu = self.menu_matches();
-            let App { terminal, editor, work, usage, settings, menu_index, picker, model_picker, play, .. } = self;
+            let App { terminal, editor, work, usage, settings, menu_index, picker, model_picker, play, transcript, scroll_back, .. } = self;
             let mascot = mascot_for(*play);
             let view = View {
                 editor,
@@ -242,6 +237,8 @@ impl App {
                 picker: picker.as_ref(),
                 model_picker: model_picker.as_ref(),
                 mascot,
+                transcript,
+                scroll_back: *scroll_back,
             };
             terminal.draw(|f| draw(f, &view)).map_err(|e| e.to_string())?;
             if event::poll(Duration::from_millis(80)).map_err(|e| e.to_string())? {
@@ -266,8 +263,14 @@ impl App {
     // uma única palavra começando por `/`.
     // Clique no mascote: dispara o próximo número. Ignora cliques com um painel aberto.
     fn on_mouse(&mut self, event: MouseEvent) {
-        if event.kind != MouseEventKind::Down(MouseButton::Left) || self.picker.is_some() || self.model_picker.is_some() {
+        if self.picker.is_some() || self.model_picker.is_some() {
             return;
+        }
+        match event.kind {
+            MouseEventKind::ScrollUp => return self.scroll_by(3),
+            MouseEventKind::ScrollDown => return self.scroll_by(-3),
+            MouseEventKind::Down(MouseButton::Left) => {}
+            _ => return,
         }
         let area = self.terminal.get_frame().area();
         let Some(rect) = mascot_rect(Rect::new(area.x, area.y, area.width, MASCOT_ROWS)) else { return };
@@ -288,34 +291,10 @@ impl App {
         }
     }
 
-    // Ajusta a altura da área fixa ao editor e ao menu. O viewport inline tem altura fixa,
-    // então recriar o terminal é o jeito de mudá-la.
-    fn fit_viewport(&mut self) -> io::Result<()> {
-        let want = match (&self.model_picker, &self.picker) {
-            (Some(mp), _) => picker_height(model_rows(mp).len()),
-            (None, Some(p)) => picker_height(picker_rows(&self.settings.skills, p).len()),
-            (None, None) => viewport_height(self.editor.lines().len(), self.menu_matches().len()),
-        };
-        if want != self.height {
-            // Apaga a área antiga e deixa o cursor no topo dela: a nova começa no mesmo lugar,
-            // sem deixar linhas em branco entre a transcrição e a área fixa.
-            let top = self.terminal.get_frame().area().y;
-            execute!(io::stdout(), MoveTo(0, top), Clear(ClearType::FromCursorDown))?;
-            self.terminal = Terminal::with_options(
-                CrosstermBackend::new(io::stdout()),
-                TerminalOptions { viewport: Viewport::Inline(want) },
-            )?;
-            self.height = want;
-        }
-        Ok(())
-    }
-
     fn clear_screen(&mut self) -> io::Result<()> {
-        execute!(io::stdout(), Clear(ClearType::All), Clear(ClearType::Purge), MoveTo(0, 0))?;
-        self.terminal = Terminal::with_options(
-            CrosstermBackend::new(io::stdout()),
-            TerminalOptions { viewport: Viewport::Inline(self.height) },
-        )?;
+        self.transcript.clear();
+        self.scroll_back = 0;
+        self.terminal.clear()?;
         self.print_header()?;
         self.print(vec![note("contexto limpo; o prompt do sistema foi mantido."), Line::default()])
     }
@@ -386,6 +365,14 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    // Linhas que as partes fixas pedem (cabeçalho, réguas, editor, menu e rodapé), mais algumas
+    // para a conversa.
+    const TRANSCRIPT_ROWS: usize = 2;
+
+    fn viewport_height(editor_rows: usize, menu_rows: usize) -> u16 {
+        (MASCOT_ROWS as usize + TRANSCRIPT_ROWS + 2 + editor_rows.clamp(1, MAX_EDITOR_ROWS) + menu_rows + 1) as u16
+    }
+
     fn settings(auto_yes: bool) -> Settings {
         Settings {
             title: "BitClaw".into(),
@@ -413,7 +400,7 @@ mod tests {
         let height = viewport_height(editor.lines().len(), menu.len());
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let settings = settings(auto_yes);
-        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 } };
+        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0 };
         terminal.draw(|f| draw(f, &view)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height)
@@ -436,19 +423,19 @@ mod tests {
     fn idle_screen_is_compact_with_one_editor_row() {
         let usage = Usage { tokens: 861, window: 16384, percent: 5.0 };
         let lines = screen(None, Some(usage), false);
-        assert_eq!(lines.len(), 7, "mascote (3), régua, 1 linha de editor, régua e rodapé: {lines:?}");
+        assert_eq!(lines.len(), 9, "mascote (3), conversa (2), régua, 1 linha de editor, régua e rodapé: {lines:?}");
         assert!(lines[..3].iter().all(|l| !l.contains("pensando") && !l.contains("executando")), "sem status quando ocioso");
         assert!(lines[0].contains('▀') || lines[1].contains('█'), "o mascote aparece: {lines:?}");
-        assert!(lines[3].starts_with('─') && lines[5].starts_with('─'));
-        assert!(lines[4].starts_with('›') && lines[4].contains("Digite uma tarefa…"), "{lines:?}");
-        assert!(lines[6].starts_with("m:1b · Manual · contexto 5% (861/16384)"), "{}", lines[6]);
-        assert!(lines[6].ends_with("enter envia · / comandos"), "versão curta dos atalhos em 80 colunas");
+        assert!(lines[5].starts_with('─') && lines[7].starts_with('─'));
+        assert!(lines[6].starts_with('›') && lines[6].contains("Digite uma tarefa…"), "{lines:?}");
+        assert!(lines[8].starts_with("m:1b · Manual · contexto 5% (861/16384)"), "{}", lines[8]);
+        assert!(lines[8].ends_with("enter envia · / comandos"), "versão curta dos atalhos em 80 colunas");
     }
 
     #[test]
     fn editor_grows_with_the_text_up_to_a_limit() {
-        assert_eq!(screen_with(80, "a\nb\nc", None, None, false).len(), 9);
-        assert_eq!(screen_with(80, &"x\n".repeat(20), None, None, false).len(), 7 + MAX_EDITOR_ROWS - 1);
+        assert_eq!(screen_with(80, "a\nb\nc", None, None, false).len(), 11);
+        assert_eq!(screen_with(80, &"x\n".repeat(20), None, None, false).len(), 9 + MAX_EDITOR_ROWS - 1);
     }
 
     #[test]
@@ -476,31 +463,31 @@ mod tests {
     #[test]
     fn typing_a_slash_lists_every_command_below_the_editor() {
         let lines = screen_with(100, "/", None, None, false);
-        assert_eq!(lines.len(), 7 + COMMANDS.len());
-        assert!(lines[6].starts_with("› /help") && lines[6].contains("mostra os comandos"), "{lines:?}");
-        assert!(lines[7].starts_with("  /model") && lines[8].starts_with("  /effort"), "{lines:?}");
-        assert!(lines[9].starts_with("  /init"), "{lines:?}");
-        assert!(lines[10].starts_with("  /clear") && lines[11].starts_with("  /think"), "{lines:?}");
-        assert!(lines[12].starts_with("  /skills"), "{lines:?}");
-        assert!(lines[13].starts_with("  /exit"), "{lines:?}");
+        assert_eq!(lines.len(), 9 + COMMANDS.len());
+        assert!(lines[8].starts_with("› /help") && lines[8].contains("mostra os comandos"), "{lines:?}");
+        assert!(lines[9].starts_with("  /model") && lines[10].starts_with("  /effort"), "{lines:?}");
+        assert!(lines[11].starts_with("  /init"), "{lines:?}");
+        assert!(lines[12].starts_with("  /clear") && lines[13].starts_with("  /think"), "{lines:?}");
+        assert!(lines[14].starts_with("  /skills"), "{lines:?}");
+        assert!(lines[15].starts_with("  /exit"), "{lines:?}");
         assert!(lines.last().unwrap().contains("tab completa · enter executa"));
     }
 
     #[test]
     fn the_menu_filters_by_name() {
         let lines = screen_with(100, "/cl", None, None, false);
-        assert_eq!(lines.len(), 8);
-        assert!(lines[6].starts_with("› /clear"), "{lines:?}");
+        assert_eq!(lines.len(), 10);
+        assert!(lines[8].starts_with("› /clear"), "{lines:?}");
         let lines = screen_with(100, "/ex", None, None, false);
-        assert!(lines[6].starts_with("› /exit"), "{lines:?}");
+        assert!(lines[8].starts_with("› /exit"), "{lines:?}");
         // Sem correspondência, não há menu.
-        assert_eq!(screen_with(100, "/zzz", None, None, false).len(), 7);
+        assert_eq!(screen_with(100, "/zzz", None, None, false).len(), 9);
     }
 
     #[test]
     fn the_think_command_explains_its_cost_in_the_menu() {
         let lines = screen_with(120, "/th", None, None, false);
-        assert!(lines[6].starts_with("› /think") && lines[6].contains("gasta mais contexto"), "{lines:?}");
+        assert!(lines[8].starts_with("› /think") && lines[8].contains("gasta mais contexto"), "{lines:?}");
     }
 
     #[test]
@@ -512,10 +499,10 @@ mod tests {
         let cfg = settings(false);
         *cfg.effort.lock().unwrap() = Effort::Medium;
         let mut terminal = Terminal::new(TestBackend::new(100, viewport_height(1, 0))).unwrap();
-        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 } };
+        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0 };
         terminal.draw(|f| draw(f, &view)).unwrap();
         let buffer = terminal.backend().buffer().clone();
-        let footer: String = (0..100).map(|x| buffer[(x, 6)].symbol().to_string()).collect();
+        let footer: String = (0..100).map(|x| buffer[(x, 8)].symbol().to_string()).collect();
         assert!(footer.starts_with("m:1b · Manual · esforço medium · contexto"), "{footer}");
     }
 
@@ -569,7 +556,7 @@ mod tests {
         cfg.default_model = "gpt-oss:20b".into();
         *cfg.model.lock().unwrap() = models[1].clone();
         let picker = ModelPicker { query: String::new(), index: 0, models };
-        let mut terminal = Terminal::new(TestBackend::new(120, picker_height(2))).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 7)).unwrap();
         terminal.draw(|f| draw_model_picker(f, &cfg, &picker)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         let row = |y: u16| -> String { (0..120).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string() };
@@ -582,14 +569,14 @@ mod tests {
     #[test]
     fn footer_shows_the_automatic_mode_and_unknown_usage() {
         let lines = screen(None, None, true);
-        assert!(lines[6].starts_with("m:1b · Automático · contexto —"), "{}", lines[6]);
+        assert!(lines[8].starts_with("m:1b · Automático · contexto —"), "{}", lines[8]);
     }
 
     #[test]
     fn working_screen_shows_the_activity_and_how_to_interrupt() {
         let lines = screen(Some(&work(false, false)), None, false);
         assert!(lines[1].contains("executando read_file a.txt… (0s)"), "{}", lines[1]);
-        assert!(lines[6].ends_with("esc interrompe"));
+        assert!(lines[8].ends_with("esc interrompe"));
         let lines = screen(Some(&work(false, true)), None, false);
         assert!(lines[1].contains("interrompendo, aguardando o modelo"), "{}", lines[1]);
     }
@@ -598,7 +585,7 @@ mod tests {
     fn approval_screen_asks_for_a_decision() {
         let lines = screen(Some(&work(true, false)), None, false);
         assert!(lines[1].contains("Aplicar esta alteração? [s] sim · [n] não"), "{}", lines[1]);
-        assert!(lines[6].ends_with("s aplica · n recusa"));
+        assert!(lines[8].ends_with("s aplica · n recusa"));
     }
 
     #[test]
@@ -615,11 +602,11 @@ mod tests {
             editor.insert_str(typed);
             let mut terminal = Terminal::new(TestBackend::new(60, viewport_height(1, 0))).unwrap();
             let settings = settings(false);
-            let view = View { editor: &editor, work: None, usage: None, settings: &settings, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 } };
+            let view = View { editor: &editor, work: None, usage: None, settings: &settings, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0 };
             terminal.draw(|f| draw(f, &view)).unwrap();
             let buffer = terminal.backend().buffer().clone();
-            // Linha do editor: mascote (3) + régua (1) → linha 4; o texto começa na coluna 2.
-            (0..typed.chars().count() as u16).map(|x| buffer[(2 + x, 4)].fg).map(|c| (c != Color::Reset).then_some(c)).collect()
+            // Linha do editor: cabeçalho (3) + conversa (2) + régua (1) → linha 6; o texto começa na coluna 2.
+            (0..typed.chars().count() as u16).map(|x| buffer[(2 + x, 6)].fg).map(|c| (c != Color::Reset).then_some(c)).collect()
         };
         let colors = cell_colors("/model load x");
         assert!(colors[..6].iter().all(|c| *c == Some(KEYWORD)), "comando: {colors:?}");
@@ -670,5 +657,64 @@ mod tests {
         let busy = screen(Some(&work(false, false)), None, false);
         assert!(busy.iter().all(|l| !l.contains("BitClaw")), "{busy:?}");
         assert!(busy[1].contains("executando"), "{busy:?}");
+    }
+
+    // Desenha a tela inteira com a conversa dada e `back` linhas de rolagem.
+    fn screen_with_transcript(height: u16, lines: &[&str], back: usize) -> Vec<String> {
+        let transcript: Vec<Line<'static>> = lines.iter().map(|l| Line::from(l.to_string())).collect();
+        let editor = new_editor();
+        let settings = settings(false);
+        let view = View {
+            editor: &editor,
+            work: None,
+            usage: None,
+            settings: &settings,
+            menu: Vec::new(),
+            menu_index: 0,
+            picker: None,
+            model_picker: None,
+            mascot: Mascot { mood: brand::Mood::Idle, ms: 0 },
+            transcript: &transcript,
+            scroll_back: back,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, height)).unwrap();
+        terminal.draw(|f| draw(f, &view)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height)
+            .map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn the_conversation_sits_between_the_header_and_the_prompt() {
+        let lines = screen_with_transcript(12, &["primeira", "segunda"], 0);
+        assert!(lines[0].contains("BitClaw"), "cabeçalho no topo: {lines:?}");
+        assert_eq!(lines[3], "primeira", "{lines:?}");
+        assert_eq!(lines[4], "segunda", "{lines:?}");
+        let ruler = lines.iter().position(|l| l.starts_with('─')).unwrap();
+        assert!(ruler > 4, "o prompt vem depois da conversa: {lines:?}");
+        assert!(lines[ruler + 1].starts_with('›'));
+    }
+
+    #[test]
+    fn a_long_conversation_follows_the_end_and_can_be_scrolled_back() {
+        let all: Vec<String> = (1..=30).map(|n| format!("linha {n}")).collect();
+        let refs: Vec<&str> = all.iter().map(String::as_str).collect();
+        // 12 linhas de tela: 3 de cabeçalho, 4 de partes fixas (régua, editor, régua e rodapé) e 5 para a conversa.
+        let at_end = screen_with_transcript(12, &refs, 0);
+        assert_eq!(&at_end[3..8], ["linha 26", "linha 27", "linha 28", "linha 29", "linha 30"]);
+        let back = screen_with_transcript(12, &refs, 10);
+        assert_eq!(&back[3..8], ["linha 16", "linha 17", "linha 18", "linha 19", "linha 20"]);
+        let too_far = screen_with_transcript(12, &refs, 500);
+        assert_eq!(&too_far[3..8], ["linha 1", "linha 2", "linha 3", "linha 4", "linha 5"], "para no começo");
+    }
+
+    #[test]
+    fn visible_range_clamps_to_the_conversation() {
+        assert_eq!(visible_range(0, 5, 0), (0, 0));
+        assert_eq!(visible_range(3, 5, 0), (0, 3), "cabe inteira");
+        assert_eq!(visible_range(10, 4, 0), (6, 10));
+        assert_eq!(visible_range(10, 4, 3), (3, 7));
+        assert_eq!(visible_range(10, 4, 99), (0, 4));
     }
 }

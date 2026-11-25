@@ -33,11 +33,6 @@ pub(in crate::tui) fn picker_rows(skills: &[Skill], p: &Picker) -> Vec<usize> {
 
 pub(in crate::tui) const PICKER_VISIBLE: usize = 8;
 
-// Título (1), caixa de busca (3), lista (até PICKER_VISIBLE linhas) e dica (1).
-pub(in crate::tui) fn picker_height(rows: usize) -> u16 {
-    (1 + 3 + rows.clamp(1, PICKER_VISIBLE) + 1) as u16
-}
-
 pub(in crate::tui) fn draw_picker(f: &mut Frame, settings: &Settings, p: &Picker) {
     let rows = picker_rows(&settings.skills, p);
     let off = skills::disabled_now(&settings.skills_off);

@@ -47,6 +47,8 @@ pub(in crate::tui) struct View<'a> {
     pub(in crate::tui) picker: Option<&'a Picker>,
     pub(in crate::tui) model_picker: Option<&'a ModelPicker>,
     pub(in crate::tui) mascot: Mascot,
+    pub(in crate::tui) transcript: &'a [Line<'static>],
+    pub(in crate::tui) scroll_back: usize,
 }
 
 // O estado do mascote e há quanto tempo ele dura, em ms.
@@ -80,8 +82,9 @@ pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
         return;
     }
     let editor_rows = v.editor.lines().len().clamp(1, MAX_EDITOR_ROWS) as u16;
-    let [status, composer, menu, footer] = Layout::vertical([
+    let [status, conversation, composer, menu, footer] = Layout::vertical([
         Constraint::Length(MASCOT_ROWS),
+        Constraint::Min(1),
         Constraint::Length(editor_rows + 2),
         Constraint::Length(v.menu.len() as u16),
         Constraint::Length(1),
@@ -110,6 +113,10 @@ pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
             Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).areas(text_area);
         f.render_widget(Paragraph::new(status_line(v.work)), middle);
     }
+
+    // A conversa, entre o cabeçalho e o editor.
+    let (from, to) = visible_range(v.transcript.len(), conversation.height as usize, v.scroll_back);
+    f.render_widget(Paragraph::new(v.transcript[from..to].to_vec()), conversation);
 
     // Editor delimitado por réguas, como no Claude Code.
     let block = Block::new().borders(Borders::TOP | Borders::BOTTOM).border_style(fg(GRAY));
@@ -170,6 +177,13 @@ pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
         Layout::horizontal([Constraint::Min(1), Constraint::Length(hint.chars().count() as u16)]).areas(footer);
     f.render_widget(Paragraph::new(Line::from(info)), left);
     f.render_widget(Paragraph::new(hint).style(fg(GRAY)), right);
+}
+
+// Trecho da conversa que cabe na tela: `back` é quantas linhas ela está rolada para cima.
+pub(in crate::tui) fn visible_range(len: usize, height: usize, back: usize) -> (usize, usize) {
+    let back = back.min(len.saturating_sub(height));
+    let end = len - back;
+    (end.saturating_sub(height), end)
 }
 
 // Destaca no editor as palavras reservadas: o comando e o subcomando de `/model`. Só vale quando a

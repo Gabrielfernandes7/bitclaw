@@ -74,6 +74,20 @@ impl App {
             return self.picker_key(key);
         }
 
+        // Rolagem da conversa.
+        let page = (self.terminal.size()?.height / 2).max(1) as isize;
+        match key.code {
+            KeyCode::PageUp => {
+                self.scroll_by(page);
+                return Ok(false);
+            }
+            KeyCode::PageDown => {
+                self.scroll_by(-page);
+                return Ok(false);
+            }
+            _ => {}
+        }
+
         let menu = self.menu_matches();
         if menu.is_empty() && self.work.is_none() {
             let row = self.editor.cursor().0;
@@ -152,6 +166,13 @@ impl App {
             }
         }
         Ok(false)
+    }
+
+    // Rola a conversa: positivo sobe, negativo desce. Fica entre o início e o fim.
+    pub(super) fn scroll_by(&mut self, lines: isize) {
+        let visible = self.terminal.size().map_or(0, |s| s.height).saturating_sub(7) as usize;
+        let max = self.transcript.len().saturating_sub(visible);
+        self.scroll_back = (self.scroll_back as isize + lines).clamp(0, max as isize) as usize;
     }
 
     pub(super) fn interrupt(&mut self) {
