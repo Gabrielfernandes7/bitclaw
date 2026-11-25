@@ -61,6 +61,26 @@ pub enum Mood {
 pub const TRICK_MS: u128 = 2200;
 pub const TRICKS: [Mood; 4] = [Mood::Happy, Mood::Thinking, Mood::Working, Mood::Greet];
 
+// Número de abertura: sorteado a cada vez que o terminal abre, entre os mesmos de `TRICKS`.
+// Sem crate de aleatoriedade: o `RandomState` da std recebe uma semente nova a cada uso. (Os
+// nanossegundos do relógio não servem: no macOS vêm sempre em múltiplos de 1000, e o resto por 4 fica 0.)
+pub fn opening_mood() -> Mood {
+    use std::hash::{BuildHasher, Hasher, RandomState};
+    let pick = RandomState::new().build_hasher().finish() as usize;
+    TRICKS[pick % TRICKS.len()]
+}
+
+#[cfg(test)]
+mod opening_tests {
+    use super::*;
+
+    #[test]
+    fn the_opening_number_changes_between_openings() {
+        let seen: std::collections::HashSet<_> = (0..40).map(|_| opening_mood() as u8).collect();
+        assert!(seen.len() > 1, "a abertura não pode repetir sempre o mesmo número");
+    }
+}
+
 // Olhos: buracos no corpo (linha 2). Fechados, o buraco some; olhando de lado, ele anda um pixel.
 #[derive(Clone, Copy, PartialEq)]
 enum Eyes {
@@ -159,6 +179,26 @@ pub fn frame(mood: Mood, ms: u128) -> Vec<String> {
     m[5] = if p.step { "S.S....S.S".chars().collect() } else { ".S.S..S.S.".chars().collect() };
     render(&m)
 }
+
+// O que muda ao aumentar a janela de contexto. Mostrado em `/context` e ao aumentá-la.
+pub const CONTEXT_RAISE_HEAD: &str = "contexto maior: o modelo lembra mais da conversa antes de o BitClaw cortar o histórico, mas isso tem custo.";
+pub const CONTEXT_COSTS: [&str; 5] = [
+    "memória: o cache de atenção cresce junto com a janela e o Ollama o reserva ao carregar o modelo. Em Mac com memória unificada, passar do que cabe causa swap e lentidão.",
+    "recarga: mudar a janela costuma fazer o Ollama recarregar o modelo (alguns segundos) e o próximo prompt perde o cache.",
+    "velocidade: processar o prompt e gerar ficam mais lentos conforme o histórico enche.",
+    "tokens: cada chamada reenvia todo o histórico, então o total gasto cresce mais rápido.",
+    "qualidade: modelos pequenos perdem o foco em contextos longos; acima do máximo do modelo o Ollama trunca.",
+];
+// Ao diminuir a janela.
+pub const CONTEXT_LOWER: &str = "contexto menor: mais leve e rápido, mas o histórico é cortado mais cedo e o agente esquece o que veio antes. O prompt do sistema e as ferramentas ocupam uma parte fixa da janela.";
+
+// O que a temperatura faz. Mostrado em `/temp`.
+pub const TEMPERATURE_NOTES: [&str; 4] = [
+    "perto de 0: o modelo escolhe quase sempre o token mais provável. Respostas estáveis e repetíveis, boas para ferramentas e código; em troca, variam menos.",
+    "de 0.6 a 0.9: equilíbrio. O Ollama usa 0.8 quando nada é pedido.",
+    "1 ou mais: respostas mais variadas e criativas, porém com mais erro em argumentos de ferramentas e menos fidelidade ao pedido.",
+    "a temperatura não corrige laços de raciocínio: nos testes com o nemotron-3-nano:4b-mlx eles apareceram em 0, 0.1 e 0.6.",
+];
 
 // Aviso mostrado sempre que o raciocínio do modelo é ligado.
 pub const THINK_WARNING: &str = "thinking ligado: o modelo raciocina antes de responder, o que gasta mais tokens e enche a janela de contexto mais rápido. Nem todo modelo suporta.";

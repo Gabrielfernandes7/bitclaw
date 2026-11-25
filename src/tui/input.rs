@@ -42,6 +42,20 @@ impl App {
         Ok(false)
     }
 
+    // Teclas do painel `/status`: ←/→ trocam de aba, Esc, Enter ou Ctrl+C fecham.
+    pub(super) fn status_panel_key(&mut self, key: KeyEvent) -> io::Result<bool> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(panel) = self.status_panel.as_mut() else { return Ok(false) };
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => self.status_panel = None,
+            KeyCode::Char('c') if ctrl => self.status_panel = None,
+            KeyCode::Right | KeyCode::Tab => panel.step(false),
+            KeyCode::Left | KeyCode::BackTab => panel.step(true),
+            _ => {}
+        }
+        Ok(false)
+    }
+
     // Trata uma tecla. Devolve `true` para sair.
     pub(super) fn on_key(&mut self, key: KeyEvent) -> io::Result<bool> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -73,6 +87,9 @@ impl App {
         }
         if self.picker.is_some() {
             return self.picker_key(key);
+        }
+        if self.status_panel.is_some() {
+            return self.status_panel_key(key);
         }
 
         // Rolagem da conversa.
@@ -225,7 +242,8 @@ impl App {
 
     // Rola a conversa: positivo sobe, negativo desce. Fica entre o início e o fim.
     pub(super) fn scroll_by(&mut self, lines: isize) {
-        let visible = self.terminal.size().map_or(0, |s| s.height).saturating_sub(7) as usize;
+        // Linhas fixas embaixo e em cima da conversa: a folga, o mascote, as réguas do editor e o rodapé.
+        let visible = self.terminal.size().map_or(0, |s| s.height).saturating_sub(7 + view::TOP_GAP) as usize;
         let max = self.transcript.len().saturating_sub(visible);
         self.scroll_back = (self.scroll_back as isize + lines).clamp(0, max as isize) as usize;
     }
@@ -255,6 +273,8 @@ impl App {
             }
             _ if command.is_some_and(|c| c.name == "/think") => self.think_command()?,
             _ if command.is_some_and(|c| c.name == "/model") => self.model_command(arg)?,
+            _ if command.is_some_and(|c| c.name == "/context") => self.context_command(arg)?,
+            _ if command.is_some_and(|c| c.name == "/temp") => self.temperature_command(arg)?,
             _ if command.is_some_and(|c| c.name == "/effort") => self.effort_command(arg)?,
             _ if command.is_some_and(|c| c.name == "/init") => self.init_command()?,
             _ if command.is_some_and(|c| c.name == "/skills") => {
@@ -263,6 +283,9 @@ impl App {
                 } else {
                     self.picker = Some(Picker { query: String::new(), index: 0, by_name: false });
                 }
+            }
+            _ if command.is_some_and(|c| c.name == "/status") => {
+                self.status_panel = Some(StatusPanel::default());
             }
             _ if command.is_some_and(|c| c.name == "/help") => {
                 let mut lines: Vec<Line<'static>> =
@@ -279,11 +302,12 @@ impl App {
             }
             task => {
                 let width = self.width()?;
-                let mut lines = markdown::plain(task, width, Span::styled("› ", bold(YELLOW)), Style::default(), &palette());
+                let mut lines = markdown::plain(task, width, Span::styled("❯ ", bold(YELLOW)), Style::default(), &palette());
                 lines.push(Line::default());
                 self.print(lines)?;
                 self.cancel.store(false, Ordering::Relaxed);
-                let _ = self.commands.send(Command::Submit(task.to_string()));
+                self.stats.turns += 1;
+                let _ = self.commands.send(Command::Submit(super::mention::expand(&self.settings.root, task)));
                 self.work =
                     Some(Work::new("pensando"));
             }
@@ -344,6 +368,70 @@ impl App {
             Err(msg) => msg,
         };
         self.print(vec![note(&text), Line::default()])
+    }
+
+    // `/context`: sem argumento mostra a janela e o que muda ao mexer nela; com um valor (ou `reset`), troca.
+    pub(super) fn context_command(&mut self, arg: &str) -> io::Result<()> {
+        let default = self.settings.default_options.num_ctx as usize;
+        let current = locked(&self.settings.options).num_ctx as usize;
+        let max = self.active_model().capabilities.context_window;
+        let target = match parse_context(arg) {
+            Err(e) => return self.print(vec![note(&e), Line::default()]),
+            Ok(Setting::Show) => {
+                let limit = max.map_or(String::new(), |m| format!(" · máximo do modelo {m}"));
+                let mut lines = vec![
+                    note(&format!("contexto {current} tokens · padrão {default}{limit}")),
+                    note("troque com /context <tokens> (16384 ou 16k) e volte ao padrão com /context reset."),
+                    note(brand::CONTEXT_RAISE_HEAD),
+                ];
+                lines.extend(brand::CONTEXT_COSTS.iter().map(|t| note(&format!("• {t}"))));
+                lines.push(Line::default());
+                return self.print(lines);
+            }
+            Ok(Setting::Reset) => default,
+            Ok(Setting::Set(n)) => n,
+        };
+        if self.work.is_some() {
+            return self.print(vec![note("espere a tarefa terminar para mudar o contexto."), Line::default()]);
+        }
+        if let Some(m) = max.filter(|&m| target > m) {
+            return self.print(vec![note(&format!("este modelo aceita no máximo {m} tokens.")), Line::default()]);
+        }
+        if target == current {
+            return self.print(vec![note(&format!("o contexto já está em {current} tokens.")), Line::default()]);
+        }
+        let _ = self.commands.send(Command::SetContext(target));
+        let mut lines = if target > current {
+            let mut lines = self.warning(brand::CONTEXT_RAISE_HEAD)?;
+            lines.extend(brand::CONTEXT_COSTS.iter().map(|t| note(&format!("• {t}"))));
+            lines
+        } else {
+            self.warning(brand::CONTEXT_LOWER)?
+        };
+        lines.push(Line::default());
+        self.print(lines)
+    }
+
+    // `/temp`: sem argumento mostra a temperatura e o que ela muda; com um valor (ou `reset`), troca.
+    pub(super) fn temperature_command(&mut self, arg: &str) -> io::Result<()> {
+        let default = self.settings.default_options.temperature;
+        let current = locked(&self.settings.options).temperature;
+        let target = match parse_temperature(arg) {
+            Err(e) => return self.print(vec![note(&e), Line::default()]),
+            Ok(Setting::Show) => {
+                let mut lines = vec![
+                    note(&format!("temperatura {current} · padrão {default}")),
+                    note("troque com /temp <0 a 2> e volte ao padrão com /temp reset."),
+                ];
+                lines.extend(brand::TEMPERATURE_NOTES.iter().map(|t| note(&format!("• {t}"))));
+                lines.push(Line::default());
+                return self.print(lines);
+            }
+            Ok(Setting::Reset) => default,
+            Ok(Setting::Set(t)) => t,
+        };
+        locked(&self.settings.options).temperature = target;
+        self.print(vec![note(&format!("temperatura {target} · {}", temperature_effect(target))), Line::default()])
     }
 
     // `/model`: sem argumento abre o painel; com um id, troca direto. A troca espera a tarefa atual.

@@ -6,10 +6,10 @@ mod tui;
 use bitclaw::agent::ChatModel;
 use bitclaw::config::AgentConfig;
 use bitclaw::models::{Effort, ModelCatalog, ModelInfo, SharedEffort};
-use bitclaw::ollama::{self, Options, OllamaCatalog};
+use bitclaw::ollama::{self, Options, OllamaCatalog, SharedOptions};
 use bitclaw::session::Session;
 use bitclaw::skills;
-use bitclaw::tools::{Approver, AutoApprover};
+use bitclaw::tools::Approver;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -24,7 +24,7 @@ struct Args {
     dir: PathBuf,
     auto_yes: bool,
     no_color: bool,
-    no_mouse: bool,
+    mouse: bool,
     think: bool,
 }
 
@@ -36,7 +36,7 @@ fn parse_args() -> Result<Args, String> {
         dir: std::env::current_dir().map_err(|e| e.to_string())?,
         auto_yes: false,
         no_color: false,
-        no_mouse: false,
+        mouse: false,
         think: false,
     };
     let mut it = std::env::args().skip(1);
@@ -48,10 +48,10 @@ fn parse_args() -> Result<Args, String> {
             "--dir" => args.dir = PathBuf::from(it.next().ok_or("--dir precisa de valor")?),
             "--yes" => args.auto_yes = true,
             "--no-color" => args.no_color = true,
-            "--no-mouse" => args.no_mouse = true,
+            "--mouse" => args.mouse = true,
             "--think" => args.think = true,
             "-h" | "--help" => {
-                println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color] [--no-mouse] [--think]");
+                println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color] [--mouse] [--think]");
                 std::process::exit(0);
             }
             other => return Err(format!("argumento desconhecido: {other}")),
@@ -87,7 +87,7 @@ fn run() -> Result<(), String> {
 
     // Catálogo do provedor. Sem o Ollama o agente não faz nada útil: falha já na inicialização.
     let catalog: Arc<dyn ModelCatalog + Send + Sync> = Arc::new(OllamaCatalog::new(cfg.model.url.clone()));
-    let probe = build_client(&cfg, &ModelInfo::unknown(&cfg.model.name), &Arc::new(Mutex::new(Effort::Off)))?;
+    let probe = build_client(&cfg, &ModelInfo::unknown(&cfg.model.name), &Arc::new(Mutex::new(Effort::Off)), &shared_options(&cfg))?;
     match probe.has_model() {
         Ok(true) => {}
         Ok(false) => eprintln!("aviso: o modelo '{0}' não aparece no Ollama. Instale com: ollama pull {0}", cfg.model.name),
@@ -104,6 +104,8 @@ fn run() -> Result<(), String> {
     let start_effort = if cfg.model.think || args.think { default_info.capabilities.default_on() } else { Effort::Off };
     let effort: SharedEffort = Arc::new(Mutex::new(start_effort));
     let active = Arc::new(Mutex::new(default_info.clone()));
+    // Contexto e temperatura: começam na configuração e mudam com `/context` e `/temp`.
+    let options = shared_options(&cfg);
 
     let root = args.dir.canonicalize().map_err(|e| format!("diretório inválido: {e}"))?;
     // As skills são procuradas em relação ao diretório de execução, não ao `--dir`.
@@ -117,13 +119,15 @@ fn run() -> Result<(), String> {
     };
     let skills = skills::with_builtins(project_skills);
     let mut info = vec![format!("projeto {}", root.display()), model_line(&cfg, &default_info)];
+    // Os nomes das skills não vão para a tela da TUI (o painel `/skills` os mostra). O modo simples os lista.
+    let mut skill_info = Vec::new();
     match &skills_path {
         Some(p) if skills.is_empty() && !p.is_dir() => {
             info.push(format!("skills: pasta {} não encontrada", p.display()));
         }
         _ if !skills.is_empty() => {
             let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-            info.push(format!("skills: {}", names.join(", ")));
+            skill_info.push(format!("skills: {}", names.join(", ")));
         }
         _ => {}
     }
@@ -139,8 +143,9 @@ fn run() -> Result<(), String> {
     // esforço compartilhado e o histórico da sessão preservado.
     let switch_cfg = cfg.clone();
     let switch_effort = Arc::clone(&effort);
+    let switch_options = Arc::clone(&options);
     let make_model = move |model: &ModelInfo| -> Result<Box<dyn ChatModel>, String> {
-        Ok(Box::new(build_client(&switch_cfg, model, &switch_effort)?))
+        Ok(Box::new(build_client(&switch_cfg, model, &switch_effort, &switch_options)?))
     };
 
     if interactive {
@@ -152,49 +157,61 @@ fn run() -> Result<(), String> {
             model: Arc::clone(&active),
             default_model: cfg.model.name.clone(),
             effort: Arc::clone(&effort),
+            options: Arc::clone(&options),
+            default_options: Options { num_ctx: cfg.model.num_ctx, temperature: cfg.model.temperature },
             catalog: Arc::clone(&catalog),
             auto_yes: args.auto_yes,
             color,
-            mouse: !args.no_mouse,
+            mouse: args.mouse,
             root: root.clone(),
         };
         // A sessão é montada na thread do agente, que recebe o aprovador pronto.
         let session_effort = Arc::clone(&effort);
+        let session_options = Arc::clone(&options);
         tui::run(
             settings,
             move |approver| {
-                let client = build_client(&cfg, &default_info, &session_effort)?;
+                let client = build_client(&cfg, &default_info, &session_effort, &session_options)?;
                 Ok(Session::from_config(&cfg, Box::new(client), approver, &root)?.with_skills(skills, skills_off))
             },
             Box::new(make_model),
         )
     } else {
-        let approver: Box<dyn Approver> =
-            if args.auto_yes { Box::new(AutoApprover) } else { Box::new(tui::plain::StdinApprover) };
-        let client = build_client(&cfg, &default_info, &effort)?;
+        let approver: Box<dyn Approver> = Box::new(tui::plain::StdinApprover { auto_edits: args.auto_yes });
+        let client = build_client(&cfg, &default_info, &effort, &options)?;
         let mut session = Session::from_config(&cfg, Box::new(client), approver, &root)?.with_skills(skills, skills::new_disabled());
         let mut header = vec![cfg.name.clone()];
         header.extend(info);
+        header.extend(skill_info);
         tui::plain::run(&mut session, &header, args.auto_yes, &active, &effort, &skill_lines)
     }
 }
 
 // Cliente para um modelo. A janela e a temperatura vêm da configuração; o modelo e suas capacidades, do catálogo.
-fn build_client(cfg: &AgentConfig, info: &ModelInfo, effort: &SharedEffort) -> Result<ollama::Client, String> {
-    let options = Options { num_ctx: cfg.model.num_ctx, temperature: cfg.model.temperature };
+fn build_client(
+    cfg: &AgentConfig,
+    info: &ModelInfo,
+    effort: &SharedEffort,
+    options: &SharedOptions,
+) -> Result<ollama::Client, String> {
     ollama::Client::new(
         cfg.model.url.clone(),
         info.id.clone(),
-        options,
+        Arc::clone(options),
         info.capabilities.clone(),
         Arc::clone(effort),
     )
 }
 
+// Opções iniciais, as da configuração, num estado que a interface e o cliente compartilham.
+fn shared_options(cfg: &AgentConfig) -> SharedOptions {
+    Arc::new(Mutex::new(Options { num_ctx: cfg.model.num_ctx, temperature: cfg.model.temperature }))
+}
+
 // Linha com modelo, tamanho e janela, quando o Ollama responde.
 fn model_line(cfg: &AgentConfig, info: &ModelInfo) -> String {
     let effort = Arc::new(Mutex::new(Effort::Off));
-    match build_client(cfg, info, &effort).and_then(|c| c.model_details()) {
+    match build_client(cfg, info, &effort, &shared_options(cfg)).and_then(|c| c.model_details()) {
         Ok(d) => format!(
             "modelo {} · {} · {} · janela {} tok",
             cfg.model.name,

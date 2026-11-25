@@ -10,28 +10,40 @@ use serde_json::Value;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::sync::{Arc, Mutex};
 
-// Pergunta no terminal e lê a resposta da entrada padrão.
-pub struct StdinApprover;
+// Pergunta no terminal e lê a resposta da entrada padrão. Com `auto_edits` (`--yes`), as edições
+// passam sem perguntar; a execução de scripts sempre pergunta.
+pub struct StdinApprover {
+    pub auto_edits: bool,
+}
 
 impl Approver for StdinApprover {
     fn approve(&self, preview: &Preview) -> bool {
-        println!("\n── {} ──", preview.title);
-        for line in &preview.lines {
-            match line {
-                PreviewLine::Context(t) => println!("  {t}"),
-                PreviewLine::Removed(t) => println!("- {t}"),
-                PreviewLine::Added(t) => println!("+ {t}"),
-                PreviewLine::Note(t) => println!("{t}"),
-            }
-        }
-        print!("Aplicar? [s/N] ");
-        io::stdout().flush().ok();
-        let mut answer = String::new();
-        if io::stdin().lock().read_line(&mut answer).is_err() {
-            return false;
-        }
-        matches!(answer.trim().to_lowercase().as_str(), "s" | "sim" | "y" | "yes")
+        self.auto_edits || ask(preview, "Aplicar? [s/N] ")
     }
+
+    fn approve_run(&self, preview: &Preview) -> bool {
+        ask(preview, "Executar? [s/N] ")
+    }
+}
+
+// Mostra a prévia e lê "s" ou "sim" (ou "y"/"yes") como aprovação.
+fn ask(preview: &Preview, question: &str) -> bool {
+    println!("\n── {} ──", preview.title);
+    for line in &preview.lines {
+        match line {
+            PreviewLine::Context(t) => println!("  {t}"),
+            PreviewLine::Removed(t) => println!("- {t}"),
+            PreviewLine::Added(t) => println!("+ {t}"),
+            PreviewLine::Note(t) => println!("{t}"),
+        }
+    }
+    print!("{question}");
+    io::stdout().flush().ok();
+    let mut answer = String::new();
+    if io::stdin().lock().read_line(&mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim().to_lowercase().as_str(), "s" | "sim" | "y" | "yes")
 }
 
 // Mostra cada ferramenta chamada, em texto puro.
@@ -43,6 +55,24 @@ impl Progress for Lines {
     fn tool_call(&self, name: &str, args: &Value) {
         let target = args.get("path").and_then(Value::as_str).unwrap_or("");
         println!("  · {name} {target}");
+    }
+
+    // A saída de um script aparece como o programa a escreveu, sem depender do resumo do modelo.
+    fn tool_done(&self, name: &str, _args: &Value, outcome: &Outcome) {
+        const SHOWN: usize = 20;
+        let (Outcome::Done(text) | Outcome::Error(text)) = outcome else { return };
+        if name != "run_script" {
+            return;
+        }
+        let Some((summary, output)) = text.split_once('\n') else { return };
+        println!("  {summary}");
+        let all: Vec<&str> = output.lines().collect();
+        for line in all.iter().take(SHOWN) {
+            println!("    │ {line}");
+        }
+        if all.len() > SHOWN {
+            println!("    … mais {} linhas", all.len() - SHOWN);
+        }
     }
 }
 
@@ -56,7 +86,7 @@ pub fn run(
 ) -> Result<(), String> {
     println!("{}", brand::plain_header(header));
     if auto_yes {
-        println!("aviso: --yes ativo: edições serão aplicadas sem confirmação");
+        println!("aviso: --yes ativo: edições serão aplicadas sem confirmação; executar scripts continua pedindo");
     }
     if !effort.lock().unwrap_or_else(|e| e.into_inner()).is_off() {
         println!("aviso: {}", brand::THINK_WARNING);

@@ -6,6 +6,7 @@ use crate::models::{Effort, ModelCapabilities, ModelCatalog, ModelInfo, Reasonin
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -23,6 +24,9 @@ pub struct Options {
     pub num_ctx: u32,
     pub temperature: f32,
 }
+
+// Opções que a interface pode mudar com a sessão aberta (`/context`, `/temp`). O cliente lê a cada chamada.
+pub type SharedOptions = Arc<Mutex<Options>>;
 
 impl Default for Options {
     fn default() -> Self {
@@ -66,7 +70,7 @@ pub struct Client {
     http: reqwest::blocking::Client,
     base_url: String,
     pub model: String,
-    pub options: Options,
+    pub options: SharedOptions,
     caps: ModelCapabilities,
     effort: SharedEffort,
 }
@@ -168,7 +172,7 @@ impl Client {
     pub fn new(
         base_url: String,
         model: String,
-        options: Options,
+        options: SharedOptions,
         caps: ModelCapabilities,
         effort: SharedEffort,
     ) -> Result<Self, String> {
@@ -188,7 +192,8 @@ impl Client {
         // Modelo sem ferramentas recebe a conversa sem o catálogo: não tenta chamar nada.
         let no_tools = json!([]);
         let tools = if self.caps.tool_calling { tools } else { &no_tools };
-        build_body(&self.model, messages, tools, &self.options, think)
+        let options = *self.options.lock().unwrap_or_else(|e| e.into_inner());
+        build_body(&self.model, messages, tools, &options, think)
     }
 
     // Envia o corpo ao `/api/chat` e devolve a resposta HTTP, já checada.
@@ -365,6 +370,23 @@ mod tests {
     // Linhas de um streaming, como o Ollama as manda.
     fn stream(lines: &[Value]) -> impl Iterator<Item = Result<String, String>> + '_ {
         lines.iter().map(|v| Ok(v.to_string()))
+    }
+
+    #[test]
+    fn options_changed_while_running_reach_the_next_request() {
+        let options: SharedOptions = Arc::new(Mutex::new(Options::default()));
+        let caps = ModelCapabilities { tool_calling: true, reasoning: Reasoning::Unsupported, context_window: None };
+        let effort: SharedEffort = Arc::new(Mutex::new(Effort::Off));
+        let client = Client::new("http://x".into(), "m".into(), Arc::clone(&options), caps, effort).unwrap();
+        assert_eq!(client.chat_body(&[], &json!([]))["options"]["num_ctx"], NUM_CTX);
+        {
+            let mut o = options.lock().unwrap();
+            o.num_ctx = 32768;
+            o.temperature = 0.3;
+        }
+        let body = client.chat_body(&[], &json!([]));
+        assert_eq!(body["options"]["num_ctx"], 32768);
+        assert_eq!(body["options"]["temperature"], json!(0.3_f32));
     }
 
     #[test]

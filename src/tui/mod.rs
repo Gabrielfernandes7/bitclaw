@@ -14,11 +14,12 @@ mod input;
 mod print;
 mod markdown;
 pub mod plain;
+mod steps;
 mod theme;
 mod view;
 mod worker;
 
-use self::commands::{ARG_COMMANDS, COMMANDS, Cmd, ModelAction, parse_model_arg};
+use self::commands::{ARG_COMMANDS, COMMANDS, Cmd, ModelAction, Setting, parse_context, parse_model_arg, parse_temperature, temperature_effect};
 use self::history::History;
 use self::mention::Mention;
 use self::view::*;
@@ -26,6 +27,7 @@ use self::worker::{Command, UiEvent, worker};
 use self::theme::{GRAY, RED, YELLOW, bold, fg, palette};
 use bitclaw::agent::ChatModel;
 use bitclaw::models::{Effort, ModelCatalog, ModelInfo, Reasoning, SharedEffort};
+use bitclaw::ollama::{Options, SharedOptions};
 use bitclaw::context::Usage;
 use bitclaw::session::Session;
 use bitclaw::skills::{Disabled, Skill};
@@ -68,9 +70,13 @@ pub struct Settings {
     pub catalog: Arc<dyn ModelCatalog + Send + Sync>,
     // Esforço de raciocínio. Compartilhado com o cliente: `/effort` e `/think` o alteram.
     pub effort: SharedEffort,
+    // Contexto e temperatura em uso (mudam com `/context` e `/temp`) e os da configuração, para o `reset`.
+    pub options: SharedOptions,
+    pub default_options: Options,
     pub auto_yes: bool,
     pub color: bool,
-    // Captura o mouse, para o clique no mascote. Desligá-la devolve a seleção de texto ao terminal.
+    // Captura o mouse, para a roda rolar a conversa e o clique no mascote. Com ela ligada, o terminal
+    // não deixa selecionar texto; por isso vem desligada e liga-se com `--mouse`.
     pub mouse: bool,
     // Pasta do projeto, de onde vêm as sugestões de arquivo do `@`.
     pub root: std::path::PathBuf,
@@ -89,8 +95,15 @@ fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 struct Work {
     started: Instant,
     activity: String,
-    // Pedido de aprovação aguardando resposta.
+    // Passos do agente já terminados neste turno e tokens gastos nas chamadas ao modelo.
+    steps: usize,
+    tokens: u64,
+    // O que o modelo está gerando na chamada em andamento. Some quando a chamada termina.
+    thinking: String,
+    answer: String,
+    // Pedido de aprovação aguardando resposta e se ele é para executar um script.
     approval: Option<Sender<bool>>,
+    approval_runs: bool,
     cancelling: bool,
     // Tempo esperando o modelo: o que já fechou e, se ele responde agora, desde quando.
     model_done: Duration,
@@ -102,7 +115,12 @@ impl Work {
         Self {
             started: Instant::now(),
             activity: activity.to_string(),
+            steps: 0,
+            tokens: 0,
+            thinking: String::new(),
+            answer: String::new(),
             approval: None,
+            approval_runs: false,
             cancelling: false,
             model_done: Duration::ZERO,
             model_since: (activity == "pensando").then(Instant::now),
@@ -153,6 +171,10 @@ struct App {
     clicks: usize,
     // `Esc` fechou as sugestões de `@`; voltam ao digitar de novo.
     mention_off: bool,
+    // Painel `/status`, se estiver aberto.
+    status_panel: Option<StatusPanel>,
+    // Turnos, passos e tempo da sessão, mostrados no painel `/status`.
+    stats: SessionStats,
 }
 
 // Roda a interface até o usuário sair. `make_session` roda na thread do agente.
@@ -169,8 +191,9 @@ where
         let auto_yes = settings.auto_yes;
         let active = Arc::clone(&settings.model);
         let effort = Arc::clone(&settings.effort);
+        let options = Arc::clone(&settings.options);
         thread::spawn(move || {
-            worker(make_session, make_model, auto_yes, command_rx, event_tx, cancel, active, effort)
+            worker(make_session, make_model, auto_yes, command_rx, event_tx, cancel, active, effort, options)
         });
     }
 
@@ -201,10 +224,12 @@ where
         history: History::default(),
         picker: None,
         model_picker: None,
-        // Ao abrir, o mascote cumprimenta.
-        play: Some((Instant::now(), brand::Mood::Greet)),
+        // Ao abrir, o mascote faz um dos números, sorteado a cada abertura.
+        play: Some((Instant::now(), brand::opening_mood())),
         clicks: 0,
         mention_off: false,
+        status_panel: None,
+        stats: SessionStats::new(),
     };
     let result = app.event_loop();
 
@@ -233,7 +258,7 @@ impl App {
         loop {
             let menu = self.menu_matches();
             let mentions = self.mention_matches().map(|m| m.entries).unwrap_or_default();
-            let App { terminal, editor, work, usage, settings, menu_index, picker, model_picker, play, transcript, scroll_back, .. } = self;
+            let App { terminal, editor, work, usage, settings, menu_index, picker, model_picker, play, transcript, scroll_back, status_panel, stats, .. } = self;
             let mascot = mascot_for(*play);
             let view = View {
                 editor,
@@ -244,6 +269,8 @@ impl App {
                 menu_index: *menu_index,
                 picker: picker.as_ref(),
                 model_picker: model_picker.as_ref(),
+                status_panel: status_panel.as_ref(),
+                stats,
                 mascot,
                 transcript,
                 scroll_back: *scroll_back,
@@ -272,7 +299,7 @@ impl App {
     // uma única palavra começando por `/`.
     // Clique no mascote: dispara o próximo número. Ignora cliques com um painel aberto.
     fn on_mouse(&mut self, event: MouseEvent) {
-        if self.picker.is_some() || self.model_picker.is_some() {
+        if self.picker.is_some() || self.model_picker.is_some() || self.status_panel.is_some() {
             return;
         }
         match event.kind {
@@ -282,7 +309,7 @@ impl App {
             _ => return,
         }
         let area = self.terminal.get_frame().area();
-        let Some(rect) = mascot_rect(Rect::new(area.x, area.y, area.width, MASCOT_ROWS)) else { return };
+        let Some(rect) = mascot_rect(Rect::new(area.x, area.y + TOP_GAP, area.width, MASCOT_ROWS)) else { return };
         if rect.contains(Position::new(event.column, event.row)) {
             let mood = brand::TRICKS[self.clicks % brand::TRICKS.len()];
             self.clicks += 1;
@@ -318,17 +345,56 @@ impl App {
             };
             match event {
                 UiEvent::Activity(a) => {
-                    if let Some(w) = &mut self.work
-                        && !w.cancelling
-                    {
-                        w.set_activity(a);
+                    if let Some(w) = &mut self.work {
+                        // A fase mudou: o que estava sendo gerado ao vivo já foi para a conversa ou acabou.
+                        w.thinking.clear();
+                        w.answer.clear();
+                        if !w.cancelling {
+                            w.set_activity(a);
+                        }
+                    }
+                }
+                UiEvent::Chunk { thinking, text } => {
+                    if let Some(w) = &mut self.work {
+                        if thinking { w.thinking.push_str(&text) } else { w.answer.push_str(&text) }
                     }
                 }
                 UiEvent::Usage(u) => self.usage = Some(u),
-                UiEvent::Approval { preview, reply } => {
-                    self.print_preview(&preview).map_err(|e| e.to_string())?;
+                UiEvent::Reasoning(text) => {
+                    self.print_reasoning(&text).map_err(|e| e.to_string())?;
+                }
+                UiEvent::Tokens { prompt, output } => {
+                    let sum = prompt.unwrap_or(0) + output.unwrap_or(0);
+                    if let Some(w) = &mut self.work {
+                        w.tokens += sum;
+                    }
+                    self.stats.tokens += sum;
+                    if prompt.is_some() || output.is_some() {
+                        let text = format!(
+                            "↳ tokens: {} de entrada · {} de saída",
+                            prompt.map_or("—".to_string(), |t| t.to_string()),
+                            output.map_or("—".to_string(), |t| t.to_string()),
+                        );
+                        self.print(vec![note(&text)]).map_err(|e| e.to_string())?;
+                    }
+                }
+                UiEvent::Step { name, args, result } => {
+                    if let Some(w) = &mut self.work {
+                        w.steps += 1;
+                    }
+                    self.stats.steps += 1;
+                    let width = self.width().map_err(|e| e.to_string())?;
+                    let mut lines = vec![steps::done(&name, &args, &result)];
+                    lines.extend(steps::output_lines(&result, width));
+                    self.print(lines).map_err(|e| e.to_string())?;
+                }
+                UiEvent::Approval { preview, reply, runs } => {
+                    self.print_preview(&preview, runs).map_err(|e| e.to_string())?;
                     match &mut self.work {
-                        Some(w) => w.approval = Some(reply),
+                        Some(w) => {
+                            w.approval = Some(reply);
+                            w.approval_runs = runs;
+                        }
                         None => {
                             let _ = reply.send(false);
                         }
@@ -378,8 +444,8 @@ mod tests {
     // para a conversa.
     const TRANSCRIPT_ROWS: usize = 2;
 
-    fn viewport_height(editor_rows: usize, menu_rows: usize) -> u16 {
-        (MASCOT_ROWS as usize + TRANSCRIPT_ROWS + 2 + editor_rows.clamp(1, MAX_EDITOR_ROWS) + menu_rows + 1) as u16
+    fn viewport_height(editor_rows: usize, menu_rows: usize, summary_rows: usize) -> u16 {
+        (TOP_GAP as usize + MASCOT_ROWS as usize + summary_rows + TRANSCRIPT_ROWS + 2 + editor_rows.clamp(1, MAX_EDITOR_ROWS) + menu_rows + 1) as u16
     }
 
     fn settings(auto_yes: bool) -> Settings {
@@ -392,6 +458,8 @@ mod tests {
             default_model: "m:1b".into(),
             catalog: Arc::new(StaticCatalog(Vec::new())),
             effort: Arc::new(Mutex::new(Effort::Off)),
+            options: Arc::new(Mutex::new(Options::default())),
+            default_options: Options::default(),
             auto_yes,
             color: false,
             mouse: false,
@@ -407,10 +475,11 @@ mod tests {
             [line] if work.is_none() && line.starts_with('/') => COMMANDS.iter().filter(|c| c.starts_with(line)).collect(),
             _ => Vec::new(),
         };
-        let height = viewport_height(editor.lines().len(), menu.len());
+        let summary = if work.is_some() { 2 } else { 0 };
+        let height = viewport_height(editor.lines().len(), menu.len(), summary);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let settings = settings(auto_yes);
-        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
+        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0, picker: None, model_picker: None, status_panel: None, stats: &SessionStats::new(), mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
         terminal.draw(|f| draw(f, &view)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height)
@@ -433,19 +502,20 @@ mod tests {
     fn idle_screen_is_compact_with_one_editor_row() {
         let usage = Usage { tokens: 861, window: 16384, percent: 5.0 };
         let lines = screen(None, Some(usage), false);
-        assert_eq!(lines.len(), 9, "mascote (3), conversa (2), régua, 1 linha de editor, régua e rodapé: {lines:?}");
-        assert!(lines[..3].iter().all(|l| !l.contains("pensando") && !l.contains("executando")), "sem status quando ocioso");
-        assert!(lines[0].contains('▀') || lines[1].contains('█'), "o mascote aparece: {lines:?}");
-        assert!(lines[5].starts_with('─') && lines[7].starts_with('─'));
-        assert!(lines[6].starts_with('›') && lines[6].contains("Digite uma tarefa…"), "{lines:?}");
-        assert!(lines[8].starts_with("m:1b · Manual · contexto 5% (861/16384)"), "{}", lines[8]);
-        assert!(lines[8].ends_with("enter envia · / comandos"), "versão curta dos atalhos em 80 colunas");
+        assert_eq!(lines.len(), 10, "folga (1), mascote (3), conversa (2), régua, 1 linha de editor, régua e rodapé: {lines:?}");
+        assert!(lines[1..4].iter().all(|l| !l.contains("pensando") && !l.contains("executando")), "sem status quando ocioso");
+        assert!(lines[0].is_empty(), "a folga do topo fica em branco: {lines:?}");
+        assert!(lines[1].contains('▀') || lines[2].contains('█'), "o mascote aparece: {lines:?}");
+        assert!(lines[6].starts_with('─') && lines[8].starts_with('─'));
+        assert!(lines[7].starts_with('❯') && lines[7].contains("Digite uma tarefa…"), "{lines:?}");
+        assert!(lines[9].starts_with("m:1b · Manual · contexto 5% (861/16384)"), "{}", lines[9]);
+        assert!(lines[9].ends_with("enter envia · / comandos"), "versão curta dos atalhos em 80 colunas");
     }
 
     #[test]
     fn editor_grows_with_the_text_up_to_a_limit() {
-        assert_eq!(screen_with(80, "a\nb\nc", None, None, false).len(), 11);
-        assert_eq!(screen_with(80, &"x\n".repeat(20), None, None, false).len(), 9 + MAX_EDITOR_ROWS - 1);
+        assert_eq!(screen_with(80, "a\nb\nc", None, None, false).len(), 12);
+        assert_eq!(screen_with(80, &"x\n".repeat(20), None, None, false).len(), 10 + MAX_EDITOR_ROWS - 1);
     }
 
     #[test]
@@ -473,31 +543,33 @@ mod tests {
     #[test]
     fn typing_a_slash_lists_every_command_below_the_editor() {
         let lines = screen_with(100, "/", None, None, false);
-        assert_eq!(lines.len(), 9 + COMMANDS.len());
-        assert!(lines[8].starts_with("› /help") && lines[8].contains("mostra os comandos"), "{lines:?}");
-        assert!(lines[9].starts_with("  /model") && lines[10].starts_with("  /effort"), "{lines:?}");
-        assert!(lines[11].starts_with("  /init"), "{lines:?}");
-        assert!(lines[12].starts_with("  /clear") && lines[13].starts_with("  /think"), "{lines:?}");
-        assert!(lines[14].starts_with("  /skills"), "{lines:?}");
-        assert!(lines[15].starts_with("  /exit"), "{lines:?}");
+        assert_eq!(lines.len(), 10 + COMMANDS.len());
+        assert!(lines[9].starts_with("› /help") && lines[9].contains("mostra os comandos"), "{lines:?}");
+        assert!(lines[10].starts_with("  /model") && lines[11].starts_with("  /effort"), "{lines:?}");
+        assert!(lines[12].starts_with("  /context") && lines[13].starts_with("  /temp"), "{lines:?}");
+        assert!(lines[14].starts_with("  /init"), "{lines:?}");
+        assert!(lines[15].starts_with("  /clear") && lines[16].starts_with("  /think"), "{lines:?}");
+        assert!(lines[17].starts_with("  /skills"), "{lines:?}");
+        assert!(lines[18].starts_with("  /status"), "{lines:?}");
+        assert!(lines[19].starts_with("  /exit"), "{lines:?}");
         assert!(lines.last().unwrap().contains("tab completa · enter executa"));
     }
 
     #[test]
     fn the_menu_filters_by_name() {
         let lines = screen_with(100, "/cl", None, None, false);
-        assert_eq!(lines.len(), 10);
-        assert!(lines[8].starts_with("› /clear"), "{lines:?}");
+        assert_eq!(lines.len(), 11);
+        assert!(lines[9].starts_with("› /clear"), "{lines:?}");
         let lines = screen_with(100, "/ex", None, None, false);
-        assert!(lines[8].starts_with("› /exit"), "{lines:?}");
+        assert!(lines[9].starts_with("› /exit"), "{lines:?}");
         // Sem correspondência, não há menu.
-        assert_eq!(screen_with(100, "/zzz", None, None, false).len(), 9);
+        assert_eq!(screen_with(100, "/zzz", None, None, false).len(), 10);
     }
 
     #[test]
     fn the_think_command_explains_its_cost_in_the_menu() {
         let lines = screen_with(120, "/th", None, None, false);
-        assert!(lines[8].starts_with("› /think") && lines[8].contains("gasta mais contexto"), "{lines:?}");
+        assert!(lines[9].starts_with("› /think") && lines[9].contains("gasta mais contexto"), "{lines:?}");
     }
 
     #[test]
@@ -508,11 +580,11 @@ mod tests {
         editor.insert_str("");
         let cfg = settings(false);
         *cfg.effort.lock().unwrap() = Effort::Medium;
-        let mut terminal = Terminal::new(TestBackend::new(100, viewport_height(1, 0))).unwrap();
-        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
+        let mut terminal = Terminal::new(TestBackend::new(100, viewport_height(1, 0, 0))).unwrap();
+        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, status_panel: None, stats: &SessionStats::new(), mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
         terminal.draw(|f| draw(f, &view)).unwrap();
         let buffer = terminal.backend().buffer().clone();
-        let footer: String = (0..100).map(|x| buffer[(x, 8)].symbol().to_string()).collect();
+        let footer: String = (0..100).map(|x| buffer[(x, 9)].symbol().to_string()).collect();
         assert!(footer.starts_with("m:1b · Manual · esforço medium · contexto"), "{footer}");
     }
 
@@ -579,23 +651,32 @@ mod tests {
     #[test]
     fn footer_shows_the_automatic_mode_and_unknown_usage() {
         let lines = screen(None, None, true);
-        assert!(lines[8].starts_with("m:1b · Automático · contexto —"), "{}", lines[8]);
+        assert!(lines[9].starts_with("m:1b · Automático · contexto —"), "{}", lines[9]);
     }
 
     #[test]
     fn working_screen_shows_the_activity_and_how_to_interrupt() {
         let lines = screen(Some(&work(false, false)), None, false);
-        assert!(lines[1].contains("executando read_file a.txt… (0s)"), "{}", lines[1]);
-        assert!(lines[8].ends_with("esc interrompe"));
+        assert!(lines[5].contains("executando read_file a.txt… (0s)"), "{}", lines[1]);
+        assert!(lines.last().unwrap().ends_with("esc interrompe"));
         let lines = screen(Some(&work(false, true)), None, false);
-        assert!(lines[1].contains("interrompendo, aguardando o modelo"), "{}", lines[1]);
+        assert!(lines[5].contains("interrompendo, aguardando o modelo"), "{}", lines[1]);
+    }
+
+    #[test]
+    fn running_a_script_asks_in_its_own_words() {
+        let mut w = work(true, false);
+        w.approval_runs = true;
+        let lines = screen(Some(&w), None, false);
+        assert!(lines[5].contains("Executar este script? [s] sim · [n] não"), "{lines:?}");
+        assert!(lines.last().unwrap().ends_with("s executa · n recusa"), "{lines:?}");
     }
 
     #[test]
     fn approval_screen_asks_for_a_decision() {
         let lines = screen(Some(&work(true, false)), None, false);
-        assert!(lines[1].contains("Aplicar esta alteração? [s] sim · [n] não"), "{}", lines[1]);
-        assert!(lines[8].ends_with("s aplica · n recusa"));
+        assert!(lines[5].contains("Aplicar esta alteração? [s] sim · [n] não"), "{}", lines[1]);
+        assert!(lines.last().unwrap().ends_with("s aplica · n recusa"));
     }
 
     #[test]
@@ -610,13 +691,13 @@ mod tests {
         let cell_colors = |typed: &str| -> Vec<Option<Color>> {
             let mut editor = new_editor();
             editor.insert_str(typed);
-            let mut terminal = Terminal::new(TestBackend::new(60, viewport_height(1, 0))).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(60, viewport_height(1, 0, 0))).unwrap();
             let settings = settings(false);
-            let view = View { editor: &editor, work: None, usage: None, settings: &settings, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
+            let view = View { editor: &editor, work: None, usage: None, settings: &settings, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, status_panel: None, stats: &SessionStats::new(), mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
             terminal.draw(|f| draw(f, &view)).unwrap();
             let buffer = terminal.backend().buffer().clone();
-            // Linha do editor: cabeçalho (3) + conversa (2) + régua (1) → linha 6; o texto começa na coluna 2.
-            (0..typed.chars().count() as u16).map(|x| buffer[(2 + x, 6)].fg).map(|c| (c != Color::Reset).then_some(c)).collect()
+            // Linha do editor: folga (1) + cabeçalho (3) + conversa (2) + régua (1) → linha 7; o texto começa na coluna 2.
+            (0..typed.chars().count() as u16).map(|x| buffer[(2 + x, 7)].fg).map(|c| (c != Color::Reset).then_some(c)).collect()
         };
         let colors = cell_colors("/model load x");
         assert!(colors[..6].iter().all(|c| *c == Some(KEYWORD)), "comando: {colors:?}");
@@ -661,12 +742,13 @@ mod tests {
     }
 
     #[test]
-    fn idle_shows_the_name_beside_the_mascot_and_working_swaps_it_for_the_status() {
+    fn the_name_stays_beside_the_mascot_and_the_step_summary_sits_under_it() {
         let idle = screen(None, None, false);
-        assert!(idle[0].starts_with("██") && idle[0].contains("BitClaw"), "{idle:?}");
+        assert!(idle[1].starts_with("██") && idle[1].contains("BitClaw"), "{idle:?}");
         let busy = screen(Some(&work(false, false)), None, false);
-        assert!(busy.iter().all(|l| !l.contains("BitClaw")), "{busy:?}");
-        assert!(busy[1].contains("executando"), "{busy:?}");
+        assert!(busy[1].contains("BitClaw"), "o nome continua no topo: {busy:?}");
+        assert!(busy[4].is_empty(), "linha em branco antes do resumo: {busy:?}");
+        assert!(busy[5].contains("executando"), "o resumo do passo tem linha própria: {busy:?}");
     }
 
     // Desenha a tela inteira com a conversa dada e `back` linhas de rolagem.
@@ -683,6 +765,8 @@ mod tests {
             menu_index: 0,
             picker: None,
             model_picker: None,
+            status_panel: None,
+            stats: &SessionStats::new(),
             mascot: Mascot { mood: brand::Mood::Idle, ms: 0 },
             transcript: &transcript,
             scroll_back: back,
@@ -699,25 +783,25 @@ mod tests {
     #[test]
     fn the_conversation_sits_between_the_header_and_the_prompt() {
         let lines = screen_with_transcript(12, &["primeira", "segunda"], 0);
-        assert!(lines[0].contains("BitClaw"), "cabeçalho no topo: {lines:?}");
-        assert_eq!(lines[3], "primeira", "{lines:?}");
-        assert_eq!(lines[4], "segunda", "{lines:?}");
+        assert!(lines[1].contains("BitClaw"), "cabeçalho no topo: {lines:?}");
+        assert_eq!(lines[4], "primeira", "{lines:?}");
+        assert_eq!(lines[5], "segunda", "{lines:?}");
         let ruler = lines.iter().position(|l| l.starts_with('─')).unwrap();
         assert!(ruler > 4, "o prompt vem depois da conversa: {lines:?}");
-        assert!(lines[ruler + 1].starts_with('›'));
+        assert!(lines[ruler + 1].starts_with('❯'));
     }
 
     #[test]
     fn a_long_conversation_follows_the_end_and_can_be_scrolled_back() {
         let all: Vec<String> = (1..=30).map(|n| format!("linha {n}")).collect();
         let refs: Vec<&str> = all.iter().map(String::as_str).collect();
-        // 12 linhas de tela: 3 de cabeçalho, 4 de partes fixas (régua, editor, régua e rodapé) e 5 para a conversa.
-        let at_end = screen_with_transcript(12, &refs, 0);
-        assert_eq!(&at_end[3..8], ["linha 26", "linha 27", "linha 28", "linha 29", "linha 30"]);
-        let back = screen_with_transcript(12, &refs, 10);
-        assert_eq!(&back[3..8], ["linha 16", "linha 17", "linha 18", "linha 19", "linha 20"]);
-        let too_far = screen_with_transcript(12, &refs, 500);
-        assert_eq!(&too_far[3..8], ["linha 1", "linha 2", "linha 3", "linha 4", "linha 5"], "para no começo");
+        // 13 linhas de tela: 1 de folga, 3 de cabeçalho, 4 de partes fixas (régua, editor, régua e rodapé) e 5 para a conversa.
+        let at_end = screen_with_transcript(13, &refs, 0);
+        assert_eq!(&at_end[4..9], ["linha 26", "linha 27", "linha 28", "linha 29", "linha 30"]);
+        let back = screen_with_transcript(13, &refs, 10);
+        assert_eq!(&back[4..9], ["linha 16", "linha 17", "linha 18", "linha 19", "linha 20"]);
+        let too_far = screen_with_transcript(13, &refs, 500);
+        assert_eq!(&too_far[4..9], ["linha 1", "linha 2", "linha 3", "linha 4", "linha 5"], "para no começo");
     }
 
     #[test]
@@ -747,6 +831,8 @@ mod tests {
             menu_index: 0,
             picker: None,
             model_picker: None,
+            status_panel: None,
+            stats: &SessionStats::new(),
             mascot: Mascot { mood: brand::Mood::Idle, ms: 0 },
             transcript: &[],
             scroll_back: 0,

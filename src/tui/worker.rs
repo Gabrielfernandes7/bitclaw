@@ -1,11 +1,13 @@
 //! Ponte entre a interface e o agente: a sessão roda numa thread, e os dois conversam por canais.
 
+use super::steps::{self, StepResult};
 use super::{ModelFactory, locked};
-use bitclaw::agent::{Progress, TurnReport};
+use bitclaw::agent::{Chunk, Progress, TurnReport};
 use bitclaw::context::Usage;
 use bitclaw::models::{ModelInfo, SharedEffort};
+use bitclaw::ollama::SharedOptions;
 use bitclaw::session::Session;
-use bitclaw::tools::{Approver, AutoApprover, Preview};
+use bitclaw::tools::{Approver, Outcome, Preview};
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -16,14 +18,25 @@ pub(super) enum Command {
     Submit(String),
     Clear,
     SwitchModel(ModelInfo),
+    // Nova janela de contexto, em tokens.
+    SetContext(usize),
     Init,
 }
 
 pub(super) enum UiEvent {
     Activity(String),
-    Approval { preview: Preview, reply: Sender<bool> },
+    // Um passo do agente terminou: vai para a conversa.
+    Step { name: String, args: Value, result: StepResult },
+    // Pedido de decisão. `runs` é verdadeiro quando a pergunta é sobre executar um script.
+    Approval { preview: Preview, reply: Sender<bool>, runs: bool },
     Done { result: Result<TurnReport, String>, usage: Usage },
     Usage(Usage),
+    // Tokens de uma chamada ao modelo: entrada e saída.
+    Tokens { prompt: Option<u64>, output: Option<u64> },
+    // Raciocínio de uma chamada ao modelo, mostrado na conversa antes da resposta.
+    Reasoning(String),
+    // Um pedaço de texto que o modelo está gerando agora (raciocínio ou resposta).
+    Chunk { thinking: bool, text: String },
     Fatal(String),
     // Aviso curto para o histórico (troca de modelo, esforço ajustado, erro de troca).
     Notice(String),
@@ -39,14 +52,33 @@ pub(super) struct ChannelProgress {
 
 impl Progress for ChannelProgress {
     fn model_waiting(&self, waiting: bool) {
-        if waiting {
-            let _ = self.tx.send(UiEvent::Activity("pensando".into()));
-        }
+        let activity = if waiting { "pensando" } else { "respondendo" };
+        let _ = self.tx.send(UiEvent::Activity(activity.into()));
     }
 
     fn tool_call(&self, name: &str, args: &Value) {
-        let target = args.get("path").and_then(Value::as_str).unwrap_or("");
-        let _ = self.tx.send(UiEvent::Activity(format!("executando {name} {target}").trim().to_string()));
+        let _ = self.tx.send(UiEvent::Activity(steps::doing(name, args)));
+    }
+
+    fn tool_done(&self, name: &str, args: &Value, outcome: &Outcome) {
+        let result = StepResult::from_tool(name, outcome);
+        let _ = self.tx.send(UiEvent::Step { name: name.to_string(), args: args.clone(), result });
+    }
+
+    fn model_tokens(&self, prompt: Option<u64>, output: Option<u64>) {
+        let _ = self.tx.send(UiEvent::Tokens { prompt, output });
+    }
+
+    fn model_chunk(&self, chunk: Chunk) {
+        let (thinking, text) = match chunk {
+            Chunk::Thinking(t) => (true, t),
+            Chunk::Content(t) => (false, t),
+        };
+        let _ = self.tx.send(UiEvent::Chunk { thinking, text: text.to_string() });
+    }
+
+    fn model_reasoning(&self, text: &str) {
+        let _ = self.tx.send(UiEvent::Reasoning(text.to_string()));
     }
 
     fn cancelled(&self) -> bool {
@@ -55,17 +87,29 @@ impl Progress for ChannelProgress {
 }
 
 // Pede a decisão à interface e espera a resposta. Se a interface sumir, recusa.
+// Com `auto_edits` (`--yes`), as edições passam sem perguntar; a execução de scripts nunca.
 pub(super) struct ChannelApprover {
     pub(super) tx: Sender<UiEvent>,
+    pub(super) auto_edits: bool,
+}
+
+impl ChannelApprover {
+    fn ask(&self, preview: &Preview, runs: bool) -> bool {
+        let (reply, answer) = mpsc::channel();
+        if self.tx.send(UiEvent::Approval { preview: preview.clone(), reply, runs }).is_err() {
+            return false;
+        }
+        answer.recv().unwrap_or(false)
+    }
 }
 
 impl Approver for ChannelApprover {
     fn approve(&self, preview: &Preview) -> bool {
-        let (reply, answer) = mpsc::channel();
-        if self.tx.send(UiEvent::Approval { preview: preview.clone(), reply }).is_err() {
-            return false;
-        }
-        answer.recv().unwrap_or(false)
+        self.auto_edits || self.ask(preview, false)
+    }
+
+    fn approve_run(&self, preview: &Preview) -> bool {
+        self.ask(preview, true)
     }
 }
 
@@ -79,11 +123,11 @@ pub(super) fn worker<F>(
     cancel: Arc<AtomicBool>,
     active: Arc<Mutex<ModelInfo>>,
     effort: SharedEffort,
+    options: SharedOptions,
 ) where
     F: FnOnce(Box<dyn Approver>) -> Result<Session, String>,
 {
-    let approver: Box<dyn Approver> =
-        if auto_yes { Box::new(AutoApprover) } else { Box::new(ChannelApprover { tx: tx.clone() }) };
+    let approver: Box<dyn Approver> = Box::new(ChannelApprover { tx: tx.clone(), auto_edits: auto_yes });
     let mut session = match make(approver) {
         Ok(s) => s,
         Err(e) => {
@@ -104,6 +148,17 @@ pub(super) fn worker<F>(
                 session.clear();
                 let _ = tx.send(UiEvent::Usage(session.usage()));
             }
+            Command::SetContext(tokens) => {
+                let notice = match session.set_context_window(tokens) {
+                    Ok(()) => {
+                        locked(&options).num_ctx = tokens as u32;
+                        let _ = tx.send(UiEvent::Usage(session.usage()));
+                        format!("contexto: {tokens} tokens")
+                    }
+                    Err(e) => e,
+                };
+                let _ = tx.send(UiEvent::Notice(notice));
+            }
             Command::Init => {
                 let result = session.init_agents();
                 let _ = tx.send(UiEvent::InitDone(result));
@@ -116,7 +171,7 @@ pub(super) fn worker<F>(
                         let before = *locked(&effort);
                         let after = model.capabilities.fit(before);
                         *locked(&effort) = after;
-                        let mut text = format!("modelo: {}", model.id);
+                        let mut text = format!("modelo trocado para {}", model.id);
                         if !model.capabilities.tool_calling {
                             text.push_str(" · sem ferramentas: o agente só conversa");
                         }

@@ -2,6 +2,27 @@
 
 use std::path::{Component, Path};
 
+// Troca cada `@caminho` que existe no projeto pelo caminho puro, antes de mandar a tarefa ao modelo.
+// Sem isso o modelo recebe `@AGENTS.md`, chama `read_file` com esse nome e não acha o arquivo.
+// Menções que não existem ficam como foram digitadas.
+pub fn expand(root: &Path, text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for piece in text.split_inclusive(char::is_whitespace) {
+        let word = piece.trim_end();
+        let spacing = &piece[word.len()..];
+        let target = word
+            .strip_prefix('@')
+            .filter(|path| !path.is_empty())
+            .filter(|path| bitclaw::sandbox::resolve(root, path).is_ok_and(|p| p.exists()));
+        match target {
+            Some(path) => out.push_str(path),
+            None => out.push_str(word),
+        }
+        out.push_str(spacing);
+    }
+    out
+}
+
 // Quantas sugestões aparecem de uma vez.
 pub(super) const MENTION_ROWS: usize = 8;
 
@@ -144,6 +165,17 @@ mod tests {
         assert!(suggest(&root, "../").is_empty());
         assert!(suggest(&root, "docs/../../").is_empty());
         assert!(suggest(&root, "/etc/").is_empty());
+    }
+
+    #[test]
+    fn expanding_sends_the_bare_path_of_an_existing_file_or_folder() {
+        // A raiz real vem canonizada (ver `main.rs`); no macOS o temporário fica sob um link.
+        let root = project().canonicalize().unwrap();
+        assert_eq!(expand(&root, "@README.md leia esse arquivo"), "README.md leia esse arquivo");
+        assert_eq!(expand(&root, "veja @docs/PROJETO.md\ne @src/"), "veja docs/PROJETO.md\ne src/");
+        assert_eq!(expand(&root, "@inexistente.md e @../fora"), "@inexistente.md e @../fora", "o que não existe fica");
+        assert_eq!(expand(&root, "sem menção"), "sem menção");
+        assert_eq!(expand(&root, "a@b e @"), "a@b e @", "@ no meio da palavra e @ sozinho ficam");
     }
 
     #[test]

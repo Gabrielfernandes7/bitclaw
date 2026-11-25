@@ -4,11 +4,13 @@ mod info;
 mod model_picker;
 mod picker;
 mod status;
+mod status_panel;
 
 pub(in crate::tui) use self::info::*;
 pub(in crate::tui) use self::model_picker::*;
 pub(in crate::tui) use self::picker::*;
 pub(in crate::tui) use self::status::*;
+pub(in crate::tui) use self::status_panel::*;
 
 use super::brand::{self, Mood, TRICK_MS};
 use super::commands::keyword_ranges;
@@ -37,6 +39,9 @@ pub(in crate::tui) fn note(text: &str) -> Line<'static> {
 // Altura da faixa do mascote.
 pub(in crate::tui) const MASCOT_ROWS: u16 = 3;
 
+// Linhas em branco acima do mascote, para o cabeçalho não encostar no topo do terminal.
+pub(in crate::tui) const TOP_GAP: u16 = 1;
+
 // Tudo o que `draw` precisa, emprestado do estado da interface.
 pub(in crate::tui) struct View<'a> {
     pub(in crate::tui) editor: &'a TextArea<'static>,
@@ -47,6 +52,9 @@ pub(in crate::tui) struct View<'a> {
     pub(in crate::tui) menu_index: usize,
     pub(in crate::tui) picker: Option<&'a Picker>,
     pub(in crate::tui) model_picker: Option<&'a ModelPicker>,
+    // Painel `/status`, se estiver aberto, e as estatísticas que ele mostra.
+    pub(in crate::tui) status_panel: Option<&'a StatusPanel>,
+    pub(in crate::tui) stats: &'a SessionStats,
     pub(in crate::tui) mascot: Mascot,
     pub(in crate::tui) transcript: &'a [Line<'static>],
     pub(in crate::tui) scroll_back: usize,
@@ -84,9 +92,20 @@ pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
         draw_picker(f, v.settings, picker);
         return;
     }
+    if let Some(panel) = v.status_panel {
+        let active = locked(&v.settings.model).id.clone();
+        let effort = locked(&v.settings.effort).as_str().to_string();
+        let snapshot = Snapshot { settings: v.settings, model: active, effort, usage: v.usage, stats: v.stats };
+        draw_status_panel(f, &snapshot, panel);
+        return;
+    }
     let editor_rows = v.editor.lines().len().clamp(1, MAX_EDITOR_ROWS) as u16;
-    let [status, conversation, composer, menu, footer] = Layout::vertical([
+    // Enquanto o agente trabalha, uma linha própria para o resumo do passo, com uma linha em branco acima.
+    let summary_rows = if v.work.is_some() { 2 } else { 0 };
+    let [_gap, status, summary, conversation, composer, menu, footer] = Layout::vertical([
+        Constraint::Length(TOP_GAP),
         Constraint::Length(MASCOT_ROWS),
+        Constraint::Length(summary_rows),
         Constraint::Min(1),
         Constraint::Length(editor_rows + 2),
         Constraint::Length(v.menu.len().max(v.mentions.len()) as u16),
@@ -106,27 +125,46 @@ pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
         }
         None => status,
     };
+    // Cabeçalho: nome, projeto e modelo, com os tokens gastos na sessão na linha do modelo.
+    let header = |v: &View| {
+        let active = locked(&v.settings.model).id.clone();
+        let window = locked(&v.settings.options).num_ctx;
+        let info = with_window(&v.settings.info, v.settings.default_options.num_ctx, window);
+        let mut lines = info_lines(&v.settings.title, &info, &active, &v.settings.default_model);
+        let full = lines.len() == INFO_ROWS;
+        if v.stats.tokens > 0
+            && full
+            && let Some(model) = lines.last_mut()
+        {
+            model.spans.push(Span::styled(format!(" · {} tokens gastos", v.stats.tokens), fg(GRAY)));
+        }
+        lines
+    };
     if v.work.is_none() {
         // Ocioso: o nome, o projeto e o modelo ao lado do mascote.
-        let active = locked(&v.settings.model).id.clone();
-        let lines = info_lines(&v.settings.title, &v.settings.info, &active, &v.settings.default_model);
-        f.render_widget(Paragraph::new(lines), text_area);
+        f.render_widget(Paragraph::new(header(v)), text_area);
     } else {
-        let [_, middle, _] =
-            Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).areas(text_area);
-        f.render_widget(Paragraph::new(status_line(v.work)), middle);
+        // Trabalhando: o nome e o projeto continuam ao lado do mascote; o resumo fica na linha de baixo.
+        f.render_widget(Paragraph::new(header(v)), text_area);
+        let [_blank, row] = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(summary);
+        f.render_widget(Paragraph::new(status_line(v.work)), Rect::new(row.x + 2, row.y, row.width.saturating_sub(2), 1));
     }
 
-    // A conversa, entre o cabeçalho e o editor.
-    let (from, to) = visible_range(v.transcript.len(), conversation.height as usize, v.scroll_back);
-    f.render_widget(Paragraph::new(v.transcript[from..to].to_vec()), conversation);
+    // A conversa, entre o cabeçalho e o editor, com o que o modelo está gerando agora no fim.
+    let live = live_lines(v.work, conversation.width);
+    let live_rows = live.len().min(conversation.height.saturating_sub(1) as usize);
+    let [chat, live_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(live_rows as u16)]).areas(conversation);
+    let (from, to) = visible_range(v.transcript.len(), chat.height as usize, v.scroll_back);
+    f.render_widget(Paragraph::new(v.transcript[from..to].to_vec()), chat);
+    f.render_widget(Paragraph::new(live[live.len() - live_rows..].to_vec()), live_area);
 
     // Editor delimitado por réguas, como no Claude Code.
     let block = Block::new().borders(Borders::TOP | Borders::BOTTOM).border_style(fg(GRAY));
     let inner = block.inner(composer);
     f.render_widget(block, composer);
     let [mark, text] = Layout::horizontal([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
-    f.render_widget(Paragraph::new("›").style(bold(YELLOW)), mark);
+    f.render_widget(Paragraph::new("❯").style(bold(YELLOW)), mark);
     f.render_widget(v.editor, text);
     highlight_keywords(f, v.editor, text);
 
@@ -188,6 +226,7 @@ pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
         _ if !v.mentions.is_empty() => &["↑↓ escolhe · tab ou enter completa · esc fecha", "tab completa · esc fecha", ""],
         _ if !v.menu.is_empty() => &["↑↓ escolhe · tab completa · enter executa", "tab completa · enter executa", ""],
         None => &["enter envia · shift+enter nova linha · / comandos", "enter envia · / comandos", ""],
+        Some(w) if w.approval.is_some() && w.approval_runs => &["s executa · n recusa", ""],
         Some(w) if w.approval.is_some() => &["s aplica · n recusa", ""],
         Some(_) => &["esc interrompe", ""],
     };

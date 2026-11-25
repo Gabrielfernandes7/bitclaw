@@ -17,9 +17,26 @@ pub(in crate::tui) fn info_lines(title: &str, info: &[String], active: &str, def
     lines
 }
 
+// As linhas de informação com a janela trocada: a do modelo foi escrita com a janela da configuração
+// (`janela 16384 tok`); se `/context` a mudou, mostra a atual.
+pub(in crate::tui) fn with_window(info: &[String], default: u32, current: u32) -> Vec<String> {
+    if default == current {
+        return info.to_vec();
+    }
+    let (old, new) = (format!("janela {default} tok"), format!("janela {current} tok"));
+    info.iter().map(|l| l.replace(&old, &new)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_header_shows_the_window_in_use() {
+        let info = vec!["modelo m · janela 16384 tok".to_string()];
+        assert_eq!(with_window(&info, 16384, 16384), info, "sem mudança, nada muda");
+        assert_eq!(with_window(&info, 16384, 32768), vec!["modelo m · janela 32768 tok".to_string()]);
+    }
 
     fn text(l: &Line) -> String {
         l.spans.iter().map(|s| s.content.as_ref()).collect()
