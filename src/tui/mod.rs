@@ -9,6 +9,7 @@
 mod brand;
 mod commands;
 mod history;
+mod print;
 mod markdown;
 pub mod plain;
 mod theme;
@@ -19,13 +20,13 @@ use self::commands::{ARG_COMMANDS, COMMANDS, Cmd};
 use self::history::History;
 use self::view::*;
 use self::worker::{Command, UiEvent, worker};
-use self::theme::{GRAY, GREEN, ORANGE, RED, YELLOW, bold, fg, palette};
-use bitclaw::agent::{ChatModel, INTERRUPTED, TurnReport};
+use self::theme::{GRAY, RED, YELLOW, bold, fg, palette};
+use bitclaw::agent::ChatModel;
 use bitclaw::models::{Effort, ModelCatalog, ModelInfo, Reasoning, SharedEffort};
 use bitclaw::context::Usage;
 use bitclaw::session::Session;
 use bitclaw::skills::{Disabled, Skill};
-use bitclaw::tools::{Approver, Outcome, Preview, PreviewLine};
+use bitclaw::tools::Approver;
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -35,11 +36,9 @@ use crossterm::execute;
 use crossterm::terminal::{Clear, ClearType};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget};
 use ratatui::backend::CrosstermBackend;
 use ratatui::{DefaultTerminal, Terminal, TerminalOptions, Viewport};
 use ratatui_textarea::TextArea;
-use serde_json::Value;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -629,126 +628,6 @@ impl App {
                 UiEvent::Fatal(e) => return Err(e),
             }
         }
-    }
-
-    // ---------- saída para o scrollback ----------
-
-    fn width(&mut self) -> io::Result<usize> {
-        Ok(self.terminal.size()?.width as usize)
-    }
-
-    fn print(&mut self, lines: Vec<Line<'static>>) -> io::Result<()> {
-        // Em pedaços, para nunca passar da altura da tela de uma vez.
-        let chunk = usize::from(self.terminal.size()?.height.saturating_sub(self.height).max(1));
-        for part in lines.chunks(chunk) {
-            let part = part.to_vec();
-            self.terminal
-                .insert_before(part.len() as u16, |buf| Paragraph::new(part).render(buf.area, buf))?;
-        }
-        Ok(())
-    }
-
-    fn print_header(&mut self) -> io::Result<()> {
-        let mut right = vec![Line::from(Span::styled(self.settings.title.clone(), bold(YELLOW)))];
-        right.extend(self.settings.info.iter().map(|l| Line::from(Span::styled(l.clone(), fg(GRAY)))));
-        let glyph = brand::crab();
-        let offset = glyph.len().saturating_sub(right.len()) / 2;
-        let mut lines: Vec<Line<'static>> = glyph
-            .into_iter()
-            .enumerate()
-            .map(|(i, g)| {
-                let mut spans = vec![Span::styled(g, fg(YELLOW)), Span::raw("  ")];
-                if let Some(text) = i.checked_sub(offset).and_then(|j| right.get(j)) {
-                    spans.extend(text.spans.clone());
-                }
-                Line::from(spans)
-            })
-            .collect();
-        lines.push(Line::default());
-        lines.push(note("Digite uma tarefa. Digite / para ver os comandos."));
-        lines.push(Line::default());
-        if self.settings.auto_yes {
-            lines.insert(lines.len() - 1, aviso_line("--yes ativo: edições serão aplicadas sem confirmação"));
-        }
-        if !locked(&self.settings.effort).is_off() {
-            let at = lines.len() - 1;
-            lines.splice(at..at, self.warning(brand::THINK_WARNING)?);
-        }
-        self.print(lines)
-    }
-
-    // Aviso em amarelo, quebrado na largura da janela.
-    fn warning(&mut self, text: &str) -> io::Result<Vec<Line<'static>>> {
-        let width = self.width()?;
-        Ok(markdown::plain(text, width, Span::styled("  aviso: ", bold(ORANGE)), fg(ORANGE), &palette()))
-    }
-
-    // Prévia de uma alteração, com diff colorido, antes de pedir a decisão.
-    fn print_preview(&mut self, preview: &Preview) -> io::Result<()> {
-        let width = self.width()?.saturating_sub(4).max(10);
-        let cut = |t: &str| -> String { t.chars().take(width).collect() };
-        let mut lines = vec![Line::from(Span::styled(format!("── {} ──", preview.title), bold(YELLOW)))];
-        for line in &preview.lines {
-            lines.push(match line {
-                PreviewLine::Context(t) => Line::from(Span::styled(format!("  {}", cut(t)), fg(GRAY))),
-                PreviewLine::Removed(t) => Line::from(Span::styled(format!("- {}", cut(t)), fg(RED))),
-                PreviewLine::Added(t) => Line::from(Span::styled(format!("+ {}", cut(t)), fg(GREEN))),
-                PreviewLine::Note(t) => Line::from(Span::styled(cut(t), fg(RED))),
-            });
-        }
-        self.print(lines)
-    }
-
-    // Relatório do turno: ações primeiro (o que foi executado de fato), depois o texto do modelo.
-    fn print_report(&mut self, report: &TurnReport) -> io::Result<()> {
-        let width = self.width()?;
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        for t in &report.trims {
-            lines.push(note(&format!(
-                "[contexto] descartados {} turno(s) antigo(s); caracteres {} → {} (orçamento {})",
-                t.turns, t.chars_before, t.chars_after, t.budget
-            )));
-        }
-        for a in &report.actions {
-            let target = a.args.get("path").and_then(Value::as_str).unwrap_or("");
-            let (icon, color) = match a.outcome {
-                Outcome::Done(_) => ("✓", GREEN),
-                Outcome::Refused(_) => ("⊘", YELLOW),
-                Outcome::Error(_) => ("✗", RED),
-            };
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(icon, fg(color)),
-                Span::raw(format!(" {} ", a.name)),
-                Span::styled(target.to_string(), fg(GRAY)),
-            ]));
-            if !matches!(a.outcome, Outcome::Done(_)) {
-                let detail: String = a.outcome.text().lines().next().unwrap_or("").chars().take(width.saturating_sub(6)).collect();
-                lines.push(Line::from(Span::styled(format!("      {detail}"), fg(GRAY))));
-            }
-        }
-        let interrupted = report.error.as_deref() == Some(INTERRUPTED);
-        if report.text.is_empty() {
-            if !interrupted {
-                lines.push(Line::default());
-                lines.push(note("(sem resposta)"));
-            }
-        } else {
-            lines.push(Line::default());
-            lines.extend(markdown::render(&report.text, width, &palette()));
-        }
-        if let Some(e) = &report.error {
-            lines.push(if interrupted {
-                note("interrompido")
-            } else {
-                Line::from(Span::styled(format!("  interrompido: {e}"), fg(RED)))
-            });
-        }
-        for w in report.warnings() {
-            lines.push(aviso_line(&w));
-        }
-        lines.push(Line::default());
-        self.print(lines)
     }
 }
 
