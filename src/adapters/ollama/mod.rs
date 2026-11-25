@@ -1,12 +1,15 @@
 //! Adaptador do Ollama: traduz o núcleo (modelos, esforço, ferramentas) para a API `/api/chat`.
 //! Tudo que é específico do Ollama fica aqui; o resto do BitClaw não sabe que ele existe.
 
+mod options;
+
+pub use options::{NUM_CTX, OllamaSettings, Options, SharedOptions, TEMPERATURE, DEFAULT_URL};
+
 use crate::core::agent::{ChatModel, Chunk, Reply};
 use crate::core::models::{Effort, ModelCapabilities, ModelCatalog, ModelInfo, Reasoning, SharedEffort};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -15,26 +18,6 @@ const MAX_CALL: Duration = Duration::from_secs(3600);
 const STALL: Duration = Duration::from_secs(300);
 // De quanto em quanto tempo a espera por texto confere se o turno foi cancelado.
 const TICK: Duration = Duration::from_millis(200);
-
-// Janela de contexto e temperatura padrão. Sem `num_ctx` explícito, o Ollama usa uma janela pequena.
-pub const NUM_CTX: u32 = 16384; // 16384 ou 8192
-pub const TEMPERATURE: f32 = 0.6;
-
-// Opções de geração enviadas ao Ollama. Vêm da configuração do agente.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Options {
-    pub num_ctx: u32,
-    pub temperature: f32,
-}
-
-// Opções que a interface pode mudar com a sessão aberta (`/context`, `/temp`). O cliente lê a cada chamada.
-pub type SharedOptions = Arc<Mutex<Options>>;
-
-impl Default for Options {
-    fn default() -> Self {
-        Self { num_ctx: NUM_CTX, temperature: TEMPERATURE }
-    }
-}
 
 // Valor do campo `think` para este modelo e este esforço. `None` quando o modelo não raciocina:
 // o campo é omitido em vez de enviado com um valor que o modelo não entende.
@@ -387,6 +370,7 @@ pub fn model_from_tags(entry: &Value) -> Option<ModelInfo> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
     // Linhas de um streaming, como o Ollama as manda.
     fn stream(lines: &[Value]) -> impl Iterator<Item = Result<Option<String>, String>> + '_ {
         lines.iter().map(|v| Ok(Some(v.to_string())))

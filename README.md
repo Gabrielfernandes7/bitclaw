@@ -51,9 +51,11 @@ tools = ["list_dir", "read_file", "edit_file", "create_file", "delete_file"]
 
 [model]
 name = "nemotron-3-nano:4b-mlx"
+context_window = 16384   # opcional
+
+[ollama]                 # opcional: dados do provedor
 url = "http://localhost:11434"
-num_ctx = 16384       # opcional
-temperature = 0.1     # opcional
+temperature = 0.1
 
 [limits]              # opcional
 max_steps = 8
@@ -61,7 +63,9 @@ max_consecutive_failures = 2
 reserve_output_tokens = 1024
 ```
 
-Campos desconhecidos, ferramentas inexistentes ou repetidas e valores incoerentes (ex.: `num_ctx` menor que `reserve_output_tokens`) são erros com mensagem clara. `--model` e `--url` sobrescrevem o arquivo.
+Campos desconhecidos, ferramentas inexistentes ou repetidas e valores incoerentes (ex.: `context_window` menor que `reserve_output_tokens`) são erros com mensagem clara. `--model` e `--url` sobrescrevem o arquivo.
+
+O core só conhece `[model]` e `[limits]`; `url` e `temperature` pertencem à seção do provedor (`[ollama]`). O formato antigo (`url`, `temperature` e `num_ctx` dentro de `[model]`) ainda é lido; `url` e `temperature` geram um aviso.
 
 ## Usar como biblioteca
 
@@ -101,8 +105,8 @@ Digite `/` para abrir o menu de comandos. Setas escolhem, Tab completa, Enter ex
 - `/model`: abre a lista dos modelos instalados no Ollama, com busca (digite para filtrar, ↑/↓ e enter para escolher). Mostra o ativo, o padrão da configuração e as capacidades de cada um (ferramentas, raciocínio, janela). `/model load <id>` troca direto (`/model <id>` continua valendo). `/model show [id]` mostra a ficha do modelo pedido, ou do ativo, e funciona até durante uma tarefa. A troca mantém a conversa; a próxima tarefa vai para o novo modelo. Não é possível trocar durante uma tarefa. A escolha vale só para a sessão: o padrão continua o da configuração.
 - `/effort`: mostra o esforço de raciocínio atual e os níveis que o modelo aceita. `/effort <nível>` aplica, e só aceita níveis que o modelo tem (`off`, `on`, `low`, `medium` ou `high`). Modelos sem raciocínio só aceitam `off`. Ao trocar de modelo, um esforço que não existe no novo modelo cai para o nível mais próximo.
 - `/init`: cria um `AGENTS.md` com o que o próprio repositório diz sobre si: a descrição do README, a stack, os comandos, o que cada arquivo de `src/` faz (a primeira frase do comentário `//!` de abertura), a documentação, os scripts, as skills e os agentes. Não usa modelo: sai na hora, sem gastar tokens e sem inventar. Mostra a prévia e só grava depois da sua aprovação. Se o `AGENTS.md` já existe, ele nunca é sobrescrito: o `/init` só acrescenta ao fim as seções que faltam, e o que você escreveu fica como está. Para o `/init` descrever bem um módulo, comece o arquivo com `//!` e uma primeira frase que diga o que ele faz. As notas que só você sabe ficam para você preencher.
-- `/context [tokens|reset]`: mostra ou troca a janela de contexto (`16384`, `16k`). Sem argumento, explica o que muda ao aumentá-la: memória, recarga do modelo, velocidade, tokens gastos e qualidade. `reset` volta ao valor da configuração (`model.num_ctx`).
-- `/temp [0 a 2|reset]`: mostra ou troca a temperatura de geração e explica o efeito. `reset` volta ao valor da configuração (`model.temperature`).
+- `/context [tokens|reset]`: mostra ou troca a janela de contexto (`16384`, `16k`). Sem argumento, explica o que muda ao aumentá-la: memória, recarga do modelo, velocidade, tokens gastos e qualidade. `reset` volta ao valor da configuração (`model.context_window`).
+- `/temp [0 a 2|reset]`: mostra ou troca a temperatura de geração e explica o efeito. `reset` volta ao valor da configuração (`ollama.temperature`).
 - `/status`: painel em abas (Status, Config, Usage e Stats), com versão, modelo, esforço, contexto e contagens da sessão. ←/→ troca de aba, esc fecha.
 - `/think`: atalho de `/effort`. Liga no padrão do modelo ou desliga, e mostra o aviso de custo. O rodapé mostra `esforço <nível>` enquanto estiver ligado. O raciocínio de turnos anteriores sai do histórico, para não gastar contexto.
 - `/help`: mostra os comandos e as teclas.
@@ -135,7 +139,7 @@ Ao fim de cada tarefa, o programa lista as ações executadas: `✓` (feita), `�
 
 ## Contexto
 
-O histórico da conversa tem orçamento. Quando ele excede a janela (`num_ctx` = 16384 tokens no padrão, com 1024 reservados para a resposta), o programa descarta os turnos mais antigos inteiros e registra cada descarte no terminal. O prompt do sistema e o turno atual nunca são descartados. Se o próprio turno atual não couber, a tarefa é recusada com erro.
+O histórico da conversa tem orçamento. Quando ele excede a janela (`context_window` = 16384 tokens no padrão, com 1024 reservados para a resposta), o programa descarta os turnos mais antigos inteiros e registra cada descarte no terminal. O prompt do sistema e o turno atual nunca são descartados. Se o próprio turno atual não couber, a tarefa é recusada com erro.
 
 ## Avaliação com modelos reais
 

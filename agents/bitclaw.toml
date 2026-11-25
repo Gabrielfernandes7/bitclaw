@@ -27,13 +27,16 @@ skills_dir = "skills"
 
 [model]
 name = "nemotron-3-nano:4b-mlx"
-url = "http://localhost:11434"
-# Janela pedida ao Ollama, em tokens.
-num_ctx = 16384
-temperature = 0.1
+# Janela de contexto, em tokens.
+context_window = 16384
 # Raciocínio do modelo (thinking). Gasta mais tokens e enche a janela de contexto mais rápido;
 # nem todo modelo suporta. Também dá para ligar na hora com --think ou /think.
 think = false
+
+# Seção do provedor: o core não a interpreta, quem lê é o adaptador do Ollama.
+[ollama]
+url = "http://localhost:11434"
+temperature = 0.1
 
 [limits]
 # Passos de modelo por turno.

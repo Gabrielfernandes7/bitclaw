@@ -43,7 +43,7 @@ impl Session {
             max_steps: cfg.limits.max_steps,
             max_consecutive_failures: cfg.limits.max_consecutive_failures,
         };
-        let ctx = ContextManager::new(cfg.model.num_ctx as usize, cfg.limits.reserve_output_tokens);
+        let ctx = ContextManager::new(cfg.model.context_window as usize, cfg.limits.reserve_output_tokens);
         let messages = vec![json!({"role": "system", "content": cfg.system_prompt})];
         let base_system = cfg.system_prompt.clone();
         Ok(Self {
