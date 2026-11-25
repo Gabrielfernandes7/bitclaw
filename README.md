@@ -97,7 +97,7 @@ Digite `/` para abrir o menu de comandos. Setas escolhem, Tab completa, Enter ex
 - `/help`: mostra os comandos e as teclas.
 - `/exit`: encerra o programa.
 
-Os nomes antigos em português (`/limpar-contexto`, `/ajuda`, `/sair`) e `/quit` continuam funcionando.
+`/quit` também encerra o programa, como alias de `/exit`.
 
 O rodapé mostra o modelo, o modo (`Manual`, ou `Automático` com `--yes`) e o uso da janela de contexto. Quando a entrada ou a saída não é um terminal (pipes, scripts), o BitClaw usa um modo simples: uma tarefa por linha, texto puro e sem cores.
 
