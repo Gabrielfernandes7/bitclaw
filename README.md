@@ -85,7 +85,7 @@ let mut sessao = Session::builder(&cfg)
 let relatorio = sessao.submit("liste os arquivos", &Silent)?;
 ```
 
-`modelo` é qualquer implementação de `bitclaw::agent::ChatModel`. O adaptador do Ollama está em `bitclaw::ollama`, mas o core não depende dele. Uma ferramenta nova implementa `bitclaw::tools::Tool` (`name`, `spec` e `run`) e entra no `Registry`; `spec` descreve a ferramenta sem formato de provedor, e cada adaptador a traduz para a sua API. As ferramentas de arquivo e `run_script` vêm do `bitclaw::toolkit` e são opcionais.
+`modelo` é qualquer implementação de `bitclaw::agent::ChatModel`. O adaptador do Ollama está em `bitclaw::ollama`, mas o core não depende dele. Uma ferramenta nova implementa `bitclaw::tools::Tool` (`name`, `spec` e `run`) e entra no `Registry`; `spec` descreve a ferramenta sem formato de provedor, e cada adaptador a traduz para a sua API. As ferramentas de arquivo e `run_script` vêm do `bitclaw::toolkit` e são opcionais. Um agente completo, com ferramenta, aprovador e modelo próprios, está em `examples/legalclaw.rs` (`cargo run --example legalclaw`).
 
 ## Uso no prompt
 
