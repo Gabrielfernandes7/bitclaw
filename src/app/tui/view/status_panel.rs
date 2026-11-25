@@ -5,7 +5,7 @@ use super::super::{Settings, theme::*};
 use super::MASCOT_ROWS;
 use bitclaw::context::Usage;
 use bitclaw::skills;
-use bitclaw::tools::BUILTIN_TOOLS;
+use bitclaw::toolkit::BUILTIN_TOOLS;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Modifier;
