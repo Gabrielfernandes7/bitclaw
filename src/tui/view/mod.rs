@@ -2,9 +2,11 @@
 
 mod model_picker;
 mod picker;
+mod status;
 
 pub(in crate::tui) use self::model_picker::*;
 pub(in crate::tui) use self::picker::*;
+pub(in crate::tui) use self::status::*;
 
 use super::brand::{self, Mood, TRICK_MS};
 use super::commands::keyword_ranges;
@@ -96,6 +98,16 @@ pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
         }
         None => status,
     };
+    // Enquanto o agente trabalha, uma torre de blocos de montar sobe ao lado do texto.
+    let text_area = match v.work {
+        Some(w) if w.approval.is_none() && text_area.width > TOWER_WIDTH + 14 => {
+            let [tower, rest] =
+                Layout::horizontal([Constraint::Length(TOWER_WIDTH + 2), Constraint::Min(0)]).areas(text_area);
+            f.render_widget(Paragraph::new(tower_lines(w.started.elapsed().as_millis())), tower);
+            rest
+        }
+        _ => text_area,
+    };
     let [_, middle, _] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).areas(text_area);
     f.render_widget(Paragraph::new(status_line(v.work)), middle);
 
@@ -174,24 +186,4 @@ fn highlight_keywords(f: &mut Frame, editor: &TextArea<'static>, area: Rect) {
         }
         f.buffer_mut().set_style(Rect::new(area.x + start, area.y, end - start, 1), bold(KEYWORD));
     }
-}
-
-// Spinner e atividade do turno, ou a pergunta de aprovação.
-pub(in crate::tui) fn status_line(work: Option<&Work>) -> Line<'static> {
-    let Some(work) = work else { return Line::default() };
-    if work.approval.is_some() {
-        return Line::from(Span::styled("▸ Aplicar esta alteração? [s] sim · [n] não", bold(YELLOW)));
-    }
-    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let elapsed = work.started.elapsed();
-    let frame = FRAMES[(elapsed.as_millis() / 80) as usize % FRAMES.len()];
-    let label = if work.cancelling {
-        "interrompendo, aguardando o modelo".to_string()
-    } else {
-        work.activity.clone()
-    };
-    Line::from(vec![
-        Span::styled(format!("{frame} "), fg(YELLOW)),
-        Span::styled(format!("{label}… {}s", elapsed.as_secs()), fg(GRAY)),
-    ])
 }

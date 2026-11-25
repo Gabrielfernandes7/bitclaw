@@ -209,7 +209,7 @@ impl App {
                 self.cancel.store(false, Ordering::Relaxed);
                 let _ = self.commands.send(Command::Submit(task.to_string()));
                 self.work =
-                    Some(Work { started: Instant::now(), activity: "pensando".into(), approval: None, cancelling: false });
+                    Some(Work::new("pensando"));
             }
         }
         Ok(false)
@@ -247,7 +247,7 @@ impl App {
         }
         self.cancel.store(false, Ordering::Relaxed);
         let _ = self.commands.send(Command::Init);
-        self.work = Some(Work { started: Instant::now(), activity: "montando AGENTS.md".into(), approval: None, cancelling: false });
+        self.work = Some(Work::new("montando AGENTS.md"));
         Ok(())
     }
 

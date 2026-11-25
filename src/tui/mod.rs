@@ -93,6 +93,40 @@ struct Work {
     // Pedido de aprovação aguardando resposta.
     approval: Option<Sender<bool>>,
     cancelling: bool,
+    // Tempo esperando o modelo: o que já fechou e, se ele responde agora, desde quando.
+    model_done: Duration,
+    model_since: Option<Instant>,
+}
+
+impl Work {
+    fn new(activity: &str) -> Self {
+        Self {
+            started: Instant::now(),
+            activity: activity.to_string(),
+            approval: None,
+            cancelling: false,
+            model_done: Duration::ZERO,
+            model_since: (activity == "pensando").then(Instant::now),
+        }
+    }
+
+    // Troca a atividade e fecha ou abre a contagem do tempo de modelo.
+    fn set_activity(&mut self, activity: String) {
+        match (self.model_since, activity == "pensando") {
+            (Some(since), false) => {
+                self.model_done += since.elapsed();
+                self.model_since = None;
+            }
+            (None, true) => self.model_since = Some(Instant::now()),
+            _ => {}
+        }
+        self.activity = activity;
+    }
+
+    // Tempo total que o modelo levou neste turno, incluindo a resposta em andamento.
+    fn model_time(&self) -> Duration {
+        self.model_done + self.model_since.map_or(Duration::ZERO, |t| t.elapsed())
+    }
 }
 
 struct App {
@@ -299,7 +333,7 @@ impl App {
                     if let Some(w) = &mut self.work
                         && !w.cancelling
                     {
-                        w.activity = a;
+                        w.set_activity(a);
                     }
                 }
                 UiEvent::Usage(u) => self.usage = Some(u),
@@ -392,12 +426,10 @@ mod tests {
     }
 
     fn work(approval: bool, cancelling: bool) -> Work {
-        Work {
-            started: Instant::now(),
-            activity: "executando read_file a.txt".into(),
-            approval: approval.then(|| mpsc::channel().0),
-            cancelling,
-        }
+        let mut w = Work::new("executando read_file a.txt");
+        w.approval = approval.then(|| mpsc::channel().0);
+        w.cancelling = cancelling;
+        w
     }
 
     #[test]
@@ -556,7 +588,7 @@ mod tests {
     #[test]
     fn working_screen_shows_the_activity_and_how_to_interrupt() {
         let lines = screen(Some(&work(false, false)), None, false);
-        assert!(lines[1].contains("executando read_file a.txt… 0s"), "{}", lines[1]);
+        assert!(lines[1].contains("executando read_file a.txt… (0s)"), "{}", lines[1]);
         assert!(lines[6].ends_with("esc interrompe"));
         let lines = screen(Some(&work(false, true)), None, false);
         assert!(lines[1].contains("interrompendo, aguardando o modelo"), "{}", lines[1]);
@@ -613,5 +645,21 @@ mod tests {
         assert!(rect.contains(Position::new(0, 7)) && rect.contains(Position::new(9, 9)));
         assert!(!rect.contains(Position::new(10, 7)) && !rect.contains(Position::new(0, 10)));
         assert_eq!(mascot_rect(Rect::new(0, 0, 20, MASCOT_ROWS)), None);
+    }
+
+    #[test]
+    fn work_counts_the_time_spent_waiting_for_the_model() {
+        let mut w = Work::new("pensando");
+        assert!(w.model_since.is_some(), "começa esperando o modelo");
+        w.model_since = Some(Instant::now() - Duration::from_secs(5));
+        w.set_activity("executando read_file a.txt".into());
+        assert!(w.model_since.is_none(), "rodar uma ferramenta fecha a contagem");
+        assert!(w.model_time() >= Duration::from_secs(5));
+        let closed = w.model_time();
+        w.set_activity("executando list_dir".into());
+        assert_eq!(w.model_time(), closed, "ferramenta não soma tempo de modelo");
+        w.set_activity("pensando".into());
+        assert!(w.model_since.is_some(), "voltar ao modelo reabre a contagem");
+        assert!(Work::new("montando AGENTS.md").model_since.is_none());
     }
 }
