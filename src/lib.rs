@@ -19,4 +19,5 @@ pub mod context;
 pub mod ollama;
 pub mod sandbox;
 pub mod session;
+pub mod skills;
 pub mod tools;

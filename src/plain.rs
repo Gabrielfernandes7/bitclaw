@@ -46,7 +46,13 @@ impl Progress for Lines {
     }
 }
 
-pub fn run(session: &mut Session, header: &[String], auto_yes: bool, think: &Arc<AtomicBool>) -> Result<(), String> {
+pub fn run(
+    session: &mut Session,
+    header: &[String],
+    auto_yes: bool,
+    think: &Arc<AtomicBool>,
+    skills: &[String],
+) -> Result<(), String> {
     println!("{}", brand::plain_header(header));
     if auto_yes {
         println!("aviso: --yes ativo: edições serão aplicadas sem confirmação");
@@ -69,6 +75,17 @@ pub fn run(session: &mut Session, header: &[String], auto_yes: bool, think: &Arc
         match input {
             "" => continue,
             "/exit" | "/quit" => break,
+            "/skills" => {
+                if skills.is_empty() {
+                    println!("nenhuma skill carregada.\n");
+                } else {
+                    for line in skills {
+                        println!("{line}");
+                    }
+                    println!();
+                }
+                continue;
+            }
             "/think" => {
                 let on = !think.fetch_xor(true, Ordering::Relaxed);
                 if on {

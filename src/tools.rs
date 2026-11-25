@@ -125,6 +125,12 @@ impl Registry {
         Ok(Self::new(tools))
     }
 
+    // Acrescenta uma ferramenta que não é embutida (ex.: `load_skill`). Nome repetido é erro.
+    pub fn with_tool(mut self, tool: Box<dyn Tool>) -> Self {
+        self.tools.push(tool);
+        Self::new(self.tools)
+    }
+
     pub fn schemas(&self) -> Value {
         Value::Array(self.tools.iter().map(|t| t.schema()).collect())
     }
@@ -276,12 +282,12 @@ impl Tool for EditFile {
             "type": "function",
             "function": {
                 "name": "edit_file",
-                "description": "Substitui um trecho EXATO (`old`) por `new` em um arquivo existente. `old` deve aparecer exatamente uma vez no arquivo. O usuário confirma antes da alteração. Leia o arquivo antes de editar.",
+                "description": "Substitui um trecho EXATO (`old`) por `new` em um arquivo existente. `old` deve aparecer exatamente uma vez no arquivo. Use o menor trecho que identifica a mudança (poucas linhas); nunca copie o arquivo inteiro em `old`. O usuário confirma antes da alteração. Leia o arquivo antes de editar.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {"type": "string", "description": "Caminho relativo ao projeto"},
-                        "old": {"type": "string", "description": "Trecho exato a ser substituído"},
+                        "old": {"type": "string", "description": "Trecho exato e curto a ser substituído (poucas linhas, não o arquivo inteiro)"},
                         "new": {"type": "string", "description": "Novo texto"}
                     },
                     "required": ["path", "old", "new"]
