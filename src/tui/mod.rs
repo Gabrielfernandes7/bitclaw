@@ -7,10 +7,12 @@
 //! na tela: a biblioteca continua sem imprimir nada.
 
 mod brand;
+mod commands;
 mod markdown;
 pub mod plain;
 mod theme;
 
+use self::commands::{ARG_COMMANDS, COMMANDS, Cmd};
 use self::theme::{GRAY, GREEN, ORANGE, RED, YELLOW, bold, fg, palette};
 use bitclaw::agent::{ChatModel, INTERRUPTED, Progress, TurnReport};
 use bitclaw::models::{Effort, ModelCapabilities, ModelCatalog, ModelInfo, Reasoning, SharedEffort};
@@ -47,38 +49,6 @@ const MAX_EDITOR_ROWS: usize = 6;
 fn viewport_height(editor_rows: usize, menu_rows: usize) -> u16 {
     (1 + 2 + editor_rows.clamp(1, MAX_EDITOR_ROWS) + menu_rows + 1) as u16
 }
-
-// Comandos com `/`. O nome é em inglês, como no Claude Code; os nomes antigos em português
-// continuam funcionando como apelidos.
-struct Cmd {
-    name: &'static str,
-    aliases: &'static [&'static str],
-    desc: &'static str,
-}
-
-const COMMANDS: [Cmd; 8] = [
-    Cmd { name: "/help", aliases: &[], desc: "mostra os comandos e as teclas" },
-    Cmd { name: "/model", aliases: &[], desc: "troca o modelo: busca e seleção entre os instalados" },
-    Cmd { name: "/effort", aliases: &[], desc: "esforço de raciocínio: só os níveis que o modelo aceita" },
-    Cmd { name: "/init", aliases: &[], desc: "cria o AGENTS.md com o resumo verificável do projeto" },
-    Cmd { name: "/clear", aliases: &[], desc: "apaga o histórico e mantém o prompt do sistema" },
-    Cmd { name: "/think", aliases: &[], desc: "liga ou desliga o raciocínio do modelo (gasta mais contexto)" },
-    Cmd { name: "/skills", aliases: &[], desc: "abre as skills para ligar e desligar" },
-    Cmd { name: "/exit", aliases: &["/quit"], desc: "encerra o BitClaw" },
-];
-
-impl Cmd {
-    fn is(&self, text: &str) -> bool {
-        self.name == text || self.aliases.contains(&text)
-    }
-
-    fn starts_with(&self, prefix: &str) -> bool {
-        self.name.starts_with(prefix) || self.aliases.iter().any(|a| a.starts_with(prefix))
-    }
-}
-
-// Comandos que aceitam um argumento depois do nome (`/model <id>`, `/effort <nível>`).
-const ARG_COMMANDS: &[&str] = &["/model", "/effort"];
 
 pub struct Settings {
     pub title: String,
