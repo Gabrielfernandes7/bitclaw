@@ -56,9 +56,10 @@ struct Cmd {
     desc: &'static str,
 }
 
-const COMMANDS: [Cmd; 3] = [
+const COMMANDS: [Cmd; 4] = [
     Cmd { name: "/help", aliases: &["/ajuda"], desc: "mostra os comandos e as teclas" },
     Cmd { name: "/clear", aliases: &["/limpar-contexto"], desc: "apaga o histórico e mantém o prompt do sistema" },
+    Cmd { name: "/think", aliases: &[], desc: "liga ou desliga o raciocínio do modelo (gasta mais contexto)" },
     Cmd { name: "/exit", aliases: &["/quit", "/sair"], desc: "encerra o BitClaw" },
 ];
 
@@ -99,6 +100,8 @@ pub struct Settings {
     pub model: String,
     pub auto_yes: bool,
     pub color: bool,
+    // Raciocínio do modelo ligado ou não. Compartilhado com o cliente; o `/think` o alterna.
+    pub think: Arc<AtomicBool>,
 }
 
 // ---------- comunicação com o agente ----------
@@ -424,6 +427,12 @@ impl App {
                 let _ = self.commands.send(Command::Clear);
                 self.clear_screen()?;
             }
+            _ if command.is_some_and(|c| c.name == "/think") => {
+                let on = !self.settings.think.fetch_xor(true, Ordering::Relaxed);
+                let mut lines = if on { self.warning(brand::THINK_WARNING)? } else { vec![note("thinking desligado.")] };
+                lines.push(Line::default());
+                self.print(lines)?;
+            }
             _ if command.is_some_and(|c| c.name == "/help") => {
                 let mut lines: Vec<Line<'static>> =
                     COMMANDS.iter().map(|c| note(&format!("{:<8} {}", c.name, c.desc))).collect();
@@ -544,7 +553,17 @@ impl App {
         if self.settings.auto_yes {
             lines.insert(lines.len() - 1, Line::from(Span::styled("⚠ --yes ativo: edições serão aplicadas sem confirmação", fg(YELLOW))));
         }
+        if self.settings.think.load(Ordering::Relaxed) {
+            let at = lines.len() - 1;
+            lines.splice(at..at, self.warning(brand::THINK_WARNING)?);
+        }
         self.print(lines)
+    }
+
+    // Aviso em amarelo, quebrado na largura da janela.
+    fn warning(&mut self, text: &str) -> io::Result<Vec<Line<'static>>> {
+        let width = self.width()?;
+        Ok(markdown::plain(text, width, Span::styled("  ⚠ ", fg(YELLOW)), fg(YELLOW), &palette()))
     }
 
     // Prévia de uma alteração, com diff colorido, antes de pedir a decisão.
@@ -672,9 +691,14 @@ fn draw(f: &mut Frame, v: &View) {
 
     // Rodapé: modelo, modo e contexto à esquerda; atalhos à direita, na versão que couber.
     let mut info = vec![Span::styled(
-        format!("{} · {} · contexto ", v.settings.model, if v.settings.auto_yes { "Automático" } else { "Manual" }),
+        format!("{} · {} · ", v.settings.model, if v.settings.auto_yes { "Automático" } else { "Manual" }),
         fg(GRAY),
     )];
+    if v.settings.think.load(Ordering::Relaxed) {
+        info.push(Span::styled("thinking", fg(YELLOW)));
+        info.push(Span::styled(" · ", fg(GRAY)));
+    }
+    info.push(Span::styled("contexto ", fg(GRAY)));
     match v.usage {
         Some(u) => {
             let color = if u.percent >= 90.0 { RED } else if u.percent >= 70.0 { YELLOW } else { GREEN };
@@ -725,7 +749,14 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     fn settings(auto_yes: bool) -> Settings {
-        Settings { title: "BitClaw".into(), info: vec![], model: "m:1b".into(), auto_yes, color: false }
+        Settings {
+            title: "BitClaw".into(),
+            info: vec![],
+            model: "m:1b".into(),
+            auto_yes,
+            color: false,
+            think: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     // Desenha a área fixa com o editor contendo `typed` e devolve as linhas de texto.
@@ -783,7 +814,8 @@ mod tests {
         let lines = screen_with(100, "/", None, None, false);
         assert_eq!(lines.len(), 5 + COMMANDS.len());
         assert!(lines[4].starts_with("› /help") && lines[4].contains("mostra os comandos"), "{lines:?}");
-        assert!(lines[5].starts_with("  /clear") && lines[6].starts_with("  /exit"), "{lines:?}");
+        assert!(lines[5].starts_with("  /clear") && lines[6].starts_with("  /think"), "{lines:?}");
+        assert!(lines[7].starts_with("  /exit"), "{lines:?}");
         assert!(lines.last().unwrap().contains("tab completa · enter executa"));
     }
 
@@ -797,6 +829,28 @@ mod tests {
         assert!(lines[4].starts_with("› /exit"), "{lines:?}");
         // Sem correspondência, não há menu.
         assert_eq!(screen_with(100, "/zzz", None, None, false).len(), 5);
+    }
+
+    #[test]
+    fn the_think_command_explains_its_cost_in_the_menu() {
+        let lines = screen_with(120, "/th", None, None, false);
+        assert!(lines[4].starts_with("› /think") && lines[4].contains("gasta mais contexto"), "{lines:?}");
+    }
+
+    #[test]
+    fn footer_flags_thinking_only_when_it_is_on() {
+        let off = screen_with(100, "", None, None, false).pop().unwrap();
+        assert!(!off.contains("thinking"), "{off}");
+        let mut editor = new_editor();
+        editor.insert_str("");
+        let mut cfg = settings(false);
+        cfg.think = Arc::new(AtomicBool::new(true));
+        let mut terminal = Terminal::new(TestBackend::new(100, viewport_height(1, 0))).unwrap();
+        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0 };
+        terminal.draw(|f| draw(f, &view)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let footer: String = (0..100).map(|x| buffer[(x, 4)].symbol().to_string()).collect();
+        assert!(footer.starts_with("m:1b · Manual · thinking · contexto"), "{footer}");
     }
 
     #[test]

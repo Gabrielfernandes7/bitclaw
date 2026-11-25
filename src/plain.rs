@@ -7,6 +7,8 @@ use bitclaw::session::Session;
 use bitclaw::tools::{Approver, Outcome, Preview, PreviewLine};
 use serde_json::Value;
 use std::io::{self, BufRead, IsTerminal, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // Pergunta no terminal e lê a resposta da entrada padrão.
 pub struct StdinApprover;
@@ -44,10 +46,13 @@ impl Progress for Lines {
     }
 }
 
-pub fn run(session: &mut Session, header: &[String], auto_yes: bool) -> Result<(), String> {
+pub fn run(session: &mut Session, header: &[String], auto_yes: bool, think: &Arc<AtomicBool>) -> Result<(), String> {
     println!("{}", brand::plain_header(header));
     if auto_yes {
         println!("⚠ --yes ativo: edições serão aplicadas sem confirmação");
+    }
+    if think.load(Ordering::Relaxed) {
+        println!("⚠ {}", brand::THINK_WARNING);
     }
     let interactive = io::stdin().is_terminal();
     let stdin = io::stdin();
@@ -64,6 +69,15 @@ pub fn run(session: &mut Session, header: &[String], auto_yes: bool) -> Result<(
         match input {
             "" => continue,
             "/exit" | "/quit" | "/sair" => break,
+            "/think" => {
+                let on = !think.fetch_xor(true, Ordering::Relaxed);
+                if on {
+                    println!("⚠ {}\n", brand::THINK_WARNING);
+                } else {
+                    println!("thinking desligado.\n");
+                }
+                continue;
+            }
             "/clear" | "/limpar-contexto" => {
                 session.clear();
                 println!("contexto limpo; o prompt do sistema foi mantido.\n");

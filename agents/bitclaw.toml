@@ -24,6 +24,9 @@ url = "http://localhost:11434"
 # Janela pedida ao Ollama, em tokens.
 num_ctx = 16384
 temperature = 0.1
+# Raciocínio do modelo (thinking). Gasta mais tokens e enche a janela de contexto mais rápido;
+# nem todo modelo suporta. Também dá para ligar na hora com --think ou /think.
+think = false
 
 [limits]
 # Passos de modelo por turno.

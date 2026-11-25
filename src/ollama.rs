@@ -1,5 +1,7 @@
 use crate::agent::{ChatModel, Reply};
 use serde_json::{json, Value};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 // Janela de contexto e temperatura padrão. Sem `num_ctx` explícito, o Ollama usa uma janela pequena.
@@ -11,11 +13,13 @@ pub const TEMPERATURE: f32 = 0.6;
 pub struct Options {
     pub num_ctx: u32,
     pub temperature: f32,
+    // O modelo raciocina antes de responder. Gasta mais tokens e enche a janela mais rápido.
+    pub think: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { num_ctx: NUM_CTX, temperature: TEMPERATURE }
+        Self { num_ctx: NUM_CTX, temperature: TEMPERATURE, think: false }
     }
 }
 
@@ -26,7 +30,7 @@ pub fn build_body(model: &str, messages: &[Value], tools: &Value, options: &Opti
         "messages": messages,
         "tools": tools,
         "stream": false,
-        "think": false,
+        "think": options.think,
         "options": { "temperature": options.temperature, "num_ctx": options.num_ctx }
     })
 }
@@ -36,6 +40,8 @@ pub struct Client {
     base_url: String,
     pub model: String,
     pub options: Options,
+    // Liga e desliga o raciocínio em tempo de execução, sem recriar o cliente.
+    think: Arc<AtomicBool>,
 }
 
 // Dados do modelo informados pelo Ollama.
@@ -59,12 +65,20 @@ impl Client {
             .timeout(Duration::from_secs(300))
             .build()
             .map_err(|e| e.to_string())?;
-        Ok(Self { http, base_url, model, options })
+        let think = Arc::new(AtomicBool::new(options.think));
+        Ok(Self { http, base_url, model, options, think })
+    }
+
+    // Usa um indicador compartilhado para o raciocínio: quem o tem pode ligá-lo e desligá-lo.
+    pub fn with_think(mut self, think: Arc<AtomicBool>) -> Self {
+        self.think = think;
+        self
     }
 
     /// Envia o histórico e as ferramentas; devolve a mensagem do assistente.
     pub fn chat(&self, messages: &[Value], tools: &Value) -> Result<Reply, String> {
-        let body = build_body(&self.model, messages, tools, &self.options);
+        let options = Options { think: self.think.load(Ordering::Relaxed), ..self.options };
+        let body = build_body(&self.model, messages, tools, &options);
         let resp = self
             .http
             .post(format!("{}/api/chat", self.base_url))
@@ -141,5 +155,22 @@ mod tests {
         assert_eq!(body["options"]["num_ctx"], NUM_CTX);
         assert_eq!(body["stream"], false);
         assert_eq!(body["model"], "m");
+    }
+
+    #[test]
+    fn thinking_is_off_by_default_and_follows_the_option() {
+        let off = build_body("m", &[], &json!([]), &Options::default());
+        assert_eq!(off["think"], false);
+        let on = build_body("m", &[], &json!([]), &Options { think: true, ..Options::default() });
+        assert_eq!(on["think"], true);
+    }
+
+    #[test]
+    fn the_shared_flag_decides_each_request() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let client = Client::new("http://x".into(), "m".into(), Options::default()).unwrap().with_think(Arc::clone(&flag));
+        assert!(!client.think.load(Ordering::Relaxed));
+        flag.store(true, Ordering::Relaxed);
+        assert!(client.think.load(Ordering::Relaxed));
     }
 }

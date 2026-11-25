@@ -11,6 +11,8 @@ use bitclaw::ollama::{self, Options};
 use bitclaw::session::Session;
 use bitclaw::tools::{Approver, AutoApprover};
 use std::io::{self, IsTerminal};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::path::PathBuf;
 
 // Agente padrão, embutido no binário como dado. `--config` usa outro.
@@ -23,6 +25,7 @@ struct Args {
     dir: PathBuf,
     auto_yes: bool,
     no_color: bool,
+    think: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -33,6 +36,7 @@ fn parse_args() -> Result<Args, String> {
         dir: std::env::current_dir().map_err(|e| e.to_string())?,
         auto_yes: false,
         no_color: false,
+        think: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -43,8 +47,9 @@ fn parse_args() -> Result<Args, String> {
             "--dir" => args.dir = PathBuf::from(it.next().ok_or("--dir precisa de valor")?),
             "--yes" => args.auto_yes = true,
             "--no-color" => args.no_color = true,
+            "--think" => args.think = true,
             "-h" | "--help" => {
-                println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color]");
+                println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color] [--think]");
                 std::process::exit(0);
             }
             other => return Err(format!("argumento desconhecido: {other}")),
@@ -77,16 +82,18 @@ fn run() -> Result<(), String> {
     if let Some(u) = args.url {
         cfg.model.url = u;
     }
+    // O raciocínio pode ser ligado e desligado durante a sessão (/think); este indicador é compartilhado.
+    let think = Arc::new(AtomicBool::new(cfg.model.think || args.think));
 
     // Sem o Ollama o agente não faz nada útil: falha já na inicialização, com a instrução de correção.
-    match build_client(&cfg)?.has_model() {
+    match build_client(&cfg, &think)?.has_model() {
         Ok(true) => {}
         Ok(false) => eprintln!("⚠ o modelo '{0}' não aparece no Ollama. Instale com: ollama pull {0}", cfg.model.name),
         Err(e) => return Err(format!("{e}. Inicie o Ollama com: ollama serve")),
     }
 
     let root = args.dir.canonicalize().map_err(|e| format!("diretório inválido: {e}"))?;
-    let info = vec![format!("projeto {}", root.display()), model_line(&cfg)];
+    let info = vec![format!("projeto {}", root.display()), model_line(&cfg, &think)];
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
 
     if interactive {
@@ -96,30 +103,31 @@ fn run() -> Result<(), String> {
             model: cfg.model.name.clone(),
             auto_yes: args.auto_yes,
             color,
+            think: Arc::clone(&think),
         };
         // A sessão é montada na thread do agente, que recebe o aprovador pronto.
         tui::run(settings, move |approver| {
-            let client = build_client(&cfg)?;
+            let client = build_client(&cfg, &think)?;
             Session::from_config(&cfg, Box::new(client), approver, &root)
         })
     } else {
         let approver: Box<dyn Approver> =
             if args.auto_yes { Box::new(AutoApprover) } else { Box::new(plain::StdinApprover) };
-        let mut session = Session::from_config(&cfg, Box::new(build_client(&cfg)?), approver, &root)?;
+        let mut session = Session::from_config(&cfg, Box::new(build_client(&cfg, &think)?), approver, &root)?;
         let mut header = vec![cfg.name.clone()];
         header.extend(info);
-        plain::run(&mut session, &header, args.auto_yes)
+        plain::run(&mut session, &header, args.auto_yes, &think)
     }
 }
 
-fn build_client(cfg: &AgentConfig) -> Result<ollama::Client, String> {
-    let options = Options { num_ctx: cfg.model.num_ctx, temperature: cfg.model.temperature };
-    ollama::Client::new(cfg.model.url.clone(), cfg.model.name.clone(), options)
+fn build_client(cfg: &AgentConfig, think: &Arc<AtomicBool>) -> Result<ollama::Client, String> {
+    let options = Options { num_ctx: cfg.model.num_ctx, temperature: cfg.model.temperature, think: cfg.model.think };
+    Ok(ollama::Client::new(cfg.model.url.clone(), cfg.model.name.clone(), options)?.with_think(Arc::clone(think)))
 }
 
 // Linha com modelo, tamanho e janela, quando o Ollama responde.
-fn model_line(cfg: &AgentConfig) -> String {
-    match build_client(cfg).and_then(|c| c.model_info()) {
+fn model_line(cfg: &AgentConfig, think: &Arc<AtomicBool>) -> String {
+    match build_client(cfg, think).and_then(|c| c.model_info()) {
         Ok(info) => format!(
             "modelo {} · {} · {} · janela {} tok",
             cfg.model.name,

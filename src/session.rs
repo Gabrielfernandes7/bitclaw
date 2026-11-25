@@ -47,6 +47,13 @@ impl Session {
         // Cópia do histórico: o `trim` pode remover mensagens antigas durante o turno,
         // então desfazer por índice não seria seguro.
         let snapshot = self.messages.clone();
+        // O raciocínio de turnos anteriores não volta ao modelo: só gastaria contexto. O deste turno
+        // fica no histórico, para o modelo continuar o raciocínio entre uma ferramenta e outra.
+        for message in &mut self.messages {
+            if let Some(object) = message.as_object_mut() {
+                object.remove("thinking");
+            }
+        }
         self.messages.push(json!({"role": "user", "content": input}));
         let result = agent::run_turn_with(
             self.model.as_ref(),
@@ -212,6 +219,23 @@ url = "http://unused"
         let report = s.submit("nova", &Silent).unwrap();
         assert_eq!(report.text, "ok");
         assert!(!s.messages().iter().any(|m| m["content"] == "tarefa que falhou"));
+    }
+
+    #[test]
+    fn thinking_from_earlier_turns_is_dropped_but_the_answer_stays() {
+        let dir = tempdir("thinking");
+        let model = scripted(vec![
+            json!({"role": "assistant", "content": "primeira", "thinking": "raciocínio longo do primeiro turno"}),
+            json!({"role": "assistant", "content": "segunda", "thinking": "raciocínio do segundo turno"}),
+        ]);
+        let mut s = Session::from_config(&config(""), model, Box::new(AutoApprover), &dir).unwrap();
+        s.submit("um", &Silent).unwrap();
+        assert!(s.messages().iter().any(|m| m.get("thinking").is_some()), "o do turno atual fica");
+        s.submit("dois", &Silent).unwrap();
+        let thinking: Vec<_> = s.messages().iter().filter_map(|m| m.get("thinking")).collect();
+        assert_eq!(thinking.len(), 1, "só o do turno mais recente");
+        assert_eq!(thinking[0], "raciocínio do segundo turno");
+        assert!(s.messages().iter().any(|m| m["content"] == "primeira"));
     }
 
     #[test]

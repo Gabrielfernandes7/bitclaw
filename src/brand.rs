@@ -31,6 +31,9 @@ pub fn crab() -> Vec<String> {
         .collect()
 }
 
+// Aviso mostrado sempre que o raciocínio do modelo é ligado.
+pub const THINK_WARNING: &str = "thinking ligado: o modelo raciocina antes de responder, o que gasta mais tokens e enche a janela de contexto mais rápido. Nem todo modelo suporta.";
+
 // Largura do mascote em colunas.
 #[cfg(test)]
 fn crab_width() -> usize {

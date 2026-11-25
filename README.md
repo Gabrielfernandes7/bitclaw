@@ -29,6 +29,7 @@ Opções:
 | `--url U` | `http://localhost:11434` | Endereço do Ollama. |
 | `--yes` | desligado | Aplica edições, criações e remoções sem pedir confirmação. Use com cuidado. |
 | `--no-color` | desligado | Desliga as cores. Também é desligado com `NO_COLOR` e quando a saída não é um terminal. |
+| `--think` | desligado | Liga o raciocínio (thinking) do modelo. Gasta mais tokens e enche a janela de contexto mais rápido; nem todo modelo suporta. Também dá para ligar com `think = true` na configuração ou, durante a sessão, com `/think`. |
 | `-h`, `--help` | | Mostra a ajuda. |
 
 Ao iniciar, o programa mostra o modelo em uso e a janela de contexto. Se o modelo não estiver instalado no Ollama, ele avisa antes de começar.
@@ -89,6 +90,7 @@ Digite a tarefa em linguagem natural e pressione Enter. A conversa fica no hist�
 Digite `/` para abrir o menu de comandos. Setas escolhem, Tab completa, Enter executa e Esc fecha.
 
 - `/clear`: limpa a tela e apaga o histórico da conversa, como no Claude Code. O prompt do sistema é mantido.
+- `/think`: liga ou desliga o raciocínio do modelo e mostra o aviso de custo. O rodapé mostra `thinking` enquanto estiver ligado. O raciocínio de turnos anteriores sai do histórico, para não gastar contexto.
 - `/help`: mostra os comandos e as teclas.
 - `/exit`: encerra o programa.
 

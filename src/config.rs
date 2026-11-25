@@ -27,6 +27,9 @@ pub struct ModelConfig {
     pub num_ctx: u32,
     #[serde(default = "default_temperature")]
     pub temperature: f32,
+    // Raciocínio do modelo ligado desde o início. Gasta mais tokens; o padrão é desligado.
+    #[serde(default)]
+    pub think: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -123,7 +126,14 @@ url = "http://localhost:11434"
         let cfg = AgentConfig::from_toml(&minimal("")).unwrap();
         assert_eq!(cfg.model.num_ctx, NUM_CTX);
         assert_eq!(cfg.model.temperature, TEMPERATURE);
+        assert!(!cfg.model.think, "o raciocínio começa desligado");
         assert_eq!(cfg.limits, LimitsConfig::default());
+    }
+
+    #[test]
+    fn thinking_can_be_enabled_in_the_config() {
+        let cfg = AgentConfig::from_toml(&minimal("think = true")).unwrap();
+        assert!(cfg.model.think);
     }
 
     #[test]
