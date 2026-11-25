@@ -5,8 +5,8 @@
 //! não é concedido por `--yes`. O script roda com as permissões do usuário, sem isolamento. O que
 //! esta ferramenta garante é que o usuário só aprova o que vê e que o processo não fica pendurado.
 
-use crate::sandbox::resolve;
-use crate::tools::{Approver, Outcome, Preview, PreviewLine, Tool, str_arg, wrap};
+use crate::core::sandbox::resolve;
+use crate::core::tool::{Approver, Outcome, Preview, PreviewLine, Tool, str_arg, wrap};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
@@ -263,7 +263,7 @@ fn join_output(stdout: &[u8], stderr: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::AutoApprover;
+    use crate::core::tool::AutoApprover;
     use std::cell::RefCell;
 
     // Aprova a execução e guarda a prévia que viu.

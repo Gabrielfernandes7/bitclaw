@@ -1,7 +1,7 @@
 //! Ferramentas do agente (list_dir, read_file, edit_file, create_file, create_dir, delete_file e
 //! run_script), a aprovação das alterações e o backup do que é sobrescrito.
 
-use crate::sandbox::resolve;
+use crate::core::sandbox::resolve;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
@@ -184,7 +184,7 @@ fn builtin(name: &str) -> Option<Box<dyn Tool>> {
         "create_file" => Some(Box::new(CreateFile)),
         "create_dir" => Some(Box::new(CreateDir)),
         "delete_file" => Some(Box::new(DeleteFile)),
-        "run_script" => Some(Box::new(crate::script::RunScript)),
+        "run_script" => Some(Box::new(crate::toolkit::script::RunScript)),
         _ => None,
     }
 }

@@ -6,14 +6,13 @@
 //! O agente roda numa thread própria e fala com a interface por canais. Só este módulo escreve
 //! na tela: a biblioteca continua sem imprimir nada.
 
-mod brand;
+pub(crate) mod brand;
 mod commands;
 mod history;
 mod mention;
 mod input;
 mod print;
 mod markdown;
-pub mod plain;
 mod steps;
 mod theme;
 mod view;
@@ -433,7 +432,7 @@ impl App {
 mod tests {
     use super::*;
     use bitclaw::models::ModelCapabilities;
-    use crate::tui::theme::KEYWORD;
+    use crate::app::tui::theme::KEYWORD;
     use ratatui::layout::{Position, Rect};
     use ratatui::style::Color;
     use bitclaw::skills;

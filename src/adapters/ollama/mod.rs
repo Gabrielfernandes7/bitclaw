@@ -1,8 +1,8 @@
 //! Adaptador do Ollama: traduz o núcleo (modelos, esforço, ferramentas) para a API `/api/chat`.
 //! Tudo que é específico do Ollama fica aqui; o resto do BitClaw não sabe que ele existe.
 
-use crate::agent::{ChatModel, Chunk, Reply};
-use crate::models::{Effort, ModelCapabilities, ModelCatalog, ModelInfo, Reasoning, SharedEffort};
+use crate::core::agent::{ChatModel, Chunk, Reply};
+use crate::core::models::{Effort, ModelCapabilities, ModelCatalog, ModelInfo, Reasoning, SharedEffort};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
 use std::sync::mpsc::{self, RecvTimeoutError};

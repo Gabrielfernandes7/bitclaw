@@ -4,11 +4,11 @@ use super::super::theme::*;
 use ratatui::text::{Line, Span};
 
 // Linhas de texto que cabem ao lado do mascote: o nome e mais duas.
-pub(in crate::tui) const INFO_ROWS: usize = 3;
+pub(in crate::app::tui) const INFO_ROWS: usize = 3;
 
 // O nome do agente e as duas primeiras linhas de informação (projeto e modelo). A linha do modelo
 // descreve o modelo do início; se ele foi trocado com `/model`, mostra o ativo no lugar.
-pub(in crate::tui) fn info_lines(title: &str, info: &[String], active: &str, default: &str) -> Vec<Line<'static>> {
+pub(in crate::app::tui) fn info_lines(title: &str, info: &[String], active: &str, default: &str) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(Span::styled(title.to_string(), bold(YELLOW)))];
     for (i, text) in info.iter().take(INFO_ROWS - 1).enumerate() {
         let text = if i == 1 && active != default { format!("modelo {active} · trocado com /model") } else { text.clone() };
@@ -19,7 +19,7 @@ pub(in crate::tui) fn info_lines(title: &str, info: &[String], active: &str, def
 
 // As linhas de informação com a janela trocada: a do modelo foi escrita com a janela da configuração
 // (`janela 16384 tok`); se `/context` a mudou, mostra a atual.
-pub(in crate::tui) fn with_window(info: &[String], default: u32, current: u32) -> Vec<String> {
+pub(in crate::app::tui) fn with_window(info: &[String], default: u32, current: u32) -> Vec<String> {
     if default == current {
         return info.to_vec();
     }

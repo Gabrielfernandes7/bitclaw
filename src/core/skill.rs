@@ -4,7 +4,7 @@
 //! de referência) chega ao modelo quando ele chama `load_skill`. Assim, um modelo pequeno só gasta
 //! contexto com a skill que de fato usa.
 
-use crate::tools::{Approver, Outcome, Tool, MAX_READ_BYTES};
+use crate::core::tool::{Approver, Outcome, Tool, MAX_READ_BYTES};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs;
@@ -43,7 +43,7 @@ pub struct Skill {
 }
 
 // Skills que acompanham o BitClaw. Entram no catálogo quando o projeto não tem skill de mesmo nome.
-const BUILTIN: &[(&str, &str)] = &[("create-skill", include_str!("../skills/create-skill/SKILL.md"))];
+const BUILTIN: &[(&str, &str)] = &[("create-skill", include_str!("../../skills/create-skill/SKILL.md"))];
 
 pub fn builtins() -> Vec<Skill> {
     BUILTIN
@@ -371,7 +371,7 @@ impl Tool for LoadSkill {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::AutoApprover;
+    use crate::core::tool::AutoApprover;
     use std::fs;
 
     fn tempdir(name: &str) -> PathBuf {

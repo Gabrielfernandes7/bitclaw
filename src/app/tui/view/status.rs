@@ -27,7 +27,7 @@ const LIVE_TAIL: usize = 4;
 
 // O que o modelo está gerando agora, as últimas linhas do raciocínio e da resposta, antes de
 // elas entrarem na conversa. Vazio quando nada está sendo gerado.
-pub(in crate::tui) fn live_lines(work: Option<&Work>, width: u16) -> Vec<Line<'static>> {
+pub(in crate::app::tui) fn live_lines(work: Option<&Work>, width: u16) -> Vec<Line<'static>> {
     let Some(work) = work else { return Vec::new() };
     let room = (width as usize).saturating_sub(6).max(10);
     let mut lines = Vec::new();
@@ -49,7 +49,7 @@ pub(in crate::tui) fn live_lines(work: Option<&Work>, width: u16) -> Vec<Line<'s
 }
 
 // Atividade do turno com pulso, ou a pergunta de aprovação.
-pub(in crate::tui) fn status_line(work: Option<&Work>) -> Line<'static> {
+pub(in crate::app::tui) fn status_line(work: Option<&Work>) -> Line<'static> {
     let Some(work) = work else { return Line::default() };
     if work.approval.is_some() {
         let question = if work.approval_runs { "Executar este script?" } else { "Aplicar esta alteração?" };

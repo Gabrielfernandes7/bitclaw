@@ -14,46 +14,46 @@ use ratatui::widgets::Paragraph;
 use std::time::Instant;
 
 // Nomes das abas, na ordem em que aparecem.
-pub(in crate::tui) const TABS: [&str; 4] = ["Status", "Config", "Usage", "Stats"];
+pub(in crate::app::tui) const TABS: [&str; 4] = ["Status", "Config", "Usage", "Stats"];
 
 // Largura da barra de contexto, em células.
 const BAR_CELLS: usize = 20;
 
 // Aba escolhida. Começa em Status.
 #[derive(Default)]
-pub(in crate::tui) struct StatusPanel {
-    pub(in crate::tui) tab: usize,
+pub(in crate::app::tui) struct StatusPanel {
+    pub(in crate::app::tui) tab: usize,
 }
 
 impl StatusPanel {
     // Próxima aba, dando a volta no fim. `back` vai para a anterior.
-    pub(in crate::tui) fn step(&mut self, back: bool) {
+    pub(in crate::app::tui) fn step(&mut self, back: bool) {
         self.tab = if back { (self.tab + TABS.len() - 1) % TABS.len() } else { (self.tab + 1) % TABS.len() };
     }
 }
 
 // Contagens da sessão: turnos enviados, passos do agente e o instante em que a sessão começou.
-pub(in crate::tui) struct SessionStats {
-    pub(in crate::tui) turns: usize,
-    pub(in crate::tui) steps: usize,
-    pub(in crate::tui) started: Instant,
+pub(in crate::app::tui) struct SessionStats {
+    pub(in crate::app::tui) turns: usize,
+    pub(in crate::app::tui) steps: usize,
+    pub(in crate::app::tui) started: Instant,
     // Tokens de entrada e de saída somados em todas as chamadas ao modelo da sessão.
-    pub(in crate::tui) tokens: u64,
+    pub(in crate::app::tui) tokens: u64,
 }
 
 impl SessionStats {
-    pub(in crate::tui) fn new() -> Self {
+    pub(in crate::app::tui) fn new() -> Self {
         Self { turns: 0, steps: 0, started: Instant::now(), tokens: 0 }
     }
 }
 
 // O que o painel mostra, já lido do estado da interface.
-pub(in crate::tui) struct Snapshot<'a> {
-    pub(in crate::tui) settings: &'a Settings,
-    pub(in crate::tui) model: String,
-    pub(in crate::tui) effort: String,
-    pub(in crate::tui) usage: Option<Usage>,
-    pub(in crate::tui) stats: &'a SessionStats,
+pub(in crate::app::tui) struct Snapshot<'a> {
+    pub(in crate::app::tui) settings: &'a Settings,
+    pub(in crate::app::tui) model: String,
+    pub(in crate::app::tui) effort: String,
+    pub(in crate::app::tui) usage: Option<Usage>,
+    pub(in crate::app::tui) stats: &'a SessionStats,
 }
 
 // Barra de contexto: `█` até a porcentagem, `░` o resto.
@@ -68,7 +68,7 @@ fn elapsed(secs: u64) -> String {
 }
 
 // Pares rótulo e valor da aba escolhida.
-pub(in crate::tui) fn rows(tab: usize, s: &Snapshot) -> Vec<(&'static str, String)> {
+pub(in crate::app::tui) fn rows(tab: usize, s: &Snapshot) -> Vec<(&'static str, String)> {
     let st = s.settings;
     let off = skills::disabled_now(&st.skills_off);
     let on = st.skills.iter().filter(|k| !off.contains(&k.name)).count();
@@ -117,7 +117,7 @@ pub(in crate::tui) fn rows(tab: usize, s: &Snapshot) -> Vec<(&'static str, Strin
 }
 
 // Desenha o painel inteiro: cabeçalho com o mascote, abas e o conteúdo da aba.
-pub(in crate::tui) fn draw_status_panel(f: &mut Frame, s: &Snapshot, panel: &StatusPanel) {
+pub(in crate::app::tui) fn draw_status_panel(f: &mut Frame, s: &Snapshot, panel: &StatusPanel) {
     let [head, _, tabs, _, body, hint] = Layout::vertical([
         Constraint::Length(MASCOT_ROWS),
         Constraint::Length(1),

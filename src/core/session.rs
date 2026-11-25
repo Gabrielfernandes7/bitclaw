@@ -2,18 +2,18 @@
 //! É a API pública do core. Um agente novo monta uma `Session` e chama `submit`; não precisa
 //! conhecer o loop nem o adaptador de modelo.
 
-use crate::agent::{self, Limits, Progress, TurnReport};
-use crate::config::AgentConfig;
-use crate::context::{self, ContextManager, Usage};
-use crate::skills::{self, Disabled, Skill};
+use crate::core::agent::{self, Limits, Progress, TurnReport};
+use crate::core::config::AgentConfig;
+use crate::core::context::{self, ContextManager, Usage};
+use crate::core::skill::{self as skills, Disabled, Skill};
 use std::collections::HashSet;
 use std::sync::Arc;
-use crate::tools::{Approver, Registry};
+use crate::core::tool::{Approver, Registry};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 pub struct Session {
-    model: Box<dyn crate::agent::ChatModel>,
+    model: Box<dyn crate::core::agent::ChatModel>,
     registry: Registry,
     approver: Box<dyn Approver>,
     root: PathBuf,
@@ -32,7 +32,7 @@ impl Session {
     // Monta a sessão a partir de uma configuração. O modelo é injetado: o core não cria adaptadores.
     pub fn from_config(
         cfg: &AgentConfig,
-        model: Box<dyn crate::agent::ChatModel>,
+        model: Box<dyn crate::core::agent::ChatModel>,
         approver: Box<dyn Approver>,
         root: &Path,
     ) -> Result<Self, String> {
@@ -147,7 +147,7 @@ impl Session {
 
     // Troca o modelo no meio da conversa. O histórico é mensagens neutras de provedor, então segue
     // com a sessão; a próxima tarefa vai para o novo modelo.
-    pub fn set_model(&mut self, model: Box<dyn crate::agent::ChatModel>) {
+    pub fn set_model(&mut self, model: Box<dyn crate::core::agent::ChatModel>) {
         self.model = model;
     }
 
@@ -178,8 +178,8 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{ChatModel, Reply, Silent};
-    use crate::tools::AutoApprover;
+    use crate::core::agent::{ChatModel, Reply, Silent};
+    use crate::core::tool::AutoApprover;
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::fs;
@@ -229,7 +229,7 @@ url = "http://unused"
         let skill_dir = dir.join("skills/demo");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(skill_dir.join("SKILL.md"), "---\nname: demo\ndescription: faz demo\n---\n\nPasso secreto.\n").unwrap();
-        let skills = crate::skills::load(&dir.join("skills")).unwrap();
+        let skills = crate::core::skill::load(&dir.join("skills")).unwrap();
         let model = scripted(vec![
             json!({"role": "assistant", "content": "", "tool_calls": [
                 {"function": {"name": "load_skill", "arguments": {"name": "demo"}}}
@@ -254,7 +254,7 @@ url = "http://unused"
         let skill_dir = dir.join("skills/demo");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(skill_dir.join("SKILL.md"), "---\nname: demo\ndescription: faz demo\n---\n\nPasso secreto.\n").unwrap();
-        let skills = crate::skills::load(&dir.join("skills")).unwrap();
+        let skills = crate::core::skill::load(&dir.join("skills")).unwrap();
         let model = scripted(vec![json!({"role": "assistant", "content": "Feito."})]);
         let mut s = Session::from_config(&config(""), model, Box::new(AutoApprover), &dir)
             .unwrap()
@@ -270,8 +270,8 @@ url = "http://unused"
         let skill_dir = dir.join("skills/demo");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(skill_dir.join("SKILL.md"), "---\nname: demo\ndescription: faz demo\n---\n\nPasso secreto.\n").unwrap();
-        let skills = crate::skills::load(&dir.join("skills")).unwrap();
-        let off = crate::skills::new_disabled();
+        let skills = crate::core::skill::load(&dir.join("skills")).unwrap();
+        let off = crate::core::skill::new_disabled();
         let mut s = Session::from_config(&config(""), scripted(vec![]), Box::new(AutoApprover), &dir)
             .unwrap()
             .with_skills(skills, Arc::clone(&off));

@@ -13,14 +13,14 @@
 //! # Ok(()) }
 //! ```
 
-pub mod agent;
-pub mod config;
-pub mod context;
+pub mod adapters;
+pub mod core;
 pub mod init;
-pub mod models;
-pub mod ollama;
-pub mod sandbox;
-pub mod script;
-pub mod session;
-pub mod skills;
-pub mod tools;
+pub mod toolkit;
+
+// Caminhos antigos, mantidos durante a refatoração.
+pub use adapters::ollama;
+pub use core::{agent, config, context, models, sandbox, session};
+pub use core::skill as skills;
+pub use core::tool as tools;
+pub use toolkit::script;

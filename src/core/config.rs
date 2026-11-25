@@ -1,9 +1,9 @@
 //! Configuração de um agente, lida de TOML. Prompt, ferramentas, modelo e limites são dados,
 //! não código: trocar um deles não exige recompilar o core.
 
-use crate::agent::{MAX_CONSECUTIVE_FAILURES, MAX_STEPS};
-use crate::ollama::{NUM_CTX, TEMPERATURE};
-use crate::tools::Registry;
+use crate::core::agent::{MAX_CONSECUTIVE_FAILURES, MAX_STEPS};
+use crate::adapters::ollama::{NUM_CTX, TEMPERATURE};
+use crate::core::tool::Registry;
 use serde::Deserialize;
 
 // `deny_unknown_fields`: um campo escrito errado é erro, não um padrão silencioso.
@@ -102,7 +102,7 @@ mod tests {
     use super::*;
 
     // O arquivo que o binário usa por padrão precisa ser válido.
-    const BUNDLED: &str = include_str!("../agents/bitclaw.toml");
+    const BUNDLED: &str = include_str!("../../agents/bitclaw.toml");
 
     fn minimal(extra: &str) -> String {
         format!(

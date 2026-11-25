@@ -9,14 +9,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 // Estado do painel: o que foi digitado na busca, a linha escolhida e a ordem.
-pub(in crate::tui) struct Picker {
-    pub(in crate::tui) query: String,
-    pub(in crate::tui) index: usize,
-    pub(in crate::tui) by_name: bool,
+pub(in crate::app::tui) struct Picker {
+    pub(in crate::app::tui) query: String,
+    pub(in crate::app::tui) index: usize,
+    pub(in crate::app::tui) by_name: bool,
 }
 
 // Linhas visíveis do painel, índices em `skills`. A busca olha nome e descrição.
-pub(in crate::tui) fn picker_rows(skills: &[Skill], p: &Picker) -> Vec<usize> {
+pub(in crate::app::tui) fn picker_rows(skills: &[Skill], p: &Picker) -> Vec<usize> {
     let q = p.query.to_lowercase();
     let mut rows: Vec<usize> = (0..skills.len())
         .filter(|&i| {
@@ -31,9 +31,9 @@ pub(in crate::tui) fn picker_rows(skills: &[Skill], p: &Picker) -> Vec<usize> {
     rows
 }
 
-pub(in crate::tui) const PICKER_VISIBLE: usize = 8;
+pub(in crate::app::tui) const PICKER_VISIBLE: usize = 8;
 
-pub(in crate::tui) fn draw_picker(f: &mut Frame, settings: &Settings, p: &Picker) {
+pub(in crate::app::tui) fn draw_picker(f: &mut Frame, settings: &Settings, p: &Picker) {
     let rows = picker_rows(&settings.skills, p);
     let off = skills::disabled_now(&settings.skills_off);
     let enabled: Vec<&Skill> = settings.skills.iter().filter(|s| !off.contains(&s.name)).collect();

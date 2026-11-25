@@ -1,8 +1,8 @@
 //! Ciclo modelo → ferramentas → modelo. Não conhece o Ollama nem nomes de ferramentas:
 //! recebe um `ChatModel`, um `Registry`, um `ContextManager` e um `Progress`.
 
-use crate::context::{self, ContextManager, Trim};
-use crate::tools::{Approver, Outcome, Registry};
+use crate::core::context::{self, ContextManager, Trim};
+use crate::core::tool::{Approver, Outcome, Registry};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -404,7 +404,7 @@ fn normalize_args(raw: Option<&Value>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::{AutoApprover, Preview, Tool};
+    use crate::core::tool::{AutoApprover, Preview, Tool};
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::fs;

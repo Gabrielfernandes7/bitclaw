@@ -1,7 +1,7 @@
 //! Binário do BitClaw: lê a configuração, monta as peças (adaptador do Ollama, aprovação,
 //! interface) e abre o terminal. A lógica do agente fica na biblioteca.
 
-mod tui;
+mod app;
 
 use bitclaw::agent::ChatModel;
 use bitclaw::config::AgentConfig;
@@ -149,7 +149,7 @@ fn run() -> Result<(), String> {
     };
 
     if interactive {
-        let settings = tui::Settings {
+        let settings = app::tui::Settings {
             title: cfg.name.clone(),
             info,
             skills: skills.clone(),
@@ -168,7 +168,7 @@ fn run() -> Result<(), String> {
         // A sessão é montada na thread do agente, que recebe o aprovador pronto.
         let session_effort = Arc::clone(&effort);
         let session_options = Arc::clone(&options);
-        tui::run(
+        app::tui::run(
             settings,
             move |approver| {
                 let client = build_client(&cfg, &default_info, &session_effort, &session_options)?;
@@ -177,13 +177,13 @@ fn run() -> Result<(), String> {
             Box::new(make_model),
         )
     } else {
-        let approver: Box<dyn Approver> = Box::new(tui::plain::StdinApprover { auto_edits: args.auto_yes });
+        let approver: Box<dyn Approver> = Box::new(app::plain::StdinApprover { auto_edits: args.auto_yes });
         let client = build_client(&cfg, &default_info, &effort, &options)?;
         let mut session = Session::from_config(&cfg, Box::new(client), approver, &root)?.with_skills(skills, skills::new_disabled());
         let mut header = vec![cfg.name.clone()];
         header.extend(info);
         header.extend(skill_info);
-        tui::plain::run(&mut session, &header, args.auto_yes, &active, &effort, &skill_lines)
+        app::plain::run(&mut session, &header, args.auto_yes, &active, &effort, &skill_lines)
     }
 }
 

@@ -6,11 +6,11 @@ mod picker;
 mod status;
 mod status_panel;
 
-pub(in crate::tui) use self::info::*;
-pub(in crate::tui) use self::model_picker::*;
-pub(in crate::tui) use self::picker::*;
-pub(in crate::tui) use self::status::*;
-pub(in crate::tui) use self::status_panel::*;
+pub(in crate::app::tui) use self::info::*;
+pub(in crate::app::tui) use self::model_picker::*;
+pub(in crate::app::tui) use self::picker::*;
+pub(in crate::app::tui) use self::status::*;
+pub(in crate::app::tui) use self::status_panel::*;
 
 use super::brand::{self, Mood, TRICK_MS};
 use super::commands::keyword_ranges;
@@ -25,52 +25,52 @@ use ratatui_textarea::TextArea;
 use std::time::Instant;
 
 // Aviso: rótulo "aviso:" em laranja, sem glifo.
-pub(in crate::tui) fn aviso_line(text: &str) -> Line<'static> {
+pub(in crate::app::tui) fn aviso_line(text: &str) -> Line<'static> {
     Line::from(vec![Span::styled("  aviso: ", bold(ORANGE)), Span::styled(text.to_string(), fg(ORANGE))])
 }
 
 // Linha cinza com o recuo padrão.
-pub(in crate::tui) fn note(text: &str) -> Line<'static> {
+pub(in crate::app::tui) fn note(text: &str) -> Line<'static> {
     Line::from(Span::styled(format!("  {text}"), fg(GRAY)))
 }
 
 // área fixa embaixo
 
 // Altura da faixa do mascote.
-pub(in crate::tui) const MASCOT_ROWS: u16 = 3;
+pub(in crate::app::tui) const MASCOT_ROWS: u16 = 3;
 
 // Linhas em branco acima do mascote, para o cabeçalho não encostar no topo do terminal.
-pub(in crate::tui) const TOP_GAP: u16 = 1;
+pub(in crate::app::tui) const TOP_GAP: u16 = 1;
 
 // Tudo o que `draw` precisa, emprestado do estado da interface.
-pub(in crate::tui) struct View<'a> {
-    pub(in crate::tui) editor: &'a TextArea<'static>,
-    pub(in crate::tui) work: Option<&'a Work>,
-    pub(in crate::tui) usage: Option<Usage>,
-    pub(in crate::tui) settings: &'a Settings,
-    pub(in crate::tui) menu: Vec<&'static Cmd>,
-    pub(in crate::tui) menu_index: usize,
-    pub(in crate::tui) picker: Option<&'a Picker>,
-    pub(in crate::tui) model_picker: Option<&'a ModelPicker>,
+pub(in crate::app::tui) struct View<'a> {
+    pub(in crate::app::tui) editor: &'a TextArea<'static>,
+    pub(in crate::app::tui) work: Option<&'a Work>,
+    pub(in crate::app::tui) usage: Option<Usage>,
+    pub(in crate::app::tui) settings: &'a Settings,
+    pub(in crate::app::tui) menu: Vec<&'static Cmd>,
+    pub(in crate::app::tui) menu_index: usize,
+    pub(in crate::app::tui) picker: Option<&'a Picker>,
+    pub(in crate::app::tui) model_picker: Option<&'a ModelPicker>,
     // Painel `/status`, se estiver aberto, e as estatísticas que ele mostra.
-    pub(in crate::tui) status_panel: Option<&'a StatusPanel>,
-    pub(in crate::tui) stats: &'a SessionStats,
-    pub(in crate::tui) mascot: Mascot,
-    pub(in crate::tui) transcript: &'a [Line<'static>],
-    pub(in crate::tui) scroll_back: usize,
+    pub(in crate::app::tui) status_panel: Option<&'a StatusPanel>,
+    pub(in crate::app::tui) stats: &'a SessionStats,
+    pub(in crate::app::tui) mascot: Mascot,
+    pub(in crate::app::tui) transcript: &'a [Line<'static>],
+    pub(in crate::app::tui) scroll_back: usize,
     // Sugestões de arquivo para o `@` sob o cursor. Vazio quando não há menção.
-    pub(in crate::tui) mentions: Vec<Entry>,
+    pub(in crate::app::tui) mentions: Vec<Entry>,
 }
 
 // O estado do mascote e há quanto tempo ele dura, em ms.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(in crate::tui) struct Mascot {
-    pub(in crate::tui) mood: Mood,
-    pub(in crate::tui) ms: u128,
+pub(in crate::app::tui) struct Mascot {
+    pub(in crate::app::tui) mood: Mood,
+    pub(in crate::app::tui) ms: u128,
 }
 
 // O número que o mascote faz agora: o que foi disparado, enquanto durar. Fora disso ele fica parado.
-pub(in crate::tui) fn mascot_for(play: Option<(Instant, Mood)>) -> Mascot {
+pub(in crate::app::tui) fn mascot_for(play: Option<(Instant, Mood)>) -> Mascot {
     match play {
         Some((at, mood)) if at.elapsed().as_millis() < TRICK_MS => Mascot { mood, ms: at.elapsed().as_millis() },
         _ => Mascot { mood: Mood::Idle, ms: 0 },
@@ -78,12 +78,12 @@ pub(in crate::tui) fn mascot_for(play: Option<(Instant, Mood)>) -> Mascot {
 }
 
 // Onde o mascote fica dentro da área fixa. Em janelas estreitas ele some e só sobra o status.
-pub(in crate::tui) fn mascot_rect(area: Rect) -> Option<Rect> {
+pub(in crate::app::tui) fn mascot_rect(area: Rect) -> Option<Rect> {
     (area.width >= brand::WIDTH + 2 + 12 && area.height >= MASCOT_ROWS)
         .then(|| Rect::new(area.x, area.y, brand::WIDTH, MASCOT_ROWS))
 }
 
-pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
+pub(in crate::app::tui) fn draw(f: &mut Frame, v: &View) {
     if let Some(models) = v.model_picker {
         draw_model_picker(f, v.settings, models);
         return;
@@ -238,7 +238,7 @@ pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
 }
 
 // Trecho da conversa que cabe na tela: `back` é quantas linhas ela está rolada para cima.
-pub(in crate::tui) fn visible_range(len: usize, height: usize, back: usize) -> (usize, usize) {
+pub(in crate::app::tui) fn visible_range(len: usize, height: usize, back: usize) -> (usize, usize) {
     let back = back.min(len.saturating_sub(height));
     let end = len - back;
     (end.saturating_sub(height), end)

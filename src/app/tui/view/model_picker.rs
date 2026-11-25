@@ -10,20 +10,20 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 // Lista de modelos do catálogo, lida quando o painel abre. A busca olha o id.
-pub(in crate::tui) struct ModelPicker {
-    pub(in crate::tui) query: String,
-    pub(in crate::tui) index: usize,
-    pub(in crate::tui) models: Vec<ModelInfo>,
+pub(in crate::app::tui) struct ModelPicker {
+    pub(in crate::app::tui) query: String,
+    pub(in crate::app::tui) index: usize,
+    pub(in crate::app::tui) models: Vec<ModelInfo>,
 }
 
 // Linhas visíveis do painel de modelos, índices em `models`.
-pub(in crate::tui) fn model_rows(p: &ModelPicker) -> Vec<usize> {
+pub(in crate::app::tui) fn model_rows(p: &ModelPicker) -> Vec<usize> {
     let q = p.query.to_lowercase();
     (0..p.models.len()).filter(|&i| q.is_empty() || p.models[i].id.to_lowercase().contains(&q)).collect()
 }
 
 // Capacidades numa linha só: é o que pesa na escolha.
-pub(in crate::tui) fn capabilities_text(caps: &ModelCapabilities) -> String {
+pub(in crate::app::tui) fn capabilities_text(caps: &ModelCapabilities) -> String {
     let tools = if caps.tool_calling { "ferramentas" } else { "sem ferramentas" };
     let reasoning = match &caps.reasoning {
         Reasoning::Unsupported => "sem raciocínio".to_string(),
@@ -40,7 +40,7 @@ pub(in crate::tui) fn capabilities_text(caps: &ModelCapabilities) -> String {
     parts.join(" · ")
 }
 
-pub(in crate::tui) fn draw_model_picker(f: &mut Frame, settings: &Settings, p: &ModelPicker) {
+pub(in crate::app::tui) fn draw_model_picker(f: &mut Frame, settings: &Settings, p: &ModelPicker) {
     let rows = model_rows(p);
     let active = locked(&settings.model).id.clone();
     let [title, search, list, hint] = Layout::vertical([
@@ -93,7 +93,7 @@ pub(in crate::tui) fn draw_model_picker(f: &mut Frame, settings: &Settings, p: &
 }
 
 // Ficha de um modelo para `/model show`.
-pub(in crate::tui) fn model_card(model: &ModelInfo, active: bool) -> Vec<Line<'static>> {
+pub(in crate::app::tui) fn model_card(model: &ModelInfo, active: bool) -> Vec<Line<'static>> {
     let label = |k: &str, v: String| {
         Line::from(vec![Span::styled(format!("  {k:<11}"), fg(GRAY)), Span::styled(v, Style::default())])
     };
