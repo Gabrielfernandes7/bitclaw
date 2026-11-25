@@ -17,7 +17,7 @@ mod theme;
 mod view;
 mod worker;
 
-use self::commands::{ARG_COMMANDS, COMMANDS, Cmd};
+use self::commands::{ARG_COMMANDS, COMMANDS, Cmd, ModelAction, parse_model_arg};
 use self::history::History;
 use self::view::*;
 use self::worker::{Command, UiEvent, worker};

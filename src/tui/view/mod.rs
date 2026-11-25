@@ -24,7 +24,7 @@ pub(in crate::tui) fn note(text: &str) -> Line<'static> {
     Line::from(Span::styled(format!("  {text}"), fg(GRAY)))
 }
 
-// ---------- área fixa embaixo ----------
+// área fixa embaixo
 
 // Tudo o que `draw` precisa, emprestado do estado da interface.
 pub(in crate::tui) struct View<'a> {

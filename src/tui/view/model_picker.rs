@@ -91,3 +91,35 @@ pub(in crate::tui) fn draw_model_picker(f: &mut Frame, settings: &Settings, p: &
     let help = "↑/↓ navega · enter escolhe · digite para buscar · esc fecha";
     f.render_widget(Paragraph::new(Line::from(Span::styled(help, fg(GRAY)))), hint);
 }
+
+// Ficha de um modelo para `/model show`.
+pub(in crate::tui) fn model_card(model: &ModelInfo, active: bool) -> Vec<Line<'static>> {
+    let label = |k: &str, v: String| {
+        Line::from(vec![Span::styled(format!("  {k:<11}"), fg(GRAY)), Span::styled(v, Style::default())])
+    };
+    let provider = if model.provider.is_empty() { "desconhecido".to_string() } else { model.provider.clone() };
+    let mut lines = vec![Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(model.id.clone(), bold(YELLOW)),
+        Span::styled(if active { "  (ativo)" } else { "" }, fg(GREEN)),
+    ])];
+    lines.push(label("provedor", provider));
+    lines.push(label("capacidades", capabilities_text(&model.capabilities)));
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_card_lists_id_provider_and_capabilities() {
+        let text = |l: &Line| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+        let model = ModelInfo::unknown("m:1b");
+        let card: Vec<String> = model_card(&model, true).iter().map(text).collect();
+        assert_eq!(card[0], "  m:1b  (ativo)");
+        assert!(card[1].contains("provedor") && card[1].contains("desconhecido"), "{card:?}");
+        assert!(card[2].contains("capacidades") && card[2].contains("ferramentas"), "{card:?}");
+        assert_eq!(model_card(&model, false)[0].spans.iter().map(|s| s.content.as_ref()).collect::<String>(), "  m:1b");
+    }
+}

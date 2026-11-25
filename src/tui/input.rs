@@ -272,16 +272,20 @@ impl App {
 
     // `/model`: sem argumento abre o painel; com um id, troca direto. A troca espera a tarefa atual.
     pub(super) fn model_command(&mut self, arg: &str) -> io::Result<()> {
+        let action = parse_model_arg(arg);
+        if let ModelAction::Show(name) = &action {
+            return self.model_show(name.as_deref());
+        }
         if self.work.is_some() {
             return self.print(vec![note("espere a tarefa terminar para trocar de modelo."), Line::default()]);
         }
-        if !arg.is_empty() {
-            return match self.settings.catalog.find(arg) {
+        if let ModelAction::Load(name) = &action {
+            return match self.settings.catalog.find(name) {
                 Ok(Some(model)) => {
                     self.switch_model(model);
                     Ok(())
                 }
-                Ok(None) => self.print(vec![note(&format!("modelo não instalado: {arg}. Veja /model.")), Line::default()]),
+                Ok(None) => self.print(vec![note(&format!("modelo não instalado: {name}. Veja /model.")), Line::default()]),
                 Err(e) => self.print(vec![note(&format!("não consegui consultar os modelos: {e}")), Line::default()]),
             };
         }
@@ -295,6 +299,22 @@ impl App {
             }
             Err(e) => self.print(vec![note(&format!("não consegui listar os modelos: {e}")), Line::default()]),
         }
+    }
+
+    // `/model show [nome]`: ficha do modelo pedido, ou do ativo se não vier nome.
+    fn model_show(&mut self, name: Option<&str>) -> io::Result<()> {
+        let active = self.active_model();
+        let model = match name {
+            None => active.clone(),
+            Some(n) => match self.settings.catalog.find(n) {
+                Ok(Some(m)) => m,
+                Ok(None) => return self.print(vec![note(&format!("modelo não instalado: {n}. Veja /model.")), Line::default()]),
+                Err(e) => return self.print(vec![note(&format!("não consegui consultar os modelos: {e}")), Line::default()]),
+            },
+        };
+        let mut lines = model_card(&model, model.id == active.id);
+        lines.push(Line::default());
+        self.print(lines)
     }
 
     // Teclas do painel de modelos. Enter escolhe e fecha; Esc fecha sem trocar. Devolve `true` para sair (nunca sai).
