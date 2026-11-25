@@ -12,17 +12,19 @@ mod history;
 mod markdown;
 pub mod plain;
 mod theme;
+mod view;
 mod worker;
 
 use self::commands::{ARG_COMMANDS, COMMANDS, Cmd};
 use self::history::History;
+use self::view::*;
 use self::worker::{Command, UiEvent, worker};
 use self::theme::{GRAY, GREEN, ORANGE, RED, YELLOW, bold, fg, palette};
 use bitclaw::agent::{ChatModel, INTERRUPTED, TurnReport};
-use bitclaw::models::{Effort, ModelCapabilities, ModelCatalog, ModelInfo, Reasoning, SharedEffort};
+use bitclaw::models::{Effort, ModelCatalog, ModelInfo, Reasoning, SharedEffort};
 use bitclaw::context::Usage;
 use bitclaw::session::Session;
-use bitclaw::skills::{self, Disabled, Skill};
+use bitclaw::skills::{Disabled, Skill};
 use bitclaw::tools::{Approver, Outcome, Preview, PreviewLine};
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
@@ -31,12 +33,11 @@ use crossterm::event::{
 use crossterm::cursor::MoveTo;
 use crossterm::execute;
 use crossterm::terminal::{Clear, ClearType};
-use ratatui::layout::{Constraint, Layout};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget};
 use ratatui::backend::CrosstermBackend;
-use ratatui::{DefaultTerminal, Frame, Terminal, TerminalOptions, Viewport};
+use ratatui::{DefaultTerminal, Terminal, TerminalOptions, Viewport};
 use ratatui_textarea::TextArea;
 use serde_json::Value;
 use std::io;
@@ -751,316 +752,11 @@ impl App {
     }
 }
 
-// Aviso: rótulo "aviso:" em laranja, sem glifo.
-fn aviso_line(text: &str) -> Line<'static> {
-    Line::from(vec![Span::styled("  aviso: ", bold(ORANGE)), Span::styled(text.to_string(), fg(ORANGE))])
-}
-
-// Linha cinza com o recuo padrão.
-fn note(text: &str) -> Line<'static> {
-    Line::from(Span::styled(format!("  {text}"), fg(GRAY)))
-}
-
-// ---------- área fixa embaixo ----------
-
-// Tudo o que `draw` precisa, emprestado do estado da interface.
-struct View<'a> {
-    editor: &'a TextArea<'static>,
-    work: Option<&'a Work>,
-    usage: Option<Usage>,
-    settings: &'a Settings,
-    menu: Vec<&'static Cmd>,
-    menu_index: usize,
-    picker: Option<&'a Picker>,
-    model_picker: Option<&'a ModelPicker>,
-}
-
-// ---------- painel de skills (`/skills`) ----------
-
-// Estado do painel: o que foi digitado na busca, a linha escolhida e a ordem.
-struct Picker {
-    query: String,
-    index: usize,
-    by_name: bool,
-}
-
-// Linhas visíveis do painel, índices em `skills`. A busca olha nome e descrição.
-fn picker_rows(skills: &[Skill], p: &Picker) -> Vec<usize> {
-    let q = p.query.to_lowercase();
-    let mut rows: Vec<usize> = (0..skills.len())
-        .filter(|&i| {
-            q.is_empty()
-                || skills[i].name.to_lowercase().contains(&q)
-                || skills[i].description.to_lowercase().contains(&q)
-        })
-        .collect();
-    if p.by_name {
-        rows.sort_by(|&a, &b| skills[a].name.cmp(&skills[b].name));
-    }
-    rows
-}
-
-const PICKER_VISIBLE: usize = 8;
-
-// Título (1), caixa de busca (3), lista (até PICKER_VISIBLE linhas) e dica (1).
-fn picker_height(rows: usize) -> u16 {
-    (1 + 3 + rows.clamp(1, PICKER_VISIBLE) + 1) as u16
-}
-
-fn draw_picker(f: &mut Frame, settings: &Settings, p: &Picker) {
-    let rows = picker_rows(&settings.skills, p);
-    let off = skills::disabled_now(&settings.skills_off);
-    let enabled: Vec<&Skill> = settings.skills.iter().filter(|s| !off.contains(&s.name)).collect();
-    let tokens: usize = enabled.iter().map(|s| skills::catalog_tokens(s)).sum();
-    let [title, search, list, hint] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(3),
-        Constraint::Min(1),
-        Constraint::Length(1),
-    ])
-    .areas(f.area());
-
-    let head = vec![
-        Span::styled(format!("{} skills", settings.skills.len()), bold(YELLOW)),
-        Span::styled(format!(" · {} ativas · ~{tokens} tokens no prompt", enabled.len()), fg(GRAY)),
-    ];
-    f.render_widget(Paragraph::new(Line::from(head)), title);
-
-    // Caixa arredondada com a busca, como no Claude Code.
-    let box_style = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(fg(GRAY));
-    let search_text = if p.query.is_empty() {
-        Line::from(Span::styled("⌕ Buscar skills…", fg(GRAY)))
-    } else {
-        Line::from(vec![Span::styled("⌕ ", fg(GRAY)), Span::raw(p.query.clone())])
-    };
-    f.render_widget(Paragraph::new(search_text).block(box_style), search);
-
-    // Largura da coluna de nomes: a maior entre todas as skills, para alinhar os metadados.
-    let name_w = settings.skills.iter().map(|s| s.name.chars().count()).max().unwrap_or(0).clamp(12, 36);
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    if rows.is_empty() {
-        lines.push(Line::from(Span::styled("  nenhuma skill encontrada", fg(GRAY))));
-    } else {
-        let start = if p.index >= PICKER_VISIBLE { p.index + 1 - PICKER_VISIBLE } else { 0 };
-        for (pos, &i) in rows.iter().enumerate().skip(start).take(PICKER_VISIBLE) {
-            let skill = &settings.skills[i];
-            let selected = pos == p.index;
-            let on = !off.contains(&skill.name);
-            let origin = if skill.builtin { "embutida" } else { "projeto" };
-            let (cursor, name_style) = if selected {
-                ("❯ ", bold(YELLOW))
-            } else if on {
-                ("  ", Style::default())
-            } else {
-                ("  ", fg(GRAY))
-            };
-            let mark = if on { "✔ " } else { "○ " };
-            let mark_style = if on { fg(YELLOW) } else { fg(GRAY) };
-            lines.push(Line::from(vec![
-                Span::styled(cursor, fg(YELLOW)),
-                Span::styled(mark, mark_style),
-                Span::styled(format!("{:<name_w$}", skill.name), name_style),
-                Span::styled(
-                    format!("  {origin} · ~{} tokens", skills::catalog_tokens(skill)),
-                    fg(GRAY),
-                ),
-            ]));
-        }
-    }
-    f.render_widget(Paragraph::new(lines), list);
-
-    let help = "↑/↓ navega · espaço liga/desliga · digite para buscar · tab ordena · esc fecha";
-    f.render_widget(Paragraph::new(Line::from(Span::styled(help, fg(GRAY)))), hint);
-}
-
-// ---------- painel de modelos (`/model`) ----------
-
-// Lista de modelos do catálogo, lida quando o painel abre. A busca olha o id.
-struct ModelPicker {
-    query: String,
-    index: usize,
-    models: Vec<ModelInfo>,
-}
-
-// Linhas visíveis do painel de modelos, índices em `models`.
-fn model_rows(p: &ModelPicker) -> Vec<usize> {
-    let q = p.query.to_lowercase();
-    (0..p.models.len()).filter(|&i| q.is_empty() || p.models[i].id.to_lowercase().contains(&q)).collect()
-}
-
-// Capacidades numa linha só: é o que pesa na escolha.
-fn capabilities_text(caps: &ModelCapabilities) -> String {
-    let tools = if caps.tool_calling { "ferramentas" } else { "sem ferramentas" };
-    let reasoning = match &caps.reasoning {
-        Reasoning::Unsupported => "sem raciocínio".to_string(),
-        Reasoning::Toggle => "raciocínio liga/desliga".to_string(),
-        Reasoning::Levels(_) => {
-            let levels: Vec<&str> = caps.supported_efforts().into_iter().filter(|e| !e.is_off()).map(Effort::as_str).collect();
-            format!("raciocínio: {}", levels.join(", "))
-        }
-    };
-    let mut parts = vec![tools.to_string(), reasoning];
-    if let Some(window) = caps.context_window {
-        parts.push(format!("janela {window} tok"));
-    }
-    parts.join(" · ")
-}
-
-fn draw_model_picker(f: &mut Frame, settings: &Settings, p: &ModelPicker) {
-    let rows = model_rows(p);
-    let active = locked(&settings.model).id.clone();
-    let [title, search, list, hint] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(3),
-        Constraint::Min(1),
-        Constraint::Length(1),
-    ])
-    .areas(f.area());
-
-    let head = vec![
-        Span::styled(format!("{} modelos", p.models.len()), bold(YELLOW)),
-        Span::styled(format!(" · ativo {active} · padrão {}", settings.default_model), fg(GRAY)),
-    ];
-    f.render_widget(Paragraph::new(Line::from(head)), title);
-
-    let box_style = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(fg(GRAY));
-    let search_text = if p.query.is_empty() {
-        Line::from(Span::styled("⌕ Buscar modelos…", fg(GRAY)))
-    } else {
-        Line::from(vec![Span::styled("⌕ ", fg(GRAY)), Span::raw(p.query.clone())])
-    };
-    f.render_widget(Paragraph::new(search_text).block(box_style), search);
-
-    let name_w = p.models.iter().map(|m| m.id.chars().count()).max().unwrap_or(0).clamp(12, 36);
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    if rows.is_empty() {
-        lines.push(Line::from(Span::styled("  nenhum modelo encontrado", fg(GRAY))));
-    } else {
-        let start = if p.index >= PICKER_VISIBLE { p.index + 1 - PICKER_VISIBLE } else { 0 };
-        for (pos, &i) in rows.iter().enumerate().skip(start).take(PICKER_VISIBLE) {
-            let model = &p.models[i];
-            let selected = pos == p.index;
-            let is_active = model.id == active;
-            let (cursor, name_style) = if selected { ("❯ ", bold(YELLOW)) } else { ("  ", Style::default()) };
-            let (mark, mark_style) = if is_active { ("● ", fg(YELLOW)) } else { ("○ ", fg(GRAY)) };
-            let default = if model.id == settings.default_model { " · padrão" } else { "" };
-            lines.push(Line::from(vec![
-                Span::styled(cursor, fg(YELLOW)),
-                Span::styled(mark, mark_style),
-                Span::styled(format!("{:<name_w$}", model.id), name_style),
-                Span::styled(format!("  {}{default}", capabilities_text(&model.capabilities)), fg(GRAY)),
-            ]));
-        }
-    }
-    f.render_widget(Paragraph::new(lines), list);
-
-    let help = "↑/↓ navega · enter escolhe · digite para buscar · esc fecha";
-    f.render_widget(Paragraph::new(Line::from(Span::styled(help, fg(GRAY)))), hint);
-}
-
-fn draw(f: &mut Frame, v: &View) {
-    if let Some(models) = v.model_picker {
-        draw_model_picker(f, v.settings, models);
-        return;
-    }
-    if let Some(picker) = v.picker {
-        draw_picker(f, v.settings, picker);
-        return;
-    }
-    let editor_rows = v.editor.lines().len().clamp(1, MAX_EDITOR_ROWS) as u16;
-    let [status, composer, menu, footer] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(editor_rows + 2),
-        Constraint::Length(v.menu.len() as u16),
-        Constraint::Length(1),
-    ])
-    .areas(f.area());
-
-    f.render_widget(Paragraph::new(status_line(v.work)), status);
-
-    // Editor delimitado por réguas, como no Claude Code.
-    let block = Block::new().borders(Borders::TOP | Borders::BOTTOM).border_style(fg(GRAY));
-    let inner = block.inner(composer);
-    f.render_widget(block, composer);
-    let [mark, text] = Layout::horizontal([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
-    f.render_widget(Paragraph::new("›").style(bold(YELLOW)), mark);
-    f.render_widget(v.editor, text);
-
-    // Menu de comandos, abaixo do editor.
-    let chosen = v.menu_index.min(v.menu.len().saturating_sub(1));
-    let rows: Vec<Line> = v
-        .menu
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let (mark, name) = if i == chosen { ("› ", bold(YELLOW)) } else { ("  ", fg(GRAY)) };
-            Line::from(vec![
-                Span::styled(mark, name),
-                Span::styled(format!("{:<8} ", c.name), name),
-                Span::styled(c.desc, fg(GRAY)),
-            ])
-        })
-        .collect();
-    f.render_widget(Paragraph::new(rows), menu);
-
-    // Rodapé: modelo, modo e contexto à esquerda; atalhos à direita, na versão que couber.
-    let model_id = locked(&v.settings.model).id.clone();
-    let mut info = vec![Span::styled(
-        format!("{} · {} · ", model_id, if v.settings.auto_yes { "Automático" } else { "Manual" }),
-        fg(GRAY),
-    )];
-    let effort = *locked(&v.settings.effort);
-    if !effort.is_off() {
-        info.push(Span::styled(format!("esforço {}", effort.as_str()), fg(YELLOW)));
-        info.push(Span::styled(" · ", fg(GRAY)));
-    }
-    info.push(Span::styled("contexto ", fg(GRAY)));
-    match v.usage {
-        Some(u) => {
-            let color = if u.percent >= 90.0 { RED } else if u.percent >= 70.0 { YELLOW } else { GREEN };
-            info.push(Span::styled(format!("{:.0}%", u.percent), fg(color)));
-            info.push(Span::styled(format!(" ({}/{})", u.tokens, u.window), fg(GRAY)));
-        }
-        None => info.push(Span::styled("—", fg(GRAY))),
-    }
-    let info_width: usize = info.iter().map(Span::width).sum();
-    let room = (footer.width as usize).saturating_sub(info_width + 2);
-    let hints: &[&str] = match v.work {
-        _ if !v.menu.is_empty() => &["↑↓ escolhe · tab completa · enter executa", "tab completa · enter executa", ""],
-        None => &["enter envia · shift+enter nova linha · / comandos", "enter envia · / comandos", ""],
-        Some(w) if w.approval.is_some() => &["s aplica · n recusa", ""],
-        Some(_) => &["esc interrompe", ""],
-    };
-    let hint = hints.iter().find(|h| h.chars().count() <= room).copied().unwrap_or("");
-    let [left, right] =
-        Layout::horizontal([Constraint::Min(1), Constraint::Length(hint.chars().count() as u16)]).areas(footer);
-    f.render_widget(Paragraph::new(Line::from(info)), left);
-    f.render_widget(Paragraph::new(hint).style(fg(GRAY)), right);
-}
-
-// Spinner e atividade do turno, ou a pergunta de aprovação.
-fn status_line(work: Option<&Work>) -> Line<'static> {
-    let Some(work) = work else { return Line::default() };
-    if work.approval.is_some() {
-        return Line::from(Span::styled("▸ Aplicar esta alteração? [s] sim · [n] não", bold(YELLOW)));
-    }
-    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let elapsed = work.started.elapsed();
-    let frame = FRAMES[(elapsed.as_millis() / 80) as usize % FRAMES.len()];
-    let label = if work.cancelling {
-        "interrompendo, aguardando o modelo".to_string()
-    } else {
-        work.activity.clone()
-    };
-    Line::from(vec![
-        Span::styled(format!("{frame} "), fg(YELLOW)),
-        Span::styled(format!("{label}… {}s", elapsed.as_secs()), fg(GRAY)),
-    ])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bitclaw::models::ModelCapabilities;
+    use bitclaw::skills;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
