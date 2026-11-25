@@ -33,6 +33,12 @@ pub trait Progress {
 
     // Uma ferramenta foi chamada, com os argumentos enviados pelo modelo.
     fn tool_call(&self, _name: &str, _args: &Value) {}
+
+    // O usuário pediu para interromper. O loop confere entre uma chamada ao modelo e outra:
+    // uma requisição em andamento não é abortada, mas o turno para assim que ela volta.
+    fn cancelled(&self) -> bool {
+        false
+    }
 }
 
 // Progresso que não mostra nada (útil em testes e em agentes sem terminal).
@@ -119,6 +125,9 @@ pub fn run_turn(
     run_turn_with(model, registry, root, messages, approver, ctx, progress, Limits::default())
 }
 
+// Motivo registrado quando o usuário interrompe o turno.
+pub const INTERRUPTED: &str = "interrompido pelo usuário";
+
 // Roda o ciclo até o modelo responder sem chamar ferramentas.
 // Erros de ferramenta e de nome desconhecido voltam ao modelo como texto e ficam no relatório.
 #[allow(clippy::too_many_arguments)]
@@ -141,6 +150,10 @@ pub fn run_turn_with(
     let mut applied: HashSet<String> = HashSet::new();
 
     for _ in 0..limits.max_steps {
+        if progress.cancelled() {
+            report.error = Some(INTERRUPTED.into());
+            return Ok(report);
+        }
         if let Some(trim) = ctx.fit(messages, &tools)? {
             report.trims.push(trim);
         }
@@ -149,6 +162,11 @@ pub fn run_turn_with(
         let reply = model.complete(messages, &tools);
         progress.model_waiting(false);
         let reply = reply?;
+        // Interrompido durante a espera: descarta a resposta, sem deixar chamadas sem resultado no histórico.
+        if progress.cancelled() {
+            report.error = Some(INTERRUPTED.into());
+            return Ok(report);
+        }
         if let Some(tokens) = reply.prompt_tokens {
             ctx.calibrate(sent_chars, tokens);
         }
@@ -574,5 +592,39 @@ mod tests {
         run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut ctx(), &p).unwrap();
         assert_eq!(p.0.get(), 1);
         assert!(!p.1.get(), "a espera deve terminar");
+    }
+
+    // Progresso que pede interrupção logo após a primeira espera pelo modelo.
+    struct CancelAfterFirstReply(std::cell::Cell<usize>);
+
+    impl Progress for CancelAfterFirstReply {
+        fn model_waiting(&self, waiting: bool) {
+            if !waiting {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        fn cancelled(&self) -> bool {
+            self.0.get() >= 1
+        }
+    }
+
+    #[test]
+    fn cancelling_stops_the_turn_without_dangling_tool_calls() {
+        let dir = std::env::temp_dir().join(format!("bitclaw-cancel-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let model = fake(vec![json!({"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "echo", "arguments": {"text": "oi"}}}
+        ]})]);
+        let registry = Registry::new(vec![Box::new(Echo)]);
+        let mut messages = vec![json!({"role": "user", "content": "x"})];
+        let report = run_turn_with(
+            &model, &registry, &dir, &mut messages, &AutoApprover, &mut ctx(),
+            &CancelAfterFirstReply(std::cell::Cell::new(0)), Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(report.error.as_deref(), Some(INTERRUPTED));
+        assert!(report.actions.is_empty());
+        assert_eq!(messages.len(), 1, "a resposta descartada não entra no histórico");
     }
 }

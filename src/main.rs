@@ -1,13 +1,16 @@
 //! Binário do BitClaw: lê a configuração, monta as peças (adaptador do Ollama, aprovação,
 //! interface) e abre o terminal. A lógica do agente fica na biblioteca.
 
-mod ui;
+mod brand;
+mod markdown;
+mod plain;
+mod tui;
 
 use bitclaw::config::AgentConfig;
 use bitclaw::ollama::{self, Options};
 use bitclaw::session::Session;
 use bitclaw::tools::{Approver, AutoApprover};
-use std::io::{self, BufRead, Write};
+use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 
 // Agente padrão, embutido no binário como dado. `--config` usa outro.
@@ -59,7 +62,7 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
-    ui::init(args.no_color);
+    let color = !args.no_color && std::env::var_os("NO_COLOR").is_none();
 
     let mut cfg = match &args.config {
         Some(path) => {
@@ -78,52 +81,35 @@ fn run() -> Result<(), String> {
     // Sem o Ollama o agente não faz nada útil: falha já na inicialização, com a instrução de correção.
     match build_client(&cfg)?.has_model() {
         Ok(true) => {}
-        Ok(false) => eprintln!(
-            "{}",
-            ui::yellow(&format!("⚠ o modelo '{0}' não aparece no Ollama. Instale com: ollama pull {0}", cfg.model.name))
-        ),
+        Ok(false) => eprintln!("⚠ o modelo '{0}' não aparece no Ollama. Instale com: ollama pull {0}", cfg.model.name),
         Err(e) => return Err(format!("{e}. Inicie o Ollama com: ollama serve")),
     }
 
-    let client = build_client(&cfg)?;
-    let approver: Box<dyn Approver> = if args.auto_yes { Box::new(AutoApprover) } else { Box::new(ui::StdinApprover) };
-    let mut session = Session::from_config(&cfg, Box::new(client), approver, &args.dir)?;
-    let feedback = ui::Feedback::new();
+    let root = args.dir.canonicalize().map_err(|e| format!("diretório inválido: {e}"))?;
+    let info = vec![format!("projeto {}", root.display()), model_line(&cfg)];
+    let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
 
-    let info = model_lines(&cfg);
-    println!("{}", ui::header(&cfg.name, &[format!("projeto {}", session.root().display()), info]));
-    if args.auto_yes {
-        println!("{}", ui::yellow("⚠ --yes ativo: edições serão aplicadas sem confirmação"));
+    if interactive {
+        let settings = tui::Settings {
+            title: cfg.name.clone(),
+            info,
+            model: cfg.model.name.clone(),
+            auto_yes: args.auto_yes,
+            color,
+        };
+        // A sessão é montada na thread do agente, que recebe o aprovador pronto.
+        tui::run(settings, move |approver| {
+            let client = build_client(&cfg)?;
+            Session::from_config(&cfg, Box::new(client), approver, &root)
+        })
+    } else {
+        let approver: Box<dyn Approver> =
+            if args.auto_yes { Box::new(AutoApprover) } else { Box::new(plain::StdinApprover) };
+        let mut session = Session::from_config(&cfg, Box::new(build_client(&cfg)?), approver, &root)?;
+        let mut header = vec![cfg.name.clone()];
+        header.extend(info);
+        plain::run(&mut session, &header, args.auto_yes)
     }
-    println!("{}\n", ui::gray("Digite uma tarefa. /limpar-contexto apaga o contexto. /sair encerra."));
-
-    let stdin = io::stdin();
-    loop {
-        print!("{}", ui::prompt(&cfg.name, &session.usage()));
-        io::stdout().flush().ok();
-        let mut line = String::new();
-        if stdin.lock().read_line(&mut line).map_err(|e| e.to_string())? == 0 {
-            break; // EOF
-        }
-        let input = line.trim();
-        if input.is_empty() {
-            continue;
-        }
-        match input {
-            "/sair" => break,
-            "/limpar-contexto" => {
-                session.clear();
-                println!("{}\n", ui::gray("contexto limpo; o prompt do sistema foi mantido."));
-                continue;
-            }
-            _ => {}
-        }
-        match session.submit(input, &feedback) {
-            Ok(report) => ui::report(&report),
-            Err(e) => eprintln!("{}", ui::red(&format!("erro: {e}"))),
-        }
-    }
-    Ok(())
 }
 
 fn build_client(cfg: &AgentConfig) -> Result<ollama::Client, String> {
@@ -132,7 +118,7 @@ fn build_client(cfg: &AgentConfig) -> Result<ollama::Client, String> {
 }
 
 // Linha com modelo, tamanho e janela, quando o Ollama responde.
-fn model_lines(cfg: &AgentConfig) -> String {
+fn model_line(cfg: &AgentConfig) -> String {
     match build_client(cfg).and_then(|c| c.model_info()) {
         Ok(info) => format!(
             "modelo {} · {} · {} · janela {} tok",

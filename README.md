@@ -76,10 +76,25 @@ let relatorio = sessao.submit("liste os arquivos", &Silent)?;
 
 ## Uso no prompt
 
-Digite a tarefa em linguagem natural e pressione Enter. Comandos:
+Digite a tarefa em linguagem natural e pressione Enter. A conversa fica no histórico normal do terminal (você rola, seleciona e copia como sempre); só o status, o editor e o rodapé ficam fixos embaixo.
 
-- `/limpar-contexto`: apaga o histórico da conversa. O prompt do sistema é mantido.
-- `/sair`: encerra o programa.
+| Tecla | Efeito |
+|---|---|
+| Enter | Envia a tarefa. |
+| Shift+Enter, Alt+Enter ou Ctrl+J | Nova linha no editor, que cresce até 6 linhas. Colar texto com várias linhas funciona. |
+| Esc ou Ctrl+C durante um turno | Interrompe. Uma requisição ao modelo em andamento não é abortada: o turno para assim que ela volta. |
+| Ctrl+C no editor | Limpa o editor; com o editor vazio, encerra. Ctrl+D com o editor vazio também encerra. |
+| `s` / `n` num pedido de aprovação | Aplica ou recusa a alteração. Enter e Esc recusam. |
+
+Digite `/` para abrir o menu de comandos. Setas escolhem, Tab completa, Enter executa e Esc fecha.
+
+- `/clear`: limpa a tela e apaga o histórico da conversa, como no Claude Code. O prompt do sistema é mantido.
+- `/help`: mostra os comandos e as teclas.
+- `/exit`: encerra o programa.
+
+Os nomes antigos em português (`/limpar-contexto`, `/ajuda`, `/sair`) e `/quit` continuam funcionando.
+
+O rodapé mostra o modelo, o modo (`Manual`, ou `Automático` com `--yes`) e o uso da janela de contexto. Quando a entrada ou a saída não é um terminal (pipes, scripts), o BitClaw usa um modo simples: uma tarefa por linha, texto puro e sem cores.
 
 Exemplos de tarefas:
 
@@ -147,7 +162,11 @@ Os testes não dependem de rede nem de modelo: usam um modelo falso com resposta
 | `src/context.rs` | Orçamento e descarte do histórico. |
 | `src/ollama.rs` | Adaptador do Ollama (implementa `ChatModel`). |
 | `src/sandbox.rs` | Validação de caminhos dentro do projeto. |
-| `src/main.rs` | Binário: lê a configuração, monta as peças e abre o terminal. |
+| `src/main.rs` | Binário: lê a configuração, monta as peças e escolhe a interface. |
+| `src/tui.rs` | Interface de terminal (ratatui, viewport inline). O agente roda numa thread e fala por canais. |
+| `src/markdown.rs` | Renderização leve de Markdown para as respostas. |
+| `src/brand.rs` | Mascote e cabeçalho. |
+| `src/plain.rs` | Modo simples, sem terminal interativo. |
 | `agents/bitclaw.toml` | Configuração do agente padrão. |
 | `scripts/eval.sh` | Avaliação com modelos reais. |
 | `docs/PROJETO.md` | Propósito, decisões e plano. |
