@@ -1,43 +1,55 @@
-mod ollama;
-mod sandbox;
-mod tools;
+//! Binário do BitClaw: lê a configuração, monta as peças (adaptador do Ollama, aprovação,
+//! interface) e abre o terminal. A lógica do agente fica na biblioteca.
 
-use serde_json::{json, Value};
-use std::io::{self, BufRead, Write};
+mod brand;
+mod markdown;
+mod plain;
+mod tui;
+
+use bitclaw::config::AgentConfig;
+use bitclaw::ollama::{self, Options};
+use bitclaw::session::Session;
+use bitclaw::tools::{Approver, AutoApprover};
+use std::io::{self, IsTerminal};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::path::PathBuf;
 
-const DEFAULT_MODEL: &str = "qwen2.5-coder:3b";
-const DEFAULT_URL: &str = "http://localhost:11434";
-const MAX_STEPS: usize = 8;
-
-const SYSTEM_PROMPT: &str = "Você é o BitClaw, um assistente que lê e edita arquivos de um projeto local. \
-Use as ferramentas para inspecionar o projeto antes de responder. \
-Antes de usar edit_file, leia o arquivo com read_file e copie o trecho exato. \
-Faça uma edição por vez e explique o que mudou. Responda em português, de forma curta.";
+// Agente padrão, embutido no binário como dado. `--config` usa outro.
+const DEFAULT_CONFIG: &str = include_str!("../agents/bitclaw.toml");
 
 struct Args {
-    model: String,
-    url: String,
+    config: Option<PathBuf>,
+    model: Option<String>,
+    url: Option<String>,
     dir: PathBuf,
     auto_yes: bool,
+    no_color: bool,
+    think: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut args = Args {
-        model: DEFAULT_MODEL.into(),
-        url: DEFAULT_URL.into(),
+        config: None,
+        model: None,
+        url: None,
         dir: std::env::current_dir().map_err(|e| e.to_string())?,
         auto_yes: false,
+        no_color: false,
+        think: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--model" => args.model = it.next().ok_or("--model precisa de valor")?,
-            "--url" => args.url = it.next().ok_or("--url precisa de valor")?,
+            "--config" => args.config = Some(PathBuf::from(it.next().ok_or("--config precisa de valor")?)),
+            "--model" => args.model = Some(it.next().ok_or("--model precisa de valor")?),
+            "--url" => args.url = Some(it.next().ok_or("--url precisa de valor")?),
             "--dir" => args.dir = PathBuf::from(it.next().ok_or("--dir precisa de valor")?),
             "--yes" => args.auto_yes = true,
+            "--no-color" => args.no_color = true,
+            "--think" => args.think = true,
             "-h" | "--help" => {
-                println!("uso: bitclaw [--model M] [--url U] [--dir D] [--yes]");
+                println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color] [--think]");
                 std::process::exit(0);
             }
             other => return Err(format!("argumento desconhecido: {other}")),
@@ -55,122 +67,74 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
+    let color = !args.no_color && std::env::var_os("NO_COLOR").is_none();
+
+    let mut cfg = match &args.config {
+        Some(path) => {
+            let text = std::fs::read_to_string(path).map_err(|e| format!("não consegui ler {}: {e}", path.display()))?;
+            AgentConfig::from_toml(&text)?
+        }
+        None => AgentConfig::from_toml(DEFAULT_CONFIG)?,
+    };
+    if let Some(m) = args.model {
+        cfg.model.name = m;
+    }
+    if let Some(u) = args.url {
+        cfg.model.url = u;
+    }
+    // O raciocínio pode ser ligado e desligado durante a sessão (/think); este indicador é compartilhado.
+    let think = Arc::new(AtomicBool::new(cfg.model.think || args.think));
+
+    // Sem o Ollama o agente não faz nada útil: falha já na inicialização, com a instrução de correção.
+    match build_client(&cfg, &think)?.has_model() {
+        Ok(true) => {}
+        Ok(false) => eprintln!("aviso: o modelo '{0}' não aparece no Ollama. Instale com: ollama pull {0}", cfg.model.name),
+        Err(e) => return Err(format!("{e}. Inicie o Ollama com: ollama serve")),
+    }
+
     let root = args.dir.canonicalize().map_err(|e| format!("diretório inválido: {e}"))?;
-    let client = ollama::Client::new(args.url.clone(), args.model.clone())?;
-    let tools = tools::schemas();
+    let info = vec![format!("projeto {}", root.display()), model_line(&cfg, &think)];
+    let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
 
-    println!("BitClaw · modelo {} · projeto {}", args.model, root.display());
-    if args.auto_yes {
-        println!("aviso: --yes ativo, edições serão aplicadas sem confirmação");
+    if interactive {
+        let settings = tui::Settings {
+            title: cfg.name.clone(),
+            info,
+            model: cfg.model.name.clone(),
+            auto_yes: args.auto_yes,
+            color,
+            think: Arc::clone(&think),
+        };
+        // A sessão é montada na thread do agente, que recebe o aprovador pronto.
+        tui::run(settings, move |approver| {
+            let client = build_client(&cfg, &think)?;
+            Session::from_config(&cfg, Box::new(client), approver, &root)
+        })
+    } else {
+        let approver: Box<dyn Approver> =
+            if args.auto_yes { Box::new(AutoApprover) } else { Box::new(plain::StdinApprover) };
+        let mut session = Session::from_config(&cfg, Box::new(build_client(&cfg, &think)?), approver, &root)?;
+        let mut header = vec![cfg.name.clone()];
+        header.extend(info);
+        plain::run(&mut session, &header, args.auto_yes, &think)
     }
-    println!("Digite uma tarefa. /sair encerra.\n");
-
-    let mut messages = vec![json!({"role": "system", "content": SYSTEM_PROMPT})];
-    let stdin = io::stdin();
-    loop {
-        print!("bitclaw> ");
-        io::stdout().flush().ok();
-        let mut line = String::new();
-        if stdin.lock().read_line(&mut line).map_err(|e| e.to_string())? == 0 {
-            break; // EOF
-        }
-        let input = line.trim();
-        if input.is_empty() {
-            continue;
-        }
-        if input == "/sair" {
-            break;
-        }
-        messages.push(json!({"role": "user", "content": input}));
-
-        if let Err(e) = agent_turn(&client, &tools, &root, &mut messages, args.auto_yes) {
-            eprintln!("erro: {e}");
-        }
-    }
-    Ok(())
 }
 
-/// Roda o ciclo modelo → ferramentas → modelo até a resposta final.
-fn agent_turn(
-    client: &ollama::Client,
-    tools: &Value,
-    root: &PathBuf,
-    messages: &mut Vec<Value>,
-    auto_yes: bool,
-) -> Result<(), String> {
-    let mut last_call: Option<String> = None;
-    let mut repeats = 0;
-    let mut applied_edits = std::collections::HashSet::new();
-    for _ in 0..MAX_STEPS {
-        let msg = client.chat(messages, tools)?;
-        messages.push(msg.clone());
-
-        let mut calls = msg.get("tool_calls").and_then(Value::as_array).cloned().unwrap_or_default();
-        if calls.is_empty() {
-            calls = calls_from_text(msg.get("content").and_then(Value::as_str).unwrap_or(""));
-        }
-        if calls.is_empty() {
-            let text = msg.get("content").and_then(Value::as_str).unwrap_or("").trim();
-            println!("\n{}\n", if text.is_empty() { "(sem resposta)" } else { text });
-            return Ok(());
-        }
-
-        for call in calls {
-            let func = call.get("function").cloned().unwrap_or(Value::Null);
-            let name = func.get("name").and_then(Value::as_str).unwrap_or("").to_string();
-            let args = normalize_args(func.get("arguments"));
-            eprintln!("· {name} {}", args);
-            // Mesma chamada repetida: o modelo está preso, interrompe.
-            let key = format!("{name}{args}");
-            if last_call.as_deref() == Some(key.as_str()) {
-                repeats += 1;
-                if repeats >= 2 {
-                    return Err("o modelo repetiu a mesma chamada; interrompendo".into());
-                }
-            } else {
-                repeats = 0;
-            }
-            last_call = Some(key.clone());
-            // Edição idêntica já feita neste turno: não reaplica.
-            let result = if name == "edit_file" && !applied_edits.insert(key.clone()) {
-                "esta edição já foi aplicada neste turno. Responda ao usuário sem chamar mais ferramentas.".to_string()
-            } else {
-                tools::execute(root, &name, &args, auto_yes)
-            };
-            messages.push(json!({"role": "tool", "tool_name": name, "content": result}));
-        }
-    }
-    Err(format!("limite de {MAX_STEPS} passos atingido sem resposta final"))
+fn build_client(cfg: &AgentConfig, think: &Arc<AtomicBool>) -> Result<ollama::Client, String> {
+    let options = Options { num_ctx: cfg.model.num_ctx, temperature: cfg.model.temperature, think: cfg.model.think };
+    Ok(ollama::Client::new(cfg.model.url.clone(), cfg.model.name.clone(), options)?.with_think(Arc::clone(think)))
 }
 
-const KNOWN_TOOLS: [&str; 3] = ["list_dir", "read_file", "edit_file"];
-
-/// Fallback para modelos pequenos que escrevem a chamada como texto JSON,
-/// ex.: {"name": "read_file", "arguments": {"path": "a.txt"}}.
-/// Só aceita nomes de ferramentas conhecidas, então texto comum não vira ação.
-fn calls_from_text(content: &str) -> Vec<Value> {
-    let mut out = Vec::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if !line.starts_with('{') {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        let name = v.get("name").and_then(Value::as_str).unwrap_or("");
-        if KNOWN_TOOLS.contains(&name) {
-            if let Some(args) = v.get("arguments").cloned() {
-                out.push(json!({"function": {"name": name, "arguments": args}}));
-            }
-        }
-    }
-    out
-}
-
-/// Alguns modelos devolvem `arguments` como objeto, outros como string JSON.
-fn normalize_args(raw: Option<&Value>) -> Value {
-    match raw {
-        Some(Value::String(s)) => serde_json::from_str(s).unwrap_or(json!({})),
-        Some(v) => v.clone(),
-        None => json!({}),
+// Linha com modelo, tamanho e janela, quando o Ollama responde.
+fn model_line(cfg: &AgentConfig, think: &Arc<AtomicBool>) -> String {
+    match build_client(cfg, think).and_then(|c| c.model_info()) {
+        Ok(info) => format!(
+            "modelo {} · {} · {} · janela {} tok",
+            cfg.model.name,
+            info.parameter_size.unwrap_or_else(|| "?".into()),
+            info.quantization.unwrap_or_else(|| "?".into()),
+            cfg.model.num_ctx,
+        ),
+        Err(_) => format!("modelo {} · janela {} tok", cfg.model.name, cfg.model.num_ctx),
     }
 }
