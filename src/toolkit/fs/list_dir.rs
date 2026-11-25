@@ -1,7 +1,7 @@
 //! `list_dir`: lista o conteúdo de uma pasta do projeto.
 
 use crate::core::sandbox::resolve;
-use crate::core::tool::{Approver, Outcome, Tool, str_arg, wrap};
+use crate::core::tool::{Outcome, Tool, ToolContext, ToolSpec, str_arg, wrap};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::fs;
@@ -13,25 +13,22 @@ impl Tool for ListDir {
         "list_dir"
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "function",
-            "function": {
-                "name": "list_dir",
-                "description": "Lista arquivos e pastas de um diretório do projeto. Use \".\" para a raiz.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Caminho relativo ao projeto"}
-                    },
-                    "required": ["path"]
-                }
-            }
-        })
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new(
+            "list_dir",
+            "Lista arquivos e pastas de um diretório do projeto. Use \".\" para a raiz.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Caminho relativo ao projeto"}
+                },
+                "required": ["path"]
+            }),
+        )
     }
 
-    fn run(&self, root: &Path, args: &Value, _approver: &dyn Approver) -> Outcome {
-        wrap(list_dir(root, args).map(Outcome::Done))
+    fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {
+        wrap(list_dir(ctx.root, args).map(Outcome::Done))
     }
 }
 

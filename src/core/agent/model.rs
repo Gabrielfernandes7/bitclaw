@@ -1,5 +1,6 @@
 //! Contrato com o provedor de modelo: `ChatModel`, `Reply` e `Chunk`.
 
+use crate::core::tool::ToolSpec;
 use serde_json::Value;
 
 // Resposta de um provedor de modelo.
@@ -23,14 +24,14 @@ pub enum Chunk<'a> {
 
 // Qualquer provedor capaz de completar uma conversa com ferramentas.
 pub trait ChatModel {
-    fn complete(&self, messages: &[Value], tools: &Value) -> Result<Reply, String>;
+    fn complete(&self, messages: &[Value], tools: &[ToolSpec]) -> Result<Reply, String>;
 
     // Igual a `complete`, mas entrega o texto à medida que o modelo o gera. Se `on_chunk` devolve
     // `false`, o provedor para de gerar e devolve o que já tem. Quem não faz streaming usa este padrão.
     fn complete_streaming(
         &self,
         messages: &[Value],
-        tools: &Value,
+        tools: &[ToolSpec],
         _on_chunk: &mut dyn FnMut(Chunk) -> bool,
     ) -> Result<Reply, String> {
         self.complete(messages, tools)

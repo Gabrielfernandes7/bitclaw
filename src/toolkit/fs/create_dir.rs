@@ -1,7 +1,7 @@
 //! `create_dir`: cria uma pasta nova e vazia, com prévia e aprovação.
 
 use crate::core::sandbox::resolve;
-use crate::core::tool::{Approver, Outcome, Tool, str_arg, wrap};
+use crate::core::tool::{Approver, Outcome, Tool, ToolContext, ToolSpec, str_arg, wrap};
 use serde_json::{json, Value};
 use std::path::Path;
 use crate::core::tool::{Preview, PreviewLine};
@@ -14,29 +14,26 @@ impl Tool for CreateDir {
         "create_dir"
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "function",
-            "function": {
-                "name": "create_dir",
-                "description": "Cria uma pasta NOVA e vazia no projeto, com as pastas pais que faltarem. Use quando o usuário pedir só a pasta, sem arquivo. Falha se já existir. O usuário confirma antes da criação.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Caminho relativo ao projeto da pasta, ex.: skills"}
-                    },
-                    "required": ["path"]
-                }
-            }
-        })
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new(
+            "create_dir",
+            "Cria uma pasta NOVA e vazia no projeto, com as pastas pais que faltarem. Use quando o usuário pedir só a pasta, sem arquivo. Falha se já existir. O usuário confirma antes da criação.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Caminho relativo ao projeto da pasta, ex.: skills"}
+                },
+                "required": ["path"]
+            }),
+        )
     }
 
     fn mutates(&self) -> bool {
         true
     }
 
-    fn run(&self, root: &Path, args: &Value, approver: &dyn Approver) -> Outcome {
-        wrap(create_dir(root, args, approver))
+    fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {
+        wrap(create_dir(ctx.root, args, ctx.approver))
     }
 }
 

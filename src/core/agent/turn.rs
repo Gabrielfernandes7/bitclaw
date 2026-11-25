@@ -5,7 +5,7 @@ use super::model::ChatModel;
 use super::report::{Action, Progress, TurnReport};
 use super::text_calls::{calls_from_text, normalize_args};
 use crate::core::context::{self, ContextManager};
-use crate::core::tool::{Approver, Outcome, Registry};
+use crate::core::tool::{Approver, Outcome, Registry, ToolContext, specs_value};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::Path;
@@ -57,7 +57,8 @@ pub fn run_turn_with(
     progress: &dyn Progress,
     limits: Limits,
 ) -> Result<TurnReport, String> {
-    let tools = registry.schemas();
+    let tools = registry.specs();
+    let tools_json = specs_value(&tools);
     let mut report = TurnReport::default();
     let mut last_call: Option<String> = None;
     let mut repeats = 0;
@@ -70,10 +71,10 @@ pub fn run_turn_with(
             report.error = Some(INTERRUPTED.into());
             return Ok(report);
         }
-        if let Some(trim) = ctx.fit(messages, &tools)? {
+        if let Some(trim) = ctx.fit(messages, &tools_json)? {
             report.trims.push(trim);
         }
-        let sent_chars = context::size(messages) + context::value_size(&tools);
+        let sent_chars = context::size(messages) + context::value_size(&tools_json);
         progress.model_waiting(true);
         let mut guard = LoopGuard::default();
         let reply = model.complete_streaming(messages, &tools, &mut |chunk| {
@@ -141,7 +142,7 @@ pub fn run_turn_with(
                 continue;
             }
 
-            let outcome = registry.execute(root, &name, &args, approver);
+            let outcome = registry.execute(&ToolContext::new(root, approver), &name, &args);
             progress.tool_done(&name, &args, &outcome);
 
             // Falhas seguidas da mesma ferramenta, mesmo com argumentos diferentes, encerram o turno.

@@ -4,7 +4,7 @@
 //! de referência) chega ao modelo quando ele chama `load_skill`. Assim, um modelo pequeno só gasta
 //! contexto com a skill que de fato usa.
 
-use crate::core::tool::{Approver, Outcome, Tool, MAX_READ_BYTES};
+use crate::core::tool::{Outcome, Tool, ToolContext, ToolSpec, MAX_READ_BYTES};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs;
@@ -323,26 +323,23 @@ impl Tool for LoadSkill {
         "load_skill"
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "function",
-            "function": {
-                "name": "load_skill",
-                "description": "Lê as instruções de uma skill listada no prompt. Com 'file', lê um arquivo de referência dela. Textos grandes vêm em partes: use 'offset' para continuar.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string", "description": "Nome da skill"},
-                        "file": {"type": "string", "description": "Arquivo de referência dentro da skill, ex.: references/x.md"},
-                        "offset": {"type": "integer", "description": "Byte onde começar, para ler a partir de uma parte anterior (padrão 0)"}
-                    },
-                    "required": ["name"]
-                }
-            }
-        })
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new(
+            "load_skill",
+            "Lê as instruções de uma skill listada no prompt. Com 'file', lê um arquivo de referência dela. Textos grandes vêm em partes: use 'offset' para continuar.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Nome da skill"},
+                    "file": {"type": "string", "description": "Arquivo de referência dentro da skill, ex.: references/x.md"},
+                    "offset": {"type": "integer", "description": "Byte onde começar, para ler a partir de uma parte anterior (padrão 0)"}
+                },
+                "required": ["name"]
+            }),
+        )
     }
 
-    fn run(&self, _root: &Path, args: &Value, _approver: &dyn Approver) -> Outcome {
+    fn run(&self, _ctx: &ToolContext, args: &Value) -> Outcome {
         let result = (|| {
             let name = args.get("name").and_then(Value::as_str).ok_or("argumento 'name' ausente ou inválido")?;
             let skill = self.find(name.trim())?;
@@ -504,11 +501,11 @@ mod tests {
         let root = tempdir("tool");
         write_skill(&root, "demo", VALID);
         let tool = LoadSkill::new(load(&root).unwrap(), new_disabled());
-        let out = tool.run(&root, &json!({"name": "demo"}), &AutoApprover);
+        let out = tool.run(&ToolContext::new(&root, &AutoApprover), &json!({"name": "demo"}));
         let text = out.text();
         assert!(text.starts_with("# Demo"));
         assert!(text.contains("references/extra.md"));
-        let file = tool.run(&root, &json!({"name": "demo", "file": "references/extra.md"}), &AutoApprover);
+        let file = tool.run(&ToolContext::new(&root, &AutoApprover), &json!({"name": "demo", "file": "references/extra.md"}));
         assert_eq!(file, Outcome::Done("conteúdo extra".into()));
     }
 
@@ -519,14 +516,14 @@ mod tests {
         let big = "linha\n".repeat(3000); // ~18 KB
         fs::write(root.join("demo/references/big.md"), &big).unwrap();
         let tool = LoadSkill::new(load(&root).unwrap(), new_disabled());
-        let first = tool.run(&root, &json!({"name": "demo", "file": "references/big.md"}), &AutoApprover).text();
+        let first = tool.run(&ToolContext::new(&root, &AutoApprover), &json!({"name": "demo", "file": "references/big.md"})).text();
         assert!(first.contains("offset="), "avisa como continuar: {first}");
         let marker = first.split("offset=").nth(1).unwrap();
         let offset: usize = marker.split(|c: char| !c.is_ascii_digit()).next().unwrap().parse().unwrap();
-        let second = tool.run(&root, &json!({"name": "demo", "file": "references/big.md", "offset": offset}), &AutoApprover).text();
+        let second = tool.run(&ToolContext::new(&root, &AutoApprover), &json!({"name": "demo", "file": "references/big.md", "offset": offset})).text();
         assert!(second.starts_with("linha"));
         assert!(matches!(
-            tool.run(&root, &json!({"name": "demo", "file": "references/big.md", "offset": 10_000_000}), &AutoApprover),
+            tool.run(&ToolContext::new(&root, &AutoApprover), &json!({"name": "demo", "file": "references/big.md", "offset": 10_000_000})),
             Outcome::Error(_)
         ));
     }
@@ -537,10 +534,10 @@ mod tests {
         write_skill(&root, "demo", VALID);
         fs::write(root.join("secreto.txt"), "não pode").unwrap();
         let tool = LoadSkill::new(load(&root).unwrap(), new_disabled());
-        assert!(matches!(tool.run(&root, &json!({"name": "outra"}), &AutoApprover), Outcome::Error(_)));
+        assert!(matches!(tool.run(&ToolContext::new(&root, &AutoApprover), &json!({"name": "outra"})), Outcome::Error(_)));
         let escape = json!({"name": "demo", "file": "../secreto.txt"});
-        assert!(matches!(tool.run(&root, &escape, &AutoApprover), Outcome::Error(_)));
+        assert!(matches!(tool.run(&ToolContext::new(&root, &AutoApprover), &escape), Outcome::Error(_)));
         let abs = json!({"name": "demo", "file": "/etc/hosts"});
-        assert!(matches!(tool.run(&root, &abs, &AutoApprover), Outcome::Error(_)));
+        assert!(matches!(tool.run(&ToolContext::new(&root, &AutoApprover), &abs), Outcome::Error(_)));
     }
 }

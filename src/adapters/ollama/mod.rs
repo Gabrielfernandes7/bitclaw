@@ -6,6 +6,7 @@ mod options;
 pub use options::{NUM_CTX, OllamaSettings, Options, SharedOptions, TEMPERATURE, DEFAULT_URL};
 
 use crate::core::agent::{ChatModel, Chunk, Reply};
+use crate::core::tool::ToolSpec;
 use crate::core::models::{Effort, ModelCapabilities, ModelCatalog, ModelInfo, Reasoning, SharedEffort};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
@@ -33,17 +34,25 @@ pub fn think_value(caps: &ModelCapabilities, effort: Effort) -> Option<Value> {
     }
 }
 
+// A ferramenta no formato que o Ollama espera: `{"type": "function", "function": {...}}`.
+fn wrap_tool(spec: &ToolSpec) -> Value {
+    json!({
+        "type": "function",
+        "function": {"name": spec.name, "description": spec.description, "parameters": spec.parameters}
+    })
+}
+
 // Corpo da requisição `/api/chat`. Separado do envio para ser testável sem rede.
 // Sem ferramentas (lista vazia) o campo `tools` não é enviado.
-pub fn build_body(model: &str, messages: &[Value], tools: &Value, options: &Options, think: Option<Value>) -> Value {
+pub fn build_body(model: &str, messages: &[Value], tools: &[ToolSpec], options: &Options, think: Option<Value>) -> Value {
     let mut body = json!({
         "model": model,
         "messages": messages,
         "stream": false,
         "options": { "temperature": options.temperature, "num_ctx": options.num_ctx }
     });
-    if tools.as_array().is_some_and(|t| !t.is_empty()) {
-        body["tools"] = tools.clone();
+    if !tools.is_empty() {
+        body["tools"] = Value::Array(tools.iter().map(wrap_tool).collect());
     }
     if let Some(think) = think {
         body["think"] = think;
@@ -70,14 +79,14 @@ pub struct ModelDetails {
 
 // O núcleo depende da trait `ChatModel`; este adaptador é a implementação para o Ollama.
 impl ChatModel for Client {
-    fn complete(&self, messages: &[Value], tools: &Value) -> Result<Reply, String> {
+    fn complete(&self, messages: &[Value], tools: &[ToolSpec]) -> Result<Reply, String> {
         self.chat(messages, tools)
     }
 
     fn complete_streaming(
         &self,
         messages: &[Value],
-        tools: &Value,
+        tools: &[ToolSpec],
         on_chunk: &mut dyn FnMut(Chunk) -> bool,
     ) -> Result<Reply, String> {
         self.chat_stream(messages, tools, on_chunk)
@@ -177,12 +186,11 @@ impl Client {
     }
 
     // Corpo da requisição para o esforço de raciocínio de agora.
-    fn chat_body(&self, messages: &[Value], tools: &Value) -> Value {
+    fn chat_body(&self, messages: &[Value], tools: &[ToolSpec]) -> Value {
         let effort = *self.effort.lock().unwrap_or_else(|e| e.into_inner());
         let think = think_value(&self.caps, effort);
         // Modelo sem ferramentas recebe a conversa sem o catálogo: não tenta chamar nada.
-        let no_tools = json!([]);
-        let tools = if self.caps.tool_calling { tools } else { &no_tools };
+        let tools = if self.caps.tool_calling { tools } else { &[] };
         let options = *self.options.lock().unwrap_or_else(|e| e.into_inner());
         build_body(&self.model, messages, tools, &options, think)
     }
@@ -208,7 +216,7 @@ impl Client {
     pub fn chat_stream(
         &self,
         messages: &[Value],
-        tools: &Value,
+        tools: &[ToolSpec],
         on_chunk: &mut dyn FnMut(Chunk) -> bool,
     ) -> Result<Reply, String> {
         let mut body = self.chat_body(messages, tools);
@@ -249,7 +257,7 @@ impl Client {
     }
 
     /// Envia o histórico e as ferramentas; devolve a mensagem do assistente.
-    pub fn chat(&self, messages: &[Value], tools: &Value) -> Result<Reply, String> {
+    pub fn chat(&self, messages: &[Value], tools: &[ToolSpec]) -> Result<Reply, String> {
         let body = self.chat_body(messages, tools);
         let resp = self.send_chat(&body)?;
         let v: Value = resp.json().map_err(|e| e.to_string())?;
@@ -382,13 +390,13 @@ mod tests {
         let caps = ModelCapabilities { tool_calling: true, reasoning: Reasoning::Unsupported, context_window: None };
         let effort: SharedEffort = Arc::new(Mutex::new(Effort::Off));
         let client = Client::new("http://x".into(), "m".into(), Arc::clone(&options), caps, effort).unwrap();
-        assert_eq!(client.chat_body(&[], &json!([]))["options"]["num_ctx"], NUM_CTX);
+        assert_eq!(client.chat_body(&[], &[])["options"]["num_ctx"], NUM_CTX);
         {
             let mut o = options.lock().unwrap();
             o.num_ctx = 32768;
             o.temperature = 0.3;
         }
-        let body = client.chat_body(&[], &json!([]));
+        let body = client.chat_body(&[], &[]);
         assert_eq!(body["options"]["num_ctx"], 32768);
         assert_eq!(body["options"]["temperature"], json!(0.3_f32));
     }
@@ -491,7 +499,7 @@ mod tests {
 
     #[test]
     fn request_sets_explicit_context_window() {
-        let body = build_body("m", &[], &json!([]), &Options::default(), None);
+        let body = build_body("m", &[], &[], &Options::default(), None);
         assert_eq!(body["options"]["num_ctx"], NUM_CTX);
         assert_eq!(body["stream"], false);
         assert_eq!(body["model"], "m");
@@ -508,15 +516,19 @@ mod tests {
 
     #[test]
     fn tools_are_sent_only_when_there_are_some() {
-        let body = build_body("m", &[], &json!([]), &Options::default(), None);
+        let body = build_body("m", &[], &[], &Options::default(), None);
         assert!(body.get("tools").is_none());
-        let with = build_body("m", &[], &json!([{"type": "function"}]), &Options::default(), None);
-        assert!(with.get("tools").is_some());
+        let with = build_body("m", &[], &[ToolSpec::new("x", "y", json!({}))], &Options::default(), None);
+        assert_eq!(
+            with["tools"],
+            json!([{"type": "function", "function": {"name": "x", "description": "y", "parameters": {}}}]),
+            "o adaptador embrulha a ferramenta neutra no formato do Ollama"
+        );
     }
 
     #[test]
     fn think_is_omitted_when_the_model_cannot_reason() {
-        let body = build_body("m", &[], &json!([]), &Options::default(), think_value(&plain(), Effort::Off));
+        let body = build_body("m", &[], &[], &Options::default(), think_value(&plain(), Effort::Off));
         assert!(body.get("think").is_none());
     }
 

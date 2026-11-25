@@ -1,7 +1,7 @@
 //! `create_file`: cria um arquivo novo, com prévia e aprovação.
 
 use crate::core::sandbox::resolve;
-use crate::core::tool::{Approver, Outcome, Tool, str_arg, wrap};
+use crate::core::tool::{Approver, Outcome, Tool, ToolContext, ToolSpec, str_arg, wrap};
 use serde_json::{json, Value};
 use std::path::Path;
 use crate::core::tool::{Preview, PreviewLine};
@@ -14,30 +14,27 @@ impl Tool for CreateFile {
         "create_file"
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "function",
-            "function": {
-                "name": "create_file",
-                "description": "Cria um arquivo NOVO no projeto com o conteúdo dado. Cria também as pastas que faltam no caminho (ex.: skills/guia.md cria a pasta skills). Falha se o arquivo já existir (use edit_file nesse caso). O usuário confirma antes da criação.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Caminho relativo ao projeto, ex.: fib.py"},
-                        "content": {"type": "string", "description": "Conteúdo completo do arquivo"}
-                    },
-                    "required": ["path", "content"]
-                }
-            }
-        })
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new(
+            "create_file",
+            "Cria um arquivo NOVO no projeto com o conteúdo dado. Cria também as pastas que faltam no caminho (ex.: skills/guia.md cria a pasta skills). Falha se o arquivo já existir (use edit_file nesse caso). O usuário confirma antes da criação.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Caminho relativo ao projeto, ex.: fib.py"},
+                    "content": {"type": "string", "description": "Conteúdo completo do arquivo"}
+                },
+                "required": ["path", "content"]
+            }),
+        )
     }
 
     fn mutates(&self) -> bool {
         true
     }
 
-    fn run(&self, root: &Path, args: &Value, approver: &dyn Approver) -> Outcome {
-        wrap(create_file(root, args, approver))
+    fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {
+        wrap(create_file(ctx.root, args, ctx.approver))
     }
 }
 

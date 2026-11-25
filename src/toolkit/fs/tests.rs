@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::tool::{Approver, AutoApprover, MAX_READ_BYTES, Outcome, Preview, Registry};
+use crate::core::tool::{Approver, AutoApprover, MAX_READ_BYTES, Outcome, Preview, Registry, ToolContext};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
@@ -20,7 +20,7 @@ fn root(name: &str) -> std::path::PathBuf {
 }
 
 fn run(root: &Path, name: &str, args: Value) -> Outcome {
-    Registry::default_set().execute(root, name, &args, &AutoApprover)
+    crate::toolkit::default_registry().execute(&ToolContext::new(root, &AutoApprover), name, &args)
 }
 
 #[test]
@@ -68,11 +68,10 @@ fn edit_file_on_missing_file_is_error() {
 fn refused_edit_leaves_file_unchanged() {
     let r = root("refused");
     fs::write(r.join("a.py"), "x = 1\n").unwrap();
-    let out = Registry::default_set().execute(
-        &r,
+    let out = crate::toolkit::default_registry().execute(
+        &ToolContext::new(&r, &Refuse),
         "edit_file",
         &json!({"path": "a.py", "old": "x = 1", "new": "x = 2"}),
-        &Refuse,
     );
     assert!(matches!(out, Outcome::Refused(_)), "{out:?}");
     assert_eq!(fs::read_to_string(r.join("a.py")).unwrap(), "x = 1\n");
@@ -117,7 +116,7 @@ fn delete_file_removes_file_and_keeps_backup() {
 fn refused_delete_keeps_file() {
     let r = root("delete-refused");
     fs::write(r.join("a.md"), "# nota\n").unwrap();
-    let out = Registry::default_set().execute(&r, "delete_file", &json!({"path": "a.md"}), &Refuse);
+    let out = crate::toolkit::default_registry().execute(&ToolContext::new(&r, &Refuse), "delete_file", &json!({"path": "a.md"}));
     assert!(matches!(out, Outcome::Refused(_)), "{out:?}");
     assert!(r.join("a.md").exists());
 }
@@ -133,7 +132,7 @@ fn delete_file_refuses_directories_and_missing_files() {
 
 #[test]
 fn mutating_tools_are_marked() {
-    let reg = Registry::default_set();
+    let reg = crate::toolkit::default_registry();
     assert!(reg.mutates("create_file"));
     assert!(reg.mutates("edit_file"));
     assert!(reg.mutates("delete_file"));

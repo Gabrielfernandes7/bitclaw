@@ -6,7 +6,7 @@ mod registry;
 pub use approval::{Approver, AutoApprover, Preview, PreviewLine};
 pub use registry::Registry;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::Path;
 
 // Limite do resultado de `read_file`. Com num_ctx de 8192 tokens, 100 KB estouraria o contexto de um modelo de 4B.
@@ -42,22 +42,58 @@ impl Outcome {
 }
 
 
-// Contrato de uma ferramenta: nome, esquema e execução juntos.
+// Descrição de uma ferramenta, neutra de provedor: nome, texto para o modelo e parâmetros em JSON Schema.
+// Cada adaptador a embrulha no formato da sua API.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    pub parameters: Value,
+}
+
+impl ToolSpec {
+    pub fn new(name: &str, description: &str, parameters: Value) -> Self {
+        Self { name: name.into(), description: description.into(), parameters }
+    }
+}
+
+// Tamanho aproximado das descrições, em JSON, para o orçamento de contexto.
+pub fn specs_value(specs: &[ToolSpec]) -> Value {
+    Value::Array(
+        specs
+            .iter()
+            .map(|s| json!({"name": s.name, "description": s.description, "parameters": s.parameters}))
+            .collect(),
+    )
+}
+
+// O que uma ferramenta recebe ao rodar: a pasta do projeto e quem aprova alterações.
+// Uma ferramenta que não usa arquivos (ex.: consulta a um banco) simplesmente ignora `root`.
+pub struct ToolContext<'a> {
+    pub root: &'a Path,
+    pub approver: &'a dyn Approver,
+}
+
+impl<'a> ToolContext<'a> {
+    pub fn new(root: &'a Path, approver: &'a dyn Approver) -> Self {
+        Self { root, approver }
+    }
+}
+
+// Contrato de uma ferramenta: nome, descrição e execução juntos.
 // Adicionar uma ferramenta é implementar esta trait e registrá-la; o loop do agente não muda.
 pub trait Tool {
     fn name(&self) -> &'static str;
 
-    // Entrada completa no formato `{"type": "function", "function": {...}}` que o Ollama espera.
-    fn schema(&self) -> Value;
+    fn spec(&self) -> ToolSpec;
 
     // Se a ferramenta altera arquivos. Usado pelo relatório do turno e pela proteção contra repetição.
     fn mutates(&self) -> bool {
         false
     }
 
-    fn run(&self, root: &Path, args: &Value, approver: &dyn Approver) -> Outcome;
+    fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome;
 }
-
 
 pub(crate) fn wrap(result: Result<Outcome, String>) -> Outcome {
     result.unwrap_or_else(Outcome::Error)

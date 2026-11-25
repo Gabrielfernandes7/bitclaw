@@ -2,7 +2,6 @@
 //! não código: trocar um deles não exige recompilar o core.
 
 use crate::core::agent::{MAX_CONSECUTIVE_FAILURES, MAX_STEPS};
-use crate::core::tool::Registry;
 use serde::Deserialize;
 
 // Janela de contexto padrão, em tokens, quando a configuração não diz.
@@ -95,7 +94,8 @@ impl AgentConfig {
         out
     }
 
-    // Verifica o que o TOML não consegue expressar: valores coerentes entre si e ferramentas conhecidas.
+    // Verifica o que o TOML não consegue expressar: valores coerentes entre si. Os nomes de `tools` são
+    // resolvidos por quem monta o registro (ver `toolkit::registry_from_names`), não pelo core.
     pub fn validate(&self) -> Result<(), String> {
         if self.name.trim().is_empty() {
             return Err("configuração: 'name' não pode ser vazio".into());
@@ -121,7 +121,7 @@ impl AgentConfig {
         if self.model.context_window as usize <= self.limits.reserve_output_tokens {
             return Err("configuração: 'model.context_window' deve ser maior que 'limits.reserve_output_tokens'".into());
         }
-        Registry::from_names(&self.tools).map(|_| ()).map_err(|e| format!("configuração: {e}"))
+        Ok(())
     }
 }
 
@@ -174,19 +174,6 @@ name = "m"
     fn unknown_field_is_an_error() {
         let err = AgentConfig::from_toml(&minimal("temperatura = 0.2")).unwrap_err();
         assert!(err.contains("temperatura"), "{err}");
-    }
-
-    #[test]
-    fn unknown_tool_is_an_error() {
-        let text = minimal("").replace(r#"["read_file"]"#, r#"["read_fil"]"#);
-        let err = AgentConfig::from_toml(&text).unwrap_err();
-        assert!(err.contains("read_fil"), "{err}");
-    }
-
-    #[test]
-    fn empty_tool_list_is_an_error() {
-        let text = minimal("").replace(r#"["read_file"]"#, "[]");
-        assert!(AgentConfig::from_toml(&text).is_err());
     }
 
     #[test]

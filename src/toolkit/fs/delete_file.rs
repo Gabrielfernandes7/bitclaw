@@ -1,7 +1,7 @@
 //! `delete_file`: remove um arquivo, com prévia, aprovação e backup.
 
 use crate::core::sandbox::resolve;
-use crate::core::tool::{Approver, Outcome, Tool, str_arg, wrap};
+use crate::core::tool::{Approver, Outcome, Tool, ToolContext, ToolSpec, str_arg, wrap};
 use serde_json::{json, Value};
 use std::path::Path;
 use super::backup::backup;
@@ -16,29 +16,26 @@ impl Tool for DeleteFile {
         "delete_file"
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "function",
-            "function": {
-                "name": "delete_file",
-                "description": "Remove um arquivo existente do projeto. Guarda cópia em .bitclaw/backup/. Não remove pastas. O usuário confirma antes da remoção.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Caminho relativo ao projeto do arquivo a remover"}
-                    },
-                    "required": ["path"]
-                }
-            }
-        })
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new(
+            "delete_file",
+            "Remove um arquivo existente do projeto. Guarda cópia em .bitclaw/backup/. Não remove pastas. O usuário confirma antes da remoção.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Caminho relativo ao projeto do arquivo a remover"}
+                },
+                "required": ["path"]
+            }),
+        )
     }
 
     fn mutates(&self) -> bool {
         true
     }
 
-    fn run(&self, root: &Path, args: &Value, approver: &dyn Approver) -> Outcome {
-        wrap(delete_file(root, args, approver))
+    fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {
+        wrap(delete_file(ctx.root, args, ctx.approver))
     }
 }
 

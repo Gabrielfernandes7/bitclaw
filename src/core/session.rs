@@ -2,18 +2,18 @@
 //! É a API pública do core. Um agente novo monta uma `Session` e chama `submit`; não precisa
 //! conhecer o loop nem o adaptador de modelo.
 
-use crate::core::agent::{self, Limits, Progress, TurnReport};
+use crate::core::agent::{self, ChatModel, Limits, Progress, TurnReport};
 use crate::core::config::AgentConfig;
 use crate::core::context::{self, ContextManager, Usage};
 use crate::core::skill::{self as skills, Disabled, Skill};
 use std::collections::HashSet;
 use std::sync::Arc;
-use crate::core::tool::{Approver, Registry};
+use crate::core::tool::{Approver, Registry, specs_value};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 pub struct Session {
-    model: Box<dyn crate::core::agent::ChatModel>,
+    model: Box<dyn ChatModel>,
     registry: Registry,
     approver: Box<dyn Approver>,
     root: PathBuf,
@@ -28,17 +28,54 @@ pub struct Session {
     applied: Option<HashSet<String>>,
 }
 
-impl Session {
-    // Monta a sessão a partir de uma configuração. O modelo é injetado: o core não cria adaptadores.
-    pub fn from_config(
-        cfg: &AgentConfig,
-        model: Box<dyn crate::core::agent::ChatModel>,
-        approver: Box<dyn Approver>,
-        root: &Path,
-    ) -> Result<Self, String> {
+// Monta uma `Session`. O modelo, o aprovador e as ferramentas são injetados: o core não cria
+// adaptadores nem escolhe ferramentas.
+//
+// ```ignore
+// let session = Session::builder(&cfg)
+//     .model(model)
+//     .approver(approver)
+//     .tools(registry) // toolkit::registry_from_names(&cfg.tools)? + as ferramentas do fork
+//     .root(path)
+//     .build()?;
+// ```
+pub struct SessionBuilder<'a> {
+    cfg: &'a AgentConfig,
+    model: Option<Box<dyn ChatModel>>,
+    approver: Option<Box<dyn Approver>>,
+    tools: Option<Registry>,
+    root: PathBuf,
+}
+
+impl<'a> SessionBuilder<'a> {
+    pub fn model(mut self, model: Box<dyn ChatModel>) -> Self {
+        self.model = Some(model);
+        self
+    }
+
+    pub fn approver(mut self, approver: Box<dyn Approver>) -> Self {
+        self.approver = Some(approver);
+        self
+    }
+
+    pub fn tools(mut self, tools: Registry) -> Self {
+        self.tools = Some(tools);
+        self
+    }
+
+    // Pasta do projeto. Sem esta chamada, a pasta atual.
+    pub fn root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.root = root.into();
+        self
+    }
+
+    pub fn build(self) -> Result<Session, String> {
+        let cfg = self.cfg;
         cfg.validate()?;
-        let registry = Registry::from_names(&cfg.tools)?;
-        let root = root.canonicalize().map_err(|e| format!("diretório inválido: {e}"))?;
+        let model = self.model.ok_or("sessão sem modelo: chame .model(...)")?;
+        let approver = self.approver.ok_or("sessão sem aprovador: chame .approver(...)")?;
+        let registry = self.tools.ok_or("sessão sem ferramentas: chame .tools(...)")?;
+        let root = self.root.canonicalize().map_err(|e| format!("diretório inválido: {e}"))?;
         let limits = Limits {
             max_steps: cfg.limits.max_steps,
             max_consecutive_failures: cfg.limits.max_consecutive_failures,
@@ -46,7 +83,7 @@ impl Session {
         let ctx = ContextManager::new(cfg.model.context_window as usize, cfg.limits.reserve_output_tokens);
         let messages = vec![json!({"role": "system", "content": cfg.system_prompt})];
         let base_system = cfg.system_prompt.clone();
-        Ok(Self {
+        Ok(Session {
             model,
             registry,
             approver,
@@ -59,6 +96,12 @@ impl Session {
             disabled: skills::new_disabled(),
             applied: None,
         })
+    }
+}
+
+impl Session {
+    pub fn builder(cfg: &AgentConfig) -> SessionBuilder<'_> {
+        SessionBuilder { cfg, model: None, approver: None, tools: None, root: PathBuf::from(".") }
     }
 
     // Oferece skills ao modelo: o catálogo vai ao prompt do sistema e `load_skill` é registrada.
@@ -147,7 +190,7 @@ impl Session {
 
     // Troca o modelo no meio da conversa. O histórico é mensagens neutras de provedor, então segue
     // com a sessão; a próxima tarefa vai para o novo modelo.
-    pub fn set_model(&mut self, model: Box<dyn crate::core::agent::ChatModel>) {
+    pub fn set_model(&mut self, model: Box<dyn ChatModel>) {
         self.model = model;
     }
 
@@ -158,7 +201,7 @@ impl Session {
 
     // Uso atual da janela de contexto.
     pub fn usage(&self) -> Usage {
-        self.ctx.usage(&self.messages, &self.registry.schemas())
+        self.ctx.usage(&self.messages, &specs_value(&self.registry.specs()))
     }
 
     // Apaga o histórico e mantém o prompt do sistema.
@@ -179,7 +222,7 @@ impl Session {
 mod tests {
     use super::*;
     use crate::core::agent::{ChatModel, Reply, Silent};
-    use crate::core::tool::AutoApprover;
+    use crate::core::tool::{AutoApprover, ToolSpec};
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::fs;
@@ -188,7 +231,7 @@ mod tests {
     struct Scripted(RefCell<VecDeque<Value>>);
 
     impl ChatModel for Scripted {
-        fn complete(&self, _m: &[Value], _t: &Value) -> Result<Reply, String> {
+        fn complete(&self, _m: &[Value], _t: &[ToolSpec]) -> Result<Reply, String> {
             let message = self.0.borrow_mut().pop_front().ok_or("roteiro esgotado")?;
             Ok(Reply { message, prompt_tokens: None, output_tokens: None })
         }
@@ -196,6 +239,12 @@ mod tests {
 
     fn scripted(replies: Vec<Value>) -> Box<dyn ChatModel> {
         Box::new(Scripted(RefCell::new(replies.into())))
+    }
+
+    // Sessão de teste: ferramentas do toolkit pelos nomes da configuração, aprovação automática.
+    fn from_parts(cfg: &AgentConfig, model: Box<dyn ChatModel>, root: &Path) -> Result<Session, String> {
+        let tools = crate::toolkit::registry_from_names(&cfg.tools)?;
+        Session::builder(cfg).model(model).approver(Box::new(AutoApprover)).tools(tools).root(root).build()
     }
 
     fn config(extra_limits: &str) -> AgentConfig {
@@ -236,7 +285,7 @@ url = "http://unused"
             ]}),
             json!({"role": "assistant", "content": "Li a skill."}),
         ]);
-        let mut s = Session::from_config(&config(""), model, Box::new(AutoApprover), &dir)
+        let mut s = from_parts(&config(""), model, &dir)
             .unwrap()
             .with_skills(skills, skills::new_disabled());
         let system = s.messages[0]["content"].as_str().unwrap().to_string();
@@ -256,7 +305,7 @@ url = "http://unused"
         fs::write(skill_dir.join("SKILL.md"), "---\nname: demo\ndescription: faz demo\n---\n\nPasso secreto.\n").unwrap();
         let skills = crate::core::skill::load(&dir.join("skills")).unwrap();
         let model = scripted(vec![json!({"role": "assistant", "content": "Feito."})]);
-        let mut s = Session::from_config(&config(""), model, Box::new(AutoApprover), &dir)
+        let mut s = from_parts(&config(""), model, &dir)
             .unwrap()
             .with_skills(skills, skills::new_disabled());
         s.submit("use a skill DEMO nesta tarefa", &Silent).unwrap();
@@ -272,7 +321,7 @@ url = "http://unused"
         fs::write(skill_dir.join("SKILL.md"), "---\nname: demo\ndescription: faz demo\n---\n\nPasso secreto.\n").unwrap();
         let skills = crate::core::skill::load(&dir.join("skills")).unwrap();
         let off = crate::core::skill::new_disabled();
-        let mut s = Session::from_config(&config(""), scripted(vec![]), Box::new(AutoApprover), &dir)
+        let mut s = from_parts(&config(""), scripted(vec![]), &dir)
             .unwrap()
             .with_skills(skills, Arc::clone(&off));
         assert!(s.messages[0]["content"].as_str().unwrap().contains("- demo:"));
@@ -296,7 +345,7 @@ url = "http://unused"
             ]}),
             json!({"role": "assistant", "content": "Pronto."}),
         ]);
-        let mut s = Session::from_config(&config(""), model, Box::new(AutoApprover), &dir).unwrap();
+        let mut s = from_parts(&config(""), model, &dir).unwrap();
         let report = s.submit("crie a.txt", &Silent).unwrap();
         assert!(report.changed());
         assert_eq!(fs::read_to_string(s.root().join("a.txt")).unwrap(), "oi");
@@ -309,7 +358,7 @@ url = "http://unused"
     }
 
     impl ChatModel for Recording {
-        fn complete(&self, messages: &[Value], _t: &Value) -> Result<Reply, String> {
+        fn complete(&self, messages: &[Value], _t: &[ToolSpec]) -> Result<Reply, String> {
             let roles: Vec<String> = messages
                 .iter()
                 .map(|m| m.get("content").and_then(Value::as_str).unwrap_or("").to_string())
@@ -324,7 +373,7 @@ url = "http://unused"
     fn switching_model_mid_conversation_keeps_history_and_tools() {
         let dir = tempdir("switch");
         let first = scripted(vec![json!({"role": "assistant", "content": "primeira resposta"})]);
-        let mut s = Session::from_config(&config(""), first, Box::new(AutoApprover), &dir).unwrap();
+        let mut s = from_parts(&config(""), first, &dir).unwrap();
         s.submit("primeira tarefa", &Silent).unwrap();
 
         let seen = Rc::new(RefCell::new(Vec::new()));
@@ -362,7 +411,7 @@ url = "http://unused"
             ]}),
             json!({"role": "assistant", "content": "ok"}),
         ]);
-        let mut s = Session::from_config(&config(""), model, Box::new(AutoApprover), &dir).unwrap();
+        let mut s = from_parts(&config(""), model, &dir).unwrap();
         let report = s.submit("apague", &Silent).unwrap();
         assert!(!report.deleted());
         assert!(dir.join("a.txt").exists());
@@ -379,7 +428,7 @@ url = "http://unused"
                 {"function": {"name": "read_file", "arguments": {"path": format!("n{i}.txt")}}}
             ]}))
             .collect();
-        let mut s = Session::from_config(&config("max_steps = 2"), scripted(replies), Box::new(AutoApprover), &dir).unwrap();
+        let mut s = from_parts(&config("max_steps = 2"), scripted(replies), &dir).unwrap();
         let report = s.submit("leia", &Silent).unwrap();
         assert_eq!(report.actions.len(), 2);
         assert!(report.error.is_some());
@@ -389,7 +438,7 @@ url = "http://unused"
     struct FailsOnce(RefCell<bool>);
 
     impl ChatModel for FailsOnce {
-        fn complete(&self, _m: &[Value], _t: &Value) -> Result<Reply, String> {
+        fn complete(&self, _m: &[Value], _t: &[ToolSpec]) -> Result<Reply, String> {
             let mut failed = self.0.borrow_mut();
             if !*failed {
                 *failed = true;
@@ -402,13 +451,7 @@ url = "http://unused"
     #[test]
     fn failed_turn_is_rolled_back_from_history() {
         let dir = tempdir("rollback");
-        let mut s = Session::from_config(
-            &config(""),
-            Box::new(FailsOnce(RefCell::new(false))),
-            Box::new(AutoApprover),
-            &dir,
-        )
-        .unwrap();
+        let mut s = from_parts(&config(""), Box::new(FailsOnce(RefCell::new(false))), &dir).unwrap();
         let before = s.messages().len();
         assert!(s.submit("tarefa que falhou", &Silent).is_err());
         assert_eq!(s.messages().len(), before, "o histórico deve voltar ao estado anterior");
@@ -427,7 +470,7 @@ url = "http://unused"
             json!({"role": "assistant", "content": "primeira", "thinking": "raciocínio longo do primeiro turno"}),
             json!({"role": "assistant", "content": "segunda", "thinking": "raciocínio do segundo turno"}),
         ]);
-        let mut s = Session::from_config(&config(""), model, Box::new(AutoApprover), &dir).unwrap();
+        let mut s = from_parts(&config(""), model, &dir).unwrap();
         s.submit("um", &Silent).unwrap();
         assert!(s.messages().iter().any(|m| m.get("thinking").is_some()), "o do turno atual fica");
         s.submit("dois", &Silent).unwrap();
@@ -440,7 +483,7 @@ url = "http://unused"
     #[test]
     fn clear_keeps_only_the_system_prompt() {
         let dir = tempdir("clear");
-        let mut s = Session::from_config(&config(""), scripted(vec![json!({"role": "assistant", "content": "ok"})]), Box::new(AutoApprover), &dir).unwrap();
+        let mut s = from_parts(&config(""), scripted(vec![json!({"role": "assistant", "content": "ok"})]), &dir).unwrap();
         s.submit("oi", &Silent).unwrap();
         assert!(s.messages().len() > 1);
         s.clear();
@@ -453,6 +496,52 @@ url = "http://unused"
         let dir = tempdir("invalid");
         let mut cfg = config("");
         cfg.tools = vec!["nao_existe".into()];
-        assert!(Session::from_config(&cfg, scripted(vec![]), Box::new(AutoApprover), &dir).is_err());
+        assert!(from_parts(&cfg, scripted(vec![]), &dir).is_err());
+    }
+
+    // O critério de sucesso: um agente novo traz a própria ferramenta, sem editar o core.
+    struct Shout;
+
+    impl crate::core::tool::Tool for Shout {
+        fn name(&self) -> &'static str {
+            "shout"
+        }
+
+        fn spec(&self) -> ToolSpec {
+            ToolSpec::new("shout", "grita o texto", json!({"type": "object", "properties": {}}))
+        }
+
+        fn run(&self, _ctx: &crate::core::tool::ToolContext, args: &Value) -> crate::core::tool::Outcome {
+            crate::core::tool::Outcome::Done(args["text"].as_str().unwrap_or("").to_uppercase())
+        }
+    }
+
+    #[test]
+    fn a_custom_tool_runs_without_touching_the_core() {
+        let dir = tempdir("custom-tool");
+        let model = scripted(vec![
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "shout", "arguments": {"text": "oi"}}}
+            ]}),
+            json!({"role": "assistant", "content": "feito"}),
+        ]);
+        let tools = crate::toolkit::registry_from_names(&["read_file"]).unwrap().with_tool(Box::new(Shout));
+        let mut s = Session::builder(&config(""))
+            .model(model)
+            .approver(Box::new(AutoApprover))
+            .tools(tools)
+            .root(&dir)
+            .build()
+            .unwrap();
+        let report = s.submit("grite", &Silent).unwrap();
+        assert_eq!(report.actions[0].outcome, crate::core::tool::Outcome::Done("OI".into()));
+    }
+
+    #[test]
+    fn the_builder_names_what_is_missing() {
+        let err = Session::builder(&config("")).build().err().unwrap();
+        assert!(err.contains("modelo"), "{err}");
+        let err = Session::builder(&config("")).model(scripted(vec![])).approver(Box::new(AutoApprover)).build().err().unwrap();
+        assert!(err.contains("ferramentas"), "{err}");
     }
 }

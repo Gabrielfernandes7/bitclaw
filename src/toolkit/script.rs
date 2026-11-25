@@ -6,7 +6,7 @@
 //! esta ferramenta garante é que o usuário só aprova o que vê e que o processo não fica pendurado.
 
 use crate::core::sandbox::resolve;
-use crate::core::tool::{Approver, Outcome, Preview, PreviewLine, Tool, str_arg, wrap};
+use crate::core::tool::{Approver, Outcome, Preview, PreviewLine, Tool, ToolContext, ToolSpec, str_arg, wrap};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
@@ -42,26 +42,23 @@ impl Tool for RunScript {
         "run_script"
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "function",
-            "function": {
-                "name": "run_script",
-                "description": "Executa um script que JÁ EXISTE no projeto: aplica chmod u+x e o roda com a pasta do projeto como diretório atual. Crie o script antes com create_file, começando por um shebang como #!/bin/bash. O usuário vê o script inteiro e confirma antes de executar. Devolve o código de saída e a saída real (stdout e stderr); o tempo máximo é de 60 s.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Caminho do script, relativo ao projeto"},
-                        "args": {"type": "array", "items": {"type": "string"}, "description": "Argumentos opcionais, um texto por item"}
-                    },
-                    "required": ["path"]
-                }
-            }
-        })
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new(
+            "run_script",
+            "Executa um script que JÁ EXISTE no projeto: aplica chmod u+x e o roda com a pasta do projeto como diretório atual. Crie o script antes com create_file, começando por um shebang como #!/bin/bash. O usuário vê o script inteiro e confirma antes de executar. Devolve o código de saída e a saída real (stdout e stderr); o tempo máximo é de 60 s.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Caminho do script, relativo ao projeto"},
+                    "args": {"type": "array", "items": {"type": "string"}, "description": "Argumentos opcionais, um texto por item"}
+                },
+                "required": ["path"]
+            }),
+        )
     }
 
-    fn run(&self, root: &Path, args: &Value, approver: &dyn Approver) -> Outcome {
-        wrap(run_script(root, args, approver, RUN_TIMEOUT))
+    fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {
+        wrap(run_script(ctx.root, args, ctx.approver, RUN_TIMEOUT))
     }
 }
 

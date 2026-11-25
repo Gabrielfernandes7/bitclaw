@@ -1,7 +1,7 @@
 use super::guard::*;
 use super::*;
 use crate::core::context::ContextManager;
-use crate::core::tool::{Approver, Outcome, Registry};
+use crate::core::tool::{Approver, Outcome, Registry, ToolContext, ToolSpec};
 use serde_json::{json, Value};
 use std::path::Path;
 use crate::core::tool::{AutoApprover, Preview, Tool};
@@ -15,7 +15,7 @@ struct FakeModel {
 }
 
 impl ChatModel for FakeModel {
-    fn complete(&self, _messages: &[Value], _tools: &Value) -> Result<Reply, String> {
+    fn complete(&self, _messages: &[Value], _tools: &[ToolSpec]) -> Result<Reply, String> {
         let message = self.replies.borrow_mut().pop_front().ok_or_else(|| "roteiro esgotado".to_string())?;
         Ok(Reply { message, prompt_tokens: None, output_tokens: None })
     }
@@ -45,11 +45,11 @@ impl Tool for Echo {
         "echo"
     }
 
-    fn schema(&self) -> Value {
-        json!({"type": "function", "function": {"name": "echo", "description": "ecoa", "parameters": {"type": "object", "properties": {}}}})
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new("echo", "ecoa", json!({"type": "object", "properties": {}}))
     }
 
-    fn run(&self, _root: &Path, args: &Value, _approver: &dyn Approver) -> Outcome {
+    fn run(&self, _ctx: &ToolContext, args: &Value) -> Outcome {
         Outcome::Done(args.get("texto").and_then(Value::as_str).unwrap_or("").to_string())
     }
 }
@@ -84,7 +84,7 @@ fn create_then_answer_reports_change() {
         call("create_file", json!({"path": "fib.py", "content": "print(1)\n"})),
         text("Pronto."),
     ]);
-    let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
     assert!(report.changed());
     assert_eq!(report.text, "Pronto.");
     assert!(report.warnings().is_empty());
@@ -99,7 +99,7 @@ fn false_success_claim_is_visible_in_report() {
         text("Arquivo criado com sucesso."),
     ]);
     let mut msgs = start();
-    let report = run(&model, &Registry::default_set(), &r, &mut msgs, &AutoApprover).unwrap();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover).unwrap();
     assert!(report.attempted_changes());
     assert!(!report.changed());
     assert!(matches!(report.actions[0].outcome, Outcome::Error(_)));
@@ -113,7 +113,7 @@ fn claim_of_removal_without_any_action_is_flagged() {
     // Caso real: o modelo disse "foi removido" sem chamar nenhuma ferramenta.
     let r = root("claim-no-action");
     let model = fake(vec![text("O arquivo mean.cpp foi removido.")]);
-    let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
     assert!(report.actions.is_empty());
     let w = report.warnings();
     assert!(w.iter().any(|x| x.contains("nenhuma alteração")), "{w:?}");
@@ -129,7 +129,7 @@ fn removal_claim_after_only_an_edit_is_flagged() {
         call("edit_file", json!({"path": "a.md", "old": "# nota", "new": ""})),
         text("Arquivo a.md removido."),
     ]);
-    let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
     assert!(report.changed());
     assert!(report.warnings().iter().any(|x| x.contains("nenhum arquivo foi removido")));
 }
@@ -142,7 +142,7 @@ fn delete_then_claim_has_no_warning() {
         call("delete_file", json!({"path": "a.md"})),
         text("Arquivo a.md removido."),
     ]);
-    let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
     assert!(report.deleted());
     assert!(report.warnings().is_empty(), "{:?}", report.warnings());
     assert!(!r.join("a.md").exists());
@@ -152,7 +152,7 @@ fn delete_then_claim_has_no_warning() {
 fn question_answered_in_text_has_no_warning() {
     let r = root("question");
     let model = fake(vec![text("No diretório há calc.py e fib.py.")]);
-    let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
     assert!(report.warnings().is_empty());
 }
 
@@ -163,7 +163,7 @@ fn unknown_tool_in_text_is_reported_not_dropped() {
         text(r#"{"name": "make_file", "arguments": {"path": "a.py"}}"#),
         text("ok"),
     ]);
-    let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
     assert_eq!(report.actions.len(), 1);
     assert!(matches!(&report.actions[0].outcome, Outcome::Error(e) if e.contains("ferramenta desconhecida: make_file")));
     assert!(!report.attempted_changes());
@@ -179,7 +179,7 @@ fn refusal_ends_the_turn_without_more_attempts() {
         call("create_file", json!({"path": "b.py", "content": "y"})),
         text("insisti"),
     ]);
-    let report = run(&model, &Registry::default_set(), &r, &mut start(), &Refuse).unwrap();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &Refuse).unwrap();
     assert_eq!(report.actions.len(), 1, "nenhuma nova tentativa depois da recusa");
     assert!(report.error.as_deref().unwrap_or("").contains("recusada"));
     assert!(!r.join("b.py").exists());
@@ -193,7 +193,7 @@ fn refused_change_is_not_reported_as_done() {
         call("edit_file", json!({"path": "a.py", "old": "x = 1", "new": "x = 2"})),
         text("Pronto."),
     ]);
-    let report = run(&model, &Registry::default_set(), &r, &mut start(), &Refuse).unwrap();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &Refuse).unwrap();
     assert!(matches!(report.actions[0].outcome, Outcome::Refused(_)));
     assert!(!report.changed());
     assert!(report.attempted_changes());
@@ -215,7 +215,7 @@ fn same_change_is_not_applied_twice_in_one_turn() {
     let r = root("dedupe");
     let create = || call("create_file", json!({"path": "a.txt", "content": "x"}));
     let model = fake(vec![create(), create(), text("ok")]);
-    let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
     assert_eq!(report.actions.len(), 1);
     assert!(report.changed());
 }
@@ -230,7 +230,7 @@ fn consecutive_failures_of_same_tool_stop_the_turn() {
         call("edit_file", json!({"path": "x.md", "old": "e", "new": "f"})),
         text("nunca chega aqui"),
     ]);
-    let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
     assert_eq!(report.actions.len(), MAX_CONSECUTIVE_FAILURES);
     assert!(report.error.as_deref().is_some_and(|e| e.contains("falhou 2 vezes")));
 }
@@ -243,7 +243,7 @@ fn failures_of_different_tools_do_not_count_together() {
         call("read_file", json!({"path": "nao.md"})),
         text("ok"),
     ]);
-    let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
     assert!(report.error.is_none());
 }
 
@@ -255,7 +255,7 @@ fn step_limit_stops_the_turn() {
         .map(|i| call("list_dir", json!({"path": ".", "n": i})))
         .collect();
     let model = fake(replies);
-    let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
     assert_eq!(report.actions.len(), MAX_STEPS);
     assert!(report.error.as_deref().is_some_and(|e| e.contains("limite")));
 }
@@ -264,7 +264,7 @@ fn step_limit_stops_the_turn() {
 fn model_error_propagates() {
     let r = root("model-error");
     let model = fake(vec![]); // roteiro vazio: o modelo "falha" na primeira chamada
-    let result = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover);
+    let result = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover);
     assert!(result.is_err());
 }
 
@@ -273,7 +273,7 @@ fn repeated_call_stops_the_turn() {
     let r = root("repeat");
     let same = || call("list_dir", json!({"path": "."}));
     let model = fake(vec![same(), same(), same()]);
-    let report = run(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover).unwrap();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
     assert!(report.error.is_some());
 }
 
@@ -288,7 +288,7 @@ fn long_history_is_trimmed_before_calling_the_model() {
     msgs.push(json!({"role": "user", "content": "atual"}));
     let mut small = ContextManager::new(1_200, 0);
     let model = fake(vec![text("ok")]);
-    let report = run_turn(&model, &Registry::default_set(), &r, &mut msgs, &AutoApprover, &mut small, &Silent).unwrap();
+    let report = run_turn(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover, &mut small, &Silent).unwrap();
     assert!(!report.trims.is_empty(), "deveria ter descartado turnos");
     assert_eq!(msgs[0]["content"], "sistema");
     assert!(msgs.iter().any(|m| m["content"] == "atual"));
@@ -300,7 +300,7 @@ fn oversized_current_turn_stops_with_error() {
     let mut msgs = vec![json!({"role": "system", "content": "sistema"}), json!({"role": "user", "content": "z".repeat(10_000)})];
     let mut small = ContextManager::new(1_200, 0);
     let model = fake(vec![text("ok")]);
-    let result = run_turn(&model, &Registry::default_set(), &r, &mut msgs, &AutoApprover, &mut small, &Silent);
+    let result = run_turn(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover, &mut small, &Silent);
     assert!(result.is_err());
 }
 
@@ -308,13 +308,13 @@ fn oversized_current_turn_stops_with_error() {
 fn calibration_uses_prompt_tokens_from_provider() {
     struct Counted;
     impl ChatModel for Counted {
-        fn complete(&self, _m: &[Value], _t: &Value) -> Result<Reply, String> {
+        fn complete(&self, _m: &[Value], _t: &[ToolSpec]) -> Result<Reply, String> {
             Ok(Reply { message: json!({"role": "assistant", "content": "ok"}), prompt_tokens: Some(500), output_tokens: None })
         }
     }
     let r = root("calib");
     let mut c = ctx();
-    run_turn(&Counted, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut c, &Silent).unwrap();
+    run_turn(&Counted, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover, &mut c, &Silent).unwrap();
     assert_ne!(c.chars_per_token(), 3.0, "a calibração deveria ter mudado a estimativa");
 }
 
@@ -359,10 +359,10 @@ fn a_cancel_while_waiting_for_the_first_chunk_stops_the_call() {
     // Um modelo que ainda está carregando: só acorda o sink, nunca entrega texto.
     struct Loading(Cell<usize>);
     impl ChatModel for Loading {
-        fn complete(&self, _m: &[Value], _t: &Value) -> Result<Reply, String> {
+        fn complete(&self, _m: &[Value], _t: &[ToolSpec]) -> Result<Reply, String> {
             Err("só o streaming é usado".into())
         }
-        fn complete_streaming(&self, _m: &[Value], _t: &Value, on_chunk: &mut dyn FnMut(Chunk) -> bool) -> Result<Reply, String> {
+        fn complete_streaming(&self, _m: &[Value], _t: &[ToolSpec], on_chunk: &mut dyn FnMut(Chunk) -> bool) -> Result<Reply, String> {
             for _ in 0..1000 {
                 self.0.set(self.0.get() + 1);
                 if !on_chunk(Chunk::Idle) {
@@ -383,7 +383,7 @@ fn a_cancel_while_waiting_for_the_first_chunk_stops_the_call() {
     let r = root("idle");
     let model = Loading(Cell::new(0));
     let progress = EscOnThird(&model.0);
-    let report = run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut ctx(), &progress).unwrap();
+    let report = run_turn(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover, &mut ctx(), &progress).unwrap();
     assert_eq!(report.error.as_deref(), Some(INTERRUPTED));
     assert!(model.0.get() <= 4, "parou logo depois do Esc, sem esperar texto: {} conferências", model.0.get());
 }
@@ -393,10 +393,10 @@ fn a_looping_model_is_cut_off_early_with_a_clear_reason() {
     use std::cell::Cell;
     struct Stuck(Cell<usize>);
     impl ChatModel for Stuck {
-        fn complete(&self, _m: &[Value], _t: &Value) -> Result<Reply, String> {
+        fn complete(&self, _m: &[Value], _t: &[ToolSpec]) -> Result<Reply, String> {
             Err("só o streaming é usado".into())
         }
-        fn complete_streaming(&self, _m: &[Value], _t: &Value, on_chunk: &mut dyn FnMut(Chunk) -> bool) -> Result<Reply, String> {
+        fn complete_streaming(&self, _m: &[Value], _t: &[ToolSpec], on_chunk: &mut dyn FnMut(Chunk) -> bool) -> Result<Reply, String> {
             let mut said = String::new();
             for _ in 0..500 {
                 let piece = "Taxa: 144 máquina-dias produzem 800 apostilas.\n";
@@ -411,7 +411,7 @@ fn a_looping_model_is_cut_off_early_with_a_clear_reason() {
     }
     let r = root("looping");
     let stuck = Stuck(Cell::new(0));
-    let report = run_turn(&stuck, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut ctx(), &Silent).unwrap();
+    let report = run_turn(&stuck, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover, &mut ctx(), &Silent).unwrap();
     assert_eq!(report.error.as_deref(), Some(LOOPING));
     assert!(stuck.0.get() < 20, "parou cedo: {} pedaços de 500", stuck.0.get());
 }
@@ -421,7 +421,7 @@ fn the_reasoning_of_each_call_reaches_the_progress() {
     use std::cell::RefCell;
     struct Thinker;
     impl ChatModel for Thinker {
-        fn complete(&self, _m: &[Value], _t: &Value) -> Result<Reply, String> {
+        fn complete(&self, _m: &[Value], _t: &[ToolSpec]) -> Result<Reply, String> {
             let message = json!({"role": "assistant", "content": "ok", "thinking": "300 / 8 = 37,5; 720 / 37,5 = 19,2"});
             Ok(Reply { message, prompt_tokens: None, output_tokens: None })
         }
@@ -435,7 +435,7 @@ fn the_reasoning_of_each_call_reaches_the_progress() {
     }
     let r = root("reasoning");
     let rec = Recorder(RefCell::new(Vec::new()));
-    run_turn(&Thinker, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut ctx(), &rec).unwrap();
+    run_turn(&Thinker, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover, &mut ctx(), &rec).unwrap();
     assert_eq!(rec.0.borrow().as_slice(), ["300 / 8 = 37,5; 720 / 37,5 = 19,2"]);
 }
 
@@ -474,7 +474,7 @@ fn progress_is_signalled_around_each_model_call() {
     let r = root("progress");
     let model = fake(vec![text("oi")]);
     let p = Counter(Cell::new(0), Cell::new(false));
-    run_turn(&model, &Registry::default_set(), &r, &mut start(), &AutoApprover, &mut ctx(), &p).unwrap();
+    run_turn(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover, &mut ctx(), &p).unwrap();
     assert_eq!(p.0.get(), 1);
     assert!(!p.1.get(), "a espera deve terminar");
 }

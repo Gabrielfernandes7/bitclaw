@@ -69,17 +69,23 @@ O core só conhece `[model]` e `[limits]`; `url` e `temperature` pertencem à se
 
 ## Usar como biblioteca
 
-O crate `bitclaw` expõe o core. Um agente novo monta uma `Session` a partir de uma configuração e de um modelo, sem editar o core:
+O crate `bitclaw` expõe o core. Um agente novo monta uma `Session` com um modelo, um aprovador e um registro de ferramentas, sem editar o core:
 
 ```rust
-use bitclaw::{agent::Silent, config::AgentConfig, session::Session, tools::AutoApprover};
+use bitclaw::{agent::Silent, config::AgentConfig, session::Session, toolkit, tools::AutoApprover};
 
 let cfg = AgentConfig::from_toml(include_str!("agente.toml"))?;
-let mut sessao = Session::from_config(&cfg, modelo, Box::new(AutoApprover), Path::new("."))?;
+let tools = toolkit::registry_from_names(&cfg.tools)?.with_tool(Box::new(MinhaFerramenta));
+let mut sessao = Session::builder(&cfg)
+    .model(modelo)
+    .approver(Box::new(AutoApprover))
+    .tools(tools)
+    .root(".")
+    .build()?;
 let relatorio = sessao.submit("liste os arquivos", &Silent)?;
 ```
 
-`modelo` é qualquer implementação de `bitclaw::agent::ChatModel`. O adaptador do Ollama está em `bitclaw::ollama`, mas o core não depende dele. Ferramentas novas são implementações de `bitclaw::tools::Tool` registradas em `Registry`.
+`modelo` é qualquer implementação de `bitclaw::agent::ChatModel`. O adaptador do Ollama está em `bitclaw::ollama`, mas o core não depende dele. Uma ferramenta nova implementa `bitclaw::tools::Tool` (`name`, `spec` e `run`) e entra no `Registry`; `spec` descreve a ferramenta sem formato de provedor, e cada adaptador a traduz para a sua API. As ferramentas de arquivo e `run_script` vêm do `bitclaw::toolkit` e são opcionais.
 
 ## Uso no prompt
 

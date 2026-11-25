@@ -1,7 +1,7 @@
 //! `read_file`: lê um arquivo de texto do projeto, truncando o que passa do limite.
 
 use crate::core::sandbox::resolve;
-use crate::core::tool::{Approver, Outcome, Tool, str_arg, wrap};
+use crate::core::tool::{Outcome, Tool, ToolContext, ToolSpec, str_arg, wrap};
 use serde_json::{json, Value};
 use std::path::Path;
 use crate::core::tool::MAX_READ_BYTES;
@@ -14,25 +14,22 @@ impl Tool for ReadFile {
         "read_file"
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "function",
-            "function": {
-                "name": "read_file",
-                "description": "Lê o conteúdo de um arquivo de texto do projeto.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Caminho relativo ao projeto"}
-                    },
-                    "required": ["path"]
-                }
-            }
-        })
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new(
+            "read_file",
+            "Lê o conteúdo de um arquivo de texto do projeto.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Caminho relativo ao projeto"}
+                },
+                "required": ["path"]
+            }),
+        )
     }
 
-    fn run(&self, root: &Path, args: &Value, _approver: &dyn Approver) -> Outcome {
-        wrap(read_file(root, args).map(Outcome::Done))
+    fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {
+        wrap(read_file(ctx.root, args).map(Outcome::Done))
     }
 }
 

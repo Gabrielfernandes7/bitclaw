@@ -1,7 +1,7 @@
 //! `edit_file`: substitui um trecho exato de um arquivo existente, com prévia, aprovação e backup.
 
 use crate::core::sandbox::resolve;
-use crate::core::tool::{Approver, Outcome, Tool, str_arg, wrap};
+use crate::core::tool::{Approver, Outcome, Tool, ToolContext, ToolSpec, str_arg, wrap};
 use serde_json::{json, Value};
 use std::path::Path;
 use super::backup::backup;
@@ -16,31 +16,28 @@ impl Tool for EditFile {
         "edit_file"
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "function",
-            "function": {
-                "name": "edit_file",
-                "description": "Substitui um trecho EXATO (`old`) por `new` em um arquivo existente. `old` deve aparecer exatamente uma vez no arquivo. Use o menor trecho que identifica a mudança (poucas linhas); nunca copie o arquivo inteiro em `old`. O usuário confirma antes da alteração. Leia o arquivo antes de editar.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Caminho relativo ao projeto"},
-                        "old": {"type": "string", "description": "Trecho exato e curto a ser substituído (poucas linhas, não o arquivo inteiro)"},
-                        "new": {"type": "string", "description": "Novo texto"}
-                    },
-                    "required": ["path", "old", "new"]
-                }
-            }
-        })
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new(
+            "edit_file",
+            "Substitui um trecho EXATO (`old`) por `new` em um arquivo existente. `old` deve aparecer exatamente uma vez no arquivo. Use o menor trecho que identifica a mudança (poucas linhas); nunca copie o arquivo inteiro em `old`. O usuário confirma antes da alteração. Leia o arquivo antes de editar.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Caminho relativo ao projeto"},
+                    "old": {"type": "string", "description": "Trecho exato e curto a ser substituído (poucas linhas, não o arquivo inteiro)"},
+                    "new": {"type": "string", "description": "Novo texto"}
+                },
+                "required": ["path", "old", "new"]
+            }),
+        )
     }
 
     fn mutates(&self) -> bool {
         true
     }
 
-    fn run(&self, root: &Path, args: &Value, approver: &dyn Approver) -> Outcome {
-        wrap(edit_file(root, args, approver))
+    fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {
+        wrap(edit_file(ctx.root, args, ctx.approver))
     }
 }
 

@@ -1,15 +1,16 @@
 //! O conjunto de ferramentas de um agente: o único lugar que o loop consulta.
 
-use super::{Approver, Outcome, Tool};
+use super::{Outcome, Tool, ToolContext, ToolSpec};
 use serde_json::Value;
-use std::path::Path;
 
-// Conjunto de ferramentas disponíveis para um agente. É o único lugar que o loop consulta.
+// Conjunto de ferramentas disponíveis para um agente. Aceita ferramentas de qualquer origem:
+// as do toolkit, as de um fork, as que a sessão soma (`load_skill`).
 pub struct Registry {
     tools: Vec<Box<dyn Tool>>,
 }
 
 impl Registry {
+    // Nome repetido é erro de programação: derruba aqui, não no meio de um turno.
     pub fn new(tools: Vec<Box<dyn Tool>>) -> Self {
         let mut names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         names.sort_unstable();
@@ -19,39 +20,20 @@ impl Registry {
         Self { tools }
     }
 
-    // Ferramentas que o BitClaw traz de fábrica.
-    pub fn default_set() -> Self {
-        Self::from_names(crate::toolkit::BUILTIN_TOOLS).expect("as ferramentas embutidas existem")
-    }
-
-    // Monta o registro a partir de nomes de ferramentas embutidas (ex.: vindos de uma configuração).
-    // Nome desconhecido é erro, para que um erro de digitação não passe despercebido.
-    pub fn from_names<S: AsRef<str>>(names: &[S]) -> Result<Self, String> {
-        let mut tools: Vec<Box<dyn Tool>> = Vec::with_capacity(names.len());
-        for name in names {
-            let name = name.as_ref();
-            if tools.iter().any(|t| t.name() == name) {
-                return Err(format!("ferramenta repetida na configuração: {name}"));
-            }
-            let tool = crate::toolkit::builtin(name).ok_or_else(|| {
-                format!("ferramenta desconhecida na configuração: {name}. Disponíveis: {}", crate::toolkit::BUILTIN_TOOLS.join(", "))
-            })?;
-            tools.push(tool);
-        }
-        if tools.is_empty() {
-            return Err("nenhuma ferramenta configurada".into());
-        }
-        Ok(Self::new(tools))
-    }
-
-    // Acrescenta uma ferramenta que não é embutida (ex.: `load_skill`). Nome repetido é erro.
+    // Acrescenta uma ferramenta (ex.: `load_skill`). Nome repetido é erro.
     pub fn with_tool(mut self, tool: Box<dyn Tool>) -> Self {
         self.tools.push(tool);
         Self::new(self.tools)
     }
 
-    pub fn schemas(&self) -> Value {
-        Value::Array(self.tools.iter().map(|t| t.schema()).collect())
+    // Junta dois registros (ex.: as ferramentas do toolkit com as de um fork).
+    pub fn merge(mut self, other: Registry) -> Self {
+        self.tools.extend(other.tools);
+        Self::new(self.tools)
+    }
+
+    pub fn specs(&self) -> Vec<ToolSpec> {
+        self.tools.iter().map(|t| t.spec()).collect()
     }
 
     pub fn names(&self) -> Vec<&'static str> {
@@ -62,9 +44,9 @@ impl Registry {
         self.find(name).is_some_and(|t| t.mutates())
     }
 
-    pub fn execute(&self, root: &Path, name: &str, args: &Value, approver: &dyn Approver) -> Outcome {
+    pub fn execute(&self, ctx: &ToolContext, name: &str, args: &Value) -> Outcome {
         match self.find(name) {
-            Some(tool) => tool.run(root, args, approver),
+            Some(tool) => tool.run(ctx, args),
             None => Outcome::Error(format!(
                 "ferramenta desconhecida: {name}. Use uma destas: {}",
                 self.names().join(", ")

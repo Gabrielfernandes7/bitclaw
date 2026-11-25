@@ -9,6 +9,7 @@ use bitclaw::models::{Effort, ModelCatalog, ModelInfo, SharedEffort};
 use bitclaw::ollama::{self, OllamaCatalog, OllamaSettings, SharedOptions};
 use bitclaw::session::Session;
 use bitclaw::skills;
+use bitclaw::toolkit;
 use bitclaw::tools::Approver;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
@@ -81,6 +82,8 @@ fn run() -> Result<(), String> {
     if let Some(m) = args.model {
         cfg.model.name = m;
     }
+    // Ferramenta desconhecida no TOML é erro já na partida, antes de falar com o Ollama.
+    toolkit::registry_from_names(&cfg.tools).map_err(|e| format!("configuração: {e}"))?;
     for warning in cfg.warnings() {
         eprintln!("aviso: {warning}");
     }
@@ -177,14 +180,14 @@ fn run() -> Result<(), String> {
             settings,
             move |approver| {
                 let client = build_client(&provider, &default_info, &session_effort, &session_options)?;
-                Ok(Session::from_config(&cfg, Box::new(client), approver, &root)?.with_skills(skills, skills_off))
+                Ok(build_session(&cfg, client, approver, &root)?.with_skills(skills, skills_off))
             },
             Box::new(make_model),
         )
     } else {
         let approver: Box<dyn Approver> = Box::new(app::plain::StdinApprover { auto_edits: args.auto_yes });
         let client = build_client(&provider, &default_info, &effort, &options)?;
-        let mut session = Session::from_config(&cfg, Box::new(client), approver, &root)?.with_skills(skills, skills::new_disabled());
+        let mut session = build_session(&cfg, client, approver, &root)?.with_skills(skills, skills::new_disabled());
         let mut header = vec![cfg.name.clone()];
         header.extend(info);
         header.extend(skill_info);
@@ -193,6 +196,12 @@ fn run() -> Result<(), String> {
 }
 
 // Cliente para um modelo. A janela e a temperatura vêm da configuração; o modelo e suas capacidades, do catálogo.
+// Monta a sessão: as ferramentas vêm do toolkit, pelos nomes do TOML.
+fn build_session(cfg: &AgentConfig, client: ollama::Client, approver: Box<dyn Approver>, root: &std::path::Path) -> Result<Session, String> {
+    let tools = toolkit::registry_from_names(&cfg.tools).map_err(|e| format!("configuração: {e}"))?;
+    Session::builder(cfg).model(Box::new(client)).approver(approver).tools(tools).root(root).build()
+}
+
 fn build_client(
     provider: &OllamaSettings,
     info: &ModelInfo,
