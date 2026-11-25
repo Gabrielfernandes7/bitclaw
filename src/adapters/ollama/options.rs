@@ -2,29 +2,13 @@
 
 use crate::core::config::AgentConfig;
 use serde::Deserialize;
-use std::sync::{Arc, Mutex};
+pub use crate::core::options::{Options, SharedOptions};
 
 pub const DEFAULT_URL: &str = "http://localhost:11434";
 
 // Janela de contexto e temperatura padrão. Sem `num_ctx` explícito, o Ollama usa uma janela pequena.
 pub const NUM_CTX: u32 = 16384; // 16384 ou 8192
 pub const TEMPERATURE: f32 = 0.6;
-
-// Opções de geração enviadas ao Ollama. Vêm da configuração do agente.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Options {
-    pub num_ctx: u32,
-    pub temperature: f32,
-}
-
-// Opções que a interface pode mudar com a sessão aberta (`/context`, `/temp`). O cliente lê a cada chamada.
-pub type SharedOptions = Arc<Mutex<Options>>;
-
-impl Default for Options {
-    fn default() -> Self {
-        Self { num_ctx: NUM_CTX, temperature: TEMPERATURE }
-    }
-}
 
 // A seção `[ollama]` do TOML do agente.
 #[derive(Debug, Clone, PartialEq, Deserialize)]

@@ -6,6 +6,7 @@ pub mod agent;
 pub mod config;
 pub mod context;
 pub mod models;
+pub mod options;
 pub mod sandbox;
 pub mod session;
 pub mod skill;

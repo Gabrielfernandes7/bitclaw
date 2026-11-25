@@ -5,7 +5,7 @@ use super::{ModelFactory, locked};
 use bitclaw::agent::{Chunk, Progress, TurnReport};
 use bitclaw::context::Usage;
 use bitclaw::models::{ModelInfo, SharedEffort};
-use bitclaw::ollama::SharedOptions;
+use bitclaw::core::options::SharedOptions;
 use bitclaw::session::Session;
 use bitclaw::tools::{Approver, Outcome, Preview};
 use serde_json::Value;

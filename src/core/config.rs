@@ -28,6 +28,10 @@ pub struct AgentConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ModelConfig {
+    // Qual adaptador atende o modelo (`"ollama"`, `"openrouter"`...). O core só guarda o nome;
+    // quem escolhe o adaptador é o app. Sem valor, o app usa o Ollama.
+    #[serde(default)]
+    pub provider: Option<String>,
     pub name: String,
     // Janela de contexto do modelo, em tokens. `num_ctx` é o nome antigo.
     #[serde(default = "default_context_window", alias = "num_ctx")]

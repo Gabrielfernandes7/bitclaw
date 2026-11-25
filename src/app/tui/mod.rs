@@ -26,7 +26,7 @@ use self::worker::{Command, UiEvent, worker};
 use self::theme::{GRAY, RED, YELLOW, bold, fg, palette};
 use bitclaw::agent::ChatModel;
 use bitclaw::models::{Effort, ModelCatalog, ModelInfo, Reasoning, SharedEffort};
-use bitclaw::ollama::{Options, SharedOptions};
+use bitclaw::core::options::{Options, SharedOptions};
 use bitclaw::context::Usage;
 use bitclaw::session::Session;
 use bitclaw::skills::{Disabled, Skill};

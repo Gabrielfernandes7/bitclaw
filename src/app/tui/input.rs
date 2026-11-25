@@ -455,7 +455,7 @@ impl App {
         }
         match self.settings.catalog.list() {
             Ok(models) if models.is_empty() => {
-                self.print(vec![note("nenhum modelo instalado. Instale com: ollama pull <modelo>"), Line::default()])
+                self.print(vec![note("nenhum modelo disponível neste provedor (no Ollama, instale com: ollama pull <modelo>)"), Line::default()])
             }
             Ok(models) => {
                 self.model_picker = Some(ModelPicker { query: String::new(), index: 0, models });

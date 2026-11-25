@@ -67,6 +67,33 @@ Campos desconhecidos, ferramentas inexistentes ou repetidas e valores incoerente
 
 O core só conhece `[model]` e `[limits]`; `url` e `temperature` pertencem à seção do provedor (`[ollama]`). O formato antigo (`url`, `temperature` e `num_ctx` dentro de `[model]`) ainda é lido; `url` e `temperature` geram um aviso.
 
+### Usar o OpenRouter
+
+O padrão é o Ollama local. Para usar modelos hospedados no [OpenRouter](https://openrouter.ai), escolha o provedor na configuração e exporte a chave no ambiente:
+
+```toml
+[model]
+provider = "openrouter"
+name = "anthropic/claude-sonnet-4"
+context_window = 200000
+
+[openrouter]
+base_url = "https://openrouter.ai/api/v1"   # opcional
+api_key_env = "OPENROUTER_API_KEY"          # o NOME da variável, nunca a chave
+temperature = 0.1
+```
+
+```sh
+export OPENROUTER_API_KEY=...
+cargo run -- --config meu-agente.toml
+```
+
+- A chave **nunca** vai no TOML (ele é versionado e lido pelo `/init`). Se `api_key_env` parecer uma chave, a configuração é recusada sem repetir o valor. Se a variável faltar, o erro diz qual é.
+- `/model` lista os modelos do OpenRouter que chamam ferramentas. `/effort` vale para os que aceitam raciocínio com níveis.
+- `/context` só muda o orçamento do histórico: no OpenRouter a janela real é a do modelo.
+- Erros 401 (chave), 402 (créditos) e 429 (limite) viram mensagens legíveis. Nenhuma mensagem, `/status` ou log mostra a chave.
+- **Privacidade:** com um provedor remoto, o conteúdo dos arquivos que o agente ler e o histórico da conversa saem da sua máquina. O BitClaw avisa na abertura.
+
 ## Usar como biblioteca
 
 O crate `bitclaw` expõe o core. Um agente novo monta uma `Session` com um modelo, um aprovador e um registro de ferramentas, sem editar o core:
@@ -172,7 +199,7 @@ Os testes não dependem de rede nem de modelo: usam um modelo falso com resposta
 - `run_script` **sempre** pede confirmação, mesmo com `--yes`: o `--yes` vale só para edições. A confirmação mostra o script inteiro, com caracteres de controle escritos como `\xNN` (para não esconderem texto no terminal) e linhas longas quebradas. Scripts com mais de 120 linhas ou 32 KB são recusados, porque o usuário precisa conseguir revisá-los. Se o arquivo muda entre a confirmação e a execução, nada é executado.
 - O script roda com **as suas permissões e sem isolamento**: ele pode ler e apagar o que você pode, e usar a rede. Só a confirmação protege. Para um agente que não executa nada, tire `run_script` da lista `tools` da configuração.
 - O processo tem limite de 60 s (o grupo de processos inteiro é encerrado), saída limitada a 6 KB para o modelo e ambiente reduzido: só `PATH`, `HOME`, `USER`, `LANG`, `LC_ALL` e `TMPDIR` passam, então chaves de API e tokens do seu ambiente não chegam ao script.
-- Fora o que um script aprovado fizer, não há acesso à rede além do Ollama local.
+- Fora o que um script aprovado fizer, não há acesso à rede além do provedor escolhido: o Ollama local, por padrão. Com o OpenRouter, o conteúdo lido dos arquivos é enviado a um serviço remoto; a chave vem de uma variável de ambiente e não chega aos scripts (o ambiente deles é reduzido).
 
 ## Limites conhecidos
 
