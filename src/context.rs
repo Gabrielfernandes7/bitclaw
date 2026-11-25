@@ -1,8 +1,8 @@
-// Gerenciador de contexto: mantém o histórico dentro do orçamento da janela do modelo.
-// Descarta turnos antigos inteiros. Nunca descarta o prompt do sistema nem o turno atual.
-//
-// Tamanho medido em caracteres do JSON de cada mensagem. A estimativa de caracteres por token
-// começa conservadora e é calibrada com `prompt_eval_count`, que o Ollama devolve a cada chamada.
+//! Gerenciador de contexto: mantém o histórico dentro do orçamento da janela do modelo.
+//! Descarta turnos antigos inteiros. Nunca descarta o prompt do sistema nem o turno atual.
+//!
+//! Tamanho medido em caracteres do JSON de cada mensagem. A estimativa de caracteres por token
+//! começa conservadora e é calibrada com `prompt_eval_count`, que o Ollama devolve a cada chamada.
 
 use serde_json::Value;
 

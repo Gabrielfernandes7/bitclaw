@@ -1,3 +1,6 @@
+//! Ferramentas de arquivo do agente (list_dir, read_file, edit_file, create_file, create_dir e
+//! delete_file), a aprovação das alterações e o backup do que é sobrescrito.
+
 use crate::sandbox::resolve;
 use serde_json::{json, Value};
 use std::fs;

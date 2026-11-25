@@ -1,4 +1,4 @@
-//! Interface de terminal do BitClaw, com ratatui em viewport inline.
+//! Interface de terminal do BitClaw, com ratatui em tela cheia.
 //!
 //! Tela cheia: o mascote com o nome e o status ficam no topo, a conversa no meio (rola com
 //! PageUp/PageDown e a roda do mouse) e o editor com o rodapé embaixo.

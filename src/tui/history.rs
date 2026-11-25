@@ -1,4 +1,5 @@
-// Histórico das tarefas enviadas, navegado com ↑ e ↓ como no shell. Sem terminal: só texto.
+//! Histórico das tarefas enviadas, navegado com ↑ e ↓ como no shell. Sem terminal: só texto.
+
 #[derive(Default)]
 pub(super) struct History {
     pub(super) items: Vec<String>,

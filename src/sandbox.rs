@@ -1,3 +1,6 @@
+//! Resolve caminhos do agente dentro da pasta do projeto: recusa caminhos absolutos, `..` e
+//! symlinks que saem dela.
+
 use std::path::{Component, Path, PathBuf};
 
 // Resolve um caminho relativo dentro de `root` (já canonicalizado).
