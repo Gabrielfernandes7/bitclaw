@@ -49,10 +49,10 @@ impl Progress for Lines {
 pub fn run(session: &mut Session, header: &[String], auto_yes: bool, think: &Arc<AtomicBool>) -> Result<(), String> {
     println!("{}", brand::plain_header(header));
     if auto_yes {
-        println!("⚠ --yes ativo: edições serão aplicadas sem confirmação");
+        println!("aviso: --yes ativo: edições serão aplicadas sem confirmação");
     }
     if think.load(Ordering::Relaxed) {
-        println!("⚠ {}", brand::THINK_WARNING);
+        println!("aviso: {}", brand::THINK_WARNING);
     }
     let interactive = io::stdin().is_terminal();
     let stdin = io::stdin();
@@ -72,7 +72,7 @@ pub fn run(session: &mut Session, header: &[String], auto_yes: bool, think: &Arc
             "/think" => {
                 let on = !think.fetch_xor(true, Ordering::Relaxed);
                 if on {
-                    println!("⚠ {}\n", brand::THINK_WARNING);
+                    println!("aviso: {}\n", brand::THINK_WARNING);
                 } else {
                     println!("thinking desligado.\n");
                 }
@@ -121,7 +121,7 @@ fn print_report(report: &TurnReport) {
         println!("interrompido: {e}");
     }
     for w in report.warnings() {
-        println!("⚠ {w}");
+        println!("aviso: {w}");
     }
     println!();
 }

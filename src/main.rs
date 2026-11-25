@@ -88,7 +88,7 @@ fn run() -> Result<(), String> {
     // Sem o Ollama o agente não faz nada útil: falha já na inicialização, com a instrução de correção.
     match build_client(&cfg, &think)?.has_model() {
         Ok(true) => {}
-        Ok(false) => eprintln!("⚠ o modelo '{0}' não aparece no Ollama. Instale com: ollama pull {0}", cfg.model.name),
+        Ok(false) => eprintln!("aviso: o modelo '{0}' não aparece no Ollama. Instale com: ollama pull {0}", cfg.model.name),
         Err(e) => return Err(format!("{e}. Inicie o Ollama com: ollama serve")),
     }
 

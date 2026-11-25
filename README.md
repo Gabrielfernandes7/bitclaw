@@ -87,6 +87,7 @@ Digite a tarefa em linguagem natural e pressione Enter. A conversa fica no hist�
 | Shift+Enter, Alt+Enter ou Ctrl+J | Nova linha no editor, que cresce até 6 linhas. Colar texto com várias linhas funciona. |
 | Esc ou Ctrl+C durante um turno | Interrompe. Uma requisição ao modelo em andamento não é abortada: o turno para assim que ela volta. |
 | Ctrl+C no editor | Limpa o editor; com o editor vazio, encerra. Ctrl+D com o editor vazio também encerra. |
+| ↑ / ↓ no editor | Recupera tarefas anteriores, como no shell. Depois da última, volta ao texto que estava digitado. Com o menu `/` aberto, escolhem o comando. |
 | `s` / `n` num pedido de aprovação | Aplica ou recusa a alteração. Enter e Esc recusam. |
 
 Digite `/` para abrir o menu de comandos. Setas escolhem, Tab completa, Enter executa e Esc fecha.
@@ -115,6 +116,7 @@ troque o nome da função soma por adiciona em calc.py
 - `read_file`: lê um arquivo. Arquivos com mais de 8 KB são truncados e o programa avisa.
 - `edit_file`: troca um trecho exato que aparece uma única vez. Mostra o diff com contexto, pede confirmação e salva um backup em `.bitclaw/backup/`. Só altera arquivos existentes.
 - `create_file`: cria um arquivo novo com o conteúdo dado. Recusa sobrescrever um arquivo existente e pede confirmação.
+- `create_dir`: cria uma pasta nova e vazia, com as pastas pais que faltarem. Recusa pasta existente e pede confirmação.
 - `delete_file`: remove um arquivo, pede confirmação e salva um backup em `.bitclaw/backup/`. Não remove diretórios.
 
 Ao fim de cada tarefa, o programa lista as ações executadas: `✓` (feita), `✗` (erro) ou `⊘` (recusada pelo usuário). As ações aparecem antes do texto do modelo. Se nenhuma alteração foi aplicada, ele avisa, mesmo que o modelo tenha dito o contrário. Se o texto final afirma que algo foi removido sem que nenhum arquivo tenha sido removido, o aviso também aparece.

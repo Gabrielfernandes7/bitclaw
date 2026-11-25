@@ -153,7 +153,7 @@ impl Registry {
 }
 
 // Nomes das ferramentas embutidas, na ordem padrão.
-pub const BUILTIN_TOOLS: &[&str] = &["list_dir", "read_file", "edit_file", "create_file", "delete_file"];
+pub const BUILTIN_TOOLS: &[&str] = &["list_dir", "read_file", "edit_file", "create_file", "create_dir", "delete_file"];
 
 // Constrói uma ferramenta embutida pelo nome. Nome desconhecido devolve `None`.
 fn builtin(name: &str) -> Option<Box<dyn Tool>> {
@@ -162,6 +162,7 @@ fn builtin(name: &str) -> Option<Box<dyn Tool>> {
         "read_file" => Some(Box::new(ReadFile)),
         "edit_file" => Some(Box::new(EditFile)),
         "create_file" => Some(Box::new(CreateFile)),
+        "create_dir" => Some(Box::new(CreateDir)),
         "delete_file" => Some(Box::new(DeleteFile)),
         _ => None,
     }
@@ -337,6 +338,39 @@ fn edit_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Outco
     )))
 }
 
+pub struct CreateDir;
+
+impl Tool for CreateDir {
+    fn name(&self) -> &'static str {
+        "create_dir"
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "function",
+            "function": {
+                "name": "create_dir",
+                "description": "Cria uma pasta NOVA e vazia no projeto, com as pastas pais que faltarem. Use quando o usuário pedir só a pasta, sem arquivo. Falha se já existir. O usuário confirma antes da criação.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Caminho relativo ao projeto da pasta, ex.: skills"}
+                    },
+                    "required": ["path"]
+                }
+            }
+        })
+    }
+
+    fn mutates(&self) -> bool {
+        true
+    }
+
+    fn run(&self, root: &Path, args: &Value, approver: &dyn Approver) -> Outcome {
+        wrap(create_dir(root, args, approver))
+    }
+}
+
 pub struct CreateFile;
 
 impl Tool for CreateFile {
@@ -349,7 +383,7 @@ impl Tool for CreateFile {
             "type": "function",
             "function": {
                 "name": "create_file",
-                "description": "Cria um arquivo NOVO no projeto com o conteúdo dado. Falha se o arquivo já existir (use edit_file nesse caso). O usuário confirma antes da criação.",
+                "description": "Cria um arquivo NOVO no projeto com o conteúdo dado. Cria também as pastas que faltam no caminho (ex.: skills/guia.md cria a pasta skills). Falha se o arquivo já existir (use edit_file nesse caso). O usuário confirma antes da criação.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -435,6 +469,20 @@ fn delete_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Out
     Ok(Outcome::Done(format!("arquivo removido: {rel} (cópia em {BACKUP_DIR}/)")))
 }
 
+fn create_dir(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Outcome, String> {
+    let rel = str_arg(args, "path")?;
+    let path = resolve(root, rel)?;
+    if path.symlink_metadata().is_ok() {
+        return Err(format!("{rel} já existe"));
+    }
+    let preview = Preview { title: format!("nova pasta {rel}"), lines: vec![PreviewLine::Added(format!("{rel}/"))] };
+    if !approver.approve(&preview) {
+        return Ok(Outcome::Refused("usuário recusou a criação; nenhuma pasta foi criada".into()));
+    }
+    fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+    Ok(Outcome::Done(format!("pasta criada: {rel}")))
+}
+
 fn create_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Outcome, String> {
     let rel = str_arg(args, "path")?;
     let content = str_arg(args, "content")?;
@@ -506,6 +554,22 @@ mod tests {
         let out = run(&r, "create_file", json!({"path": "a.py", "content": "x = 1\n"}));
         assert!(matches!(out, Outcome::Done(_)), "{out:?}");
         assert_eq!(fs::read_to_string(r.join("a.py")).unwrap(), "x = 1\n");
+    }
+
+    #[test]
+    fn create_dir_creates_nested_folders() {
+        let r = root("mkdir");
+        let out = run(&r, "create_dir", json!({"path": "skills/guias"}));
+        assert!(matches!(out, Outcome::Done(_)), "{out:?}");
+        assert!(r.join("skills/guias").is_dir());
+    }
+
+    #[test]
+    fn create_dir_refuses_an_existing_folder() {
+        let r = root("mkdir-exists");
+        fs::create_dir(r.join("skills")).unwrap();
+        let out = run(&r, "create_dir", json!({"path": "skills"}));
+        assert!(matches!(out, Outcome::Error(_)), "{out:?}");
     }
 
     #[test]

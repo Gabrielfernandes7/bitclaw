@@ -12,8 +12,9 @@ pub const MAX_STEPS: usize = 8;
 pub const MAX_CONSECUTIVE_FAILURES: usize = 2;
 
 // Palavras que indicam que o texto final afirma uma alteração. Heurística: gera aviso, não bloqueia.
-const CHANGE_WORDS: [&str; 8] = ["criad", "criei", "criou", "alterad", "alterei", "alterou", "editad", "editei"];
-const DELETE_WORDS: [&str; 5] = ["remov", "apagad", "apaguei", "apagou", "exclu"];
+// Só formas que afirmam algo já feito. Infinitivos ("posso criar", "quer remover") são ofertas.
+const CHANGE_WORDS: [&str; 10] = ["criei", "criou", "criado", "criada", "alterei", "alterou", "editei", "editou", "alterado", "editado"];
+const DELETE_WORDS: [&str; 8] = ["removi", "removeu", "removido", "removida", "apaguei", "apagou", "excluí", "excluiu"];
 
 // Resposta de um provedor de modelo.
 pub struct Reply {
@@ -626,5 +627,14 @@ mod tests {
         assert_eq!(report.error.as_deref(), Some(INTERRUPTED));
         assert!(report.actions.is_empty());
         assert_eq!(messages.len(), 1, "a resposta descartada não entra no histórico");
+    }
+    #[test]
+    fn offers_are_not_claims() {
+        // Oferta com "remover" não é afirmação de remoção.
+        let report = TurnReport { text: "Posso apenas criar, ler, editar ou remover arquivos. Deseja criar um?".into(), ..Default::default() };
+        assert!(report.warnings().is_empty(), "{:?}", report.warnings());
+        // Afirmação no passado sem a ação real continua sendo avisada.
+        let claim = TurnReport { text: "Pronto, removi o arquivo.".into(), ..Default::default() };
+        assert_eq!(claim.warnings(), vec!["nenhuma alteração foi aplicada neste turno.", "o texto diz que algo foi removido, mas nenhum arquivo foi removido."]);
     }
 }

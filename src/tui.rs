@@ -38,6 +38,7 @@ const YELLOW: Color = Color::Rgb(255, 204, 0);
 const GRAY: Color = Color::Rgb(150, 150, 150);
 const GREEN: Color = Color::Rgb(0, 200, 120);
 const RED: Color = Color::Rgb(255, 77, 77);
+const ORANGE: Color = Color::Rgb(255, 150, 60);
 const CODE: Color = Color::Rgb(200, 200, 200);
 
 // A área fixa cresce e encolhe: status (1) + régua, editor e régua (2 + linhas do editor)
@@ -190,6 +191,58 @@ where
 
 // ---------- estado da interface ----------
 
+// Histórico das tarefas enviadas, navegado com ↑ e ↓ como no shell. Sem terminal: só texto.
+#[derive(Default)]
+struct History {
+    items: Vec<String>,
+    // Posição atual ao navegar; `None` quando o editor mostra o próprio texto.
+    pos: Option<usize>,
+    // O que estava digitado antes de começar a navegar, para voltar a ele ao descer até o fim.
+    draft: String,
+}
+
+impl History {
+    fn push(&mut self, text: &str) {
+        if !text.is_empty() && self.items.last().map(String::as_str) != Some(text) {
+            self.items.push(text.to_string());
+        }
+        self.pos = None;
+    }
+
+    // ↑: volta uma entrada. `current` é o texto do editor, guardado se for a primeira volta.
+    fn up(&mut self, current: &str) -> Option<String> {
+        if self.items.is_empty() {
+            return None;
+        }
+        let next = match self.pos {
+            None => {
+                self.draft = current.to_string();
+                self.items.len() - 1
+            }
+            Some(p) => p.saturating_sub(1),
+        };
+        self.pos = Some(next);
+        Some(self.items[next].clone())
+    }
+
+    // ↓: avança uma entrada; depois da última, volta ao texto que estava sendo digitado.
+    fn down(&mut self) -> Option<String> {
+        let p = self.pos?;
+        if p + 1 < self.items.len() {
+            self.pos = Some(p + 1);
+            Some(self.items[p + 1].clone())
+        } else {
+            self.pos = None;
+            Some(std::mem::take(&mut self.draft))
+        }
+    }
+
+    // Editar um item recuperado o torna o texto atual, sem voltar a navegar a partir dele.
+    fn edited(&mut self) {
+        self.pos = None;
+    }
+}
+
 // Um turno em andamento.
 struct Work {
     started: Instant,
@@ -211,6 +264,7 @@ struct App {
     // Altura atual da área fixa e item escolhido no menu de comandos.
     height: u16,
     menu_index: usize,
+    history: History,
 }
 
 // Roda a interface até o usuário sair. `make_session` roda na thread do agente.
@@ -247,6 +301,7 @@ where
         cancel,
         height,
         menu_index: 0,
+        history: History::default(),
     };
     let result = app.event_loop();
 
@@ -349,6 +404,23 @@ impl App {
         }
 
         let menu = self.menu_matches();
+        if menu.is_empty() && self.work.is_none() {
+            let row = self.editor.cursor().0;
+            let last_row = self.editor.lines().len().saturating_sub(1);
+            let recalled = match key.code {
+                KeyCode::Up if row == 0 => {
+                    let current = self.editor.lines().join("\n");
+                    self.history.up(&current)
+                }
+                KeyCode::Down if row == last_row => self.history.down(),
+                _ => None,
+            };
+            if let Some(text) = recalled {
+                self.editor = new_editor();
+                self.editor.insert_str(text);
+                return Ok(false);
+            }
+        }
         if !menu.is_empty() {
             let n = menu.len();
             let chosen = self.menu_index.min(n - 1);
@@ -405,6 +477,7 @@ impl App {
             _ => {
                 self.editor.input(key);
                 self.menu_index = 0;
+                self.history.edited();
             }
         }
         Ok(false)
@@ -420,6 +493,7 @@ impl App {
     // Envia o texto do editor: comando `/` ou tarefa para o agente. Devolve `true` para sair.
     fn submit(&mut self, text: &str) -> io::Result<bool> {
         self.editor = new_editor();
+        self.history.push(text);
         let command = COMMANDS.iter().find(|c| c.is(text));
         match text {
             _ if command.is_some_and(|c| c.name == "/exit") => return Ok(true),
@@ -551,7 +625,7 @@ impl App {
         lines.push(note("Digite uma tarefa. Digite / para ver os comandos."));
         lines.push(Line::default());
         if self.settings.auto_yes {
-            lines.insert(lines.len() - 1, Line::from(Span::styled("⚠ --yes ativo: edições serão aplicadas sem confirmação", fg(YELLOW))));
+            lines.insert(lines.len() - 1, aviso_line("--yes ativo: edições serão aplicadas sem confirmação"));
         }
         if self.settings.think.load(Ordering::Relaxed) {
             let at = lines.len() - 1;
@@ -563,7 +637,7 @@ impl App {
     // Aviso em amarelo, quebrado na largura da janela.
     fn warning(&mut self, text: &str) -> io::Result<Vec<Line<'static>>> {
         let width = self.width()?;
-        Ok(markdown::plain(text, width, Span::styled("  ⚠ ", fg(YELLOW)), fg(YELLOW), &palette()))
+        Ok(markdown::plain(text, width, Span::styled("  aviso: ", bold(ORANGE)), fg(ORANGE), &palette()))
     }
 
     // Prévia de uma alteração, com diff colorido, antes de pedir a decisão.
@@ -628,11 +702,16 @@ impl App {
             });
         }
         for w in report.warnings() {
-            lines.push(Line::from(Span::styled(format!("  ⚠ {w}"), fg(YELLOW))));
+            lines.push(aviso_line(&w));
         }
         lines.push(Line::default());
         self.print(lines)
     }
+}
+
+// Aviso: rótulo "aviso:" em laranja, sem glifo.
+fn aviso_line(text: &str) -> Line<'static> {
+    Line::from(vec![Span::styled("  aviso: ", bold(ORANGE)), Span::styled(text.to_string(), fg(ORANGE))])
 }
 
 // Linha cinza com o recuo padrão.
@@ -829,6 +908,33 @@ mod tests {
         assert!(lines[4].starts_with("› /exit"), "{lines:?}");
         // Sem correspondência, não há menu.
         assert_eq!(screen_with(100, "/zzz", None, None, false).len(), 5);
+    }
+
+    #[test]
+    fn history_walks_back_and_forward_and_restores_the_draft() {
+        let mut h = History::default();
+        assert_eq!(h.up("rascunho"), None, "sem histórico, nada muda");
+        h.push("primeira");
+        h.push("segunda");
+        h.push("segunda");
+        assert_eq!(h.items.len(), 2, "repetida em seguida não entra de novo");
+        assert_eq!(h.up("digitando"), Some("segunda".into()));
+        assert_eq!(h.up("segunda"), Some("primeira".into()));
+        assert_eq!(h.up("primeira"), Some("primeira".into()), "para no começo");
+        assert_eq!(h.down(), Some("segunda".into()));
+        assert_eq!(h.down(), Some("digitando".into()), "volta ao rascunho");
+        assert_eq!(h.down(), None, "fora do histórico, nada muda");
+    }
+
+    #[test]
+    fn editing_a_recalled_item_starts_a_new_walk_from_the_end() {
+        let mut h = History::default();
+        h.push("a");
+        h.push("b");
+        assert_eq!(h.up(""), Some("b".into()));
+        h.edited();
+        assert_eq!(h.up("b mudado"), Some("b".into()));
+        assert_eq!(h.down(), Some("b mudado".into()), "o texto editado vira o rascunho");
     }
 
     #[test]
