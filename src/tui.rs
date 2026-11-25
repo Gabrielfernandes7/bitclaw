@@ -58,10 +58,10 @@ struct Cmd {
 }
 
 const COMMANDS: [Cmd; 4] = [
-    Cmd { name: "/help", aliases: &["/ajuda"], desc: "mostra os comandos e as teclas" },
-    Cmd { name: "/clear", aliases: &["/limpar-contexto"], desc: "apaga o histórico e mantém o prompt do sistema" },
+    Cmd { name: "/help", aliases: &[], desc: "mostra os comandos e as teclas" },
+    Cmd { name: "/clear", aliases: &[], desc: "apaga o histórico e mantém o prompt do sistema" },
     Cmd { name: "/think", aliases: &[], desc: "liga ou desliga o raciocínio do modelo (gasta mais contexto)" },
-    Cmd { name: "/exit", aliases: &["/quit", "/sair"], desc: "encerra o BitClaw" },
+    Cmd { name: "/exit", aliases: &["/quit"], desc: "encerra o BitClaw" },
 ];
 
 impl Cmd {
@@ -899,12 +899,11 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_filters_by_name_and_by_old_alias() {
+    fn the_menu_filters_by_name() {
         let lines = screen_with(100, "/cl", None, None, false);
         assert_eq!(lines.len(), 6);
         assert!(lines[4].starts_with("› /clear"), "{lines:?}");
-        // O apelido antigo em português também encontra o comando.
-        let lines = screen_with(100, "/sa", None, None, false);
+        let lines = screen_with(100, "/ex", None, None, false);
         assert!(lines[4].starts_with("› /exit"), "{lines:?}");
         // Sem correspondência, não há menu.
         assert_eq!(screen_with(100, "/zzz", None, None, false).len(), 5);
@@ -960,13 +959,14 @@ mod tests {
     }
 
     #[test]
-    fn old_portuguese_names_still_resolve_to_the_commands() {
+    fn only_english_command_names_resolve() {
         let name = |t: &str| COMMANDS.iter().find(|c| c.is(t)).map(|c| c.name);
-        assert_eq!(name("/limpar-contexto"), Some("/clear"));
-        assert_eq!(name("/sair"), Some("/exit"));
-        assert_eq!(name("/ajuda"), Some("/help"));
         assert_eq!(name("/clear"), Some("/clear"));
+        assert_eq!(name("/quit"), Some("/exit"));
+        assert_eq!(name("/limpar-contexto"), None);
         assert_eq!(name("/limpar"), None);
+        assert_eq!(name("/sair"), None);
+        assert_eq!(name("/ajuda"), None);
     }
 
     #[test]

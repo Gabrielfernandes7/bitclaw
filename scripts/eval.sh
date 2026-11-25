@@ -56,7 +56,7 @@ for model in "${MODELS[@]}"; do
       (cd "$dir" && seed "$task")
       log="$dir.log"
       start=$(date +%s)
-      printf '%s\n/sair\n' "$(prompt "$task")" | "$BIN" --dir "$dir" --model "$model" --yes >"$log" 2>&1
+      printf '%s\n/exit\n' "$(prompt "$task")" | "$BIN" --dir "$dir" --model "$model" --yes >"$log" 2>&1
       secs=$(( $(date +%s) - start ))
       result=FAIL
       (cd "$dir" && check "$task" "$log") && result=PASS

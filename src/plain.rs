@@ -68,7 +68,7 @@ pub fn run(session: &mut Session, header: &[String], auto_yes: bool, think: &Arc
         let input = line.trim();
         match input {
             "" => continue,
-            "/exit" | "/quit" | "/sair" => break,
+            "/exit" | "/quit" => break,
             "/think" => {
                 let on = !think.fetch_xor(true, Ordering::Relaxed);
                 if on {
@@ -78,7 +78,7 @@ pub fn run(session: &mut Session, header: &[String], auto_yes: bool, think: &Arc
                 }
                 continue;
             }
-            "/clear" | "/limpar-contexto" => {
+            "/clear" => {
                 session.clear();
                 println!("contexto limpo; o prompt do sistema foi mantido.\n");
                 continue;
