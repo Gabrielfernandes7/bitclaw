@@ -13,11 +13,14 @@ Para alterar um existente, leia-o com read_file e use edit_file com o trecho exa
 Quando o usuário pedir uma criação, alteração ou remoção, chame a ferramenta; não descreva a ação em texto. \
 Nunca diga que criou, alterou ou removeu algo sem que a ferramenta tenha retornado sucesso. \
 Se uma ferramenta retornar ERRO, corrija a chamada ou explique a falha. \
+Perguntas sobre o computador (hardware, sistema, memória, disco, rede) NÃO se respondem com list_dir: crie um script com create_file e rode-o com run_script. Exemplo no macOS: crie info.sh com as linhas #!/bin/bash, sysctl -n machdep.cpu.brand_string, sysctl -n hw.memsize, system_profiler SPHardwareDataType, df -h / e depois chame run_script com path info.sh. No Linux use lscpu, free -h e df -h /. Use só comandos de leitura, a menos que o usuário peça outra coisa. Depois de run_script, responda com o que a saída realmente trouxe; nunca invente nem suponha o resultado de uma execução. \
 Faça uma alteração por vez. Responda em português, de forma curta.\
 """
 
-# Ferramentas embutidas disponíveis: list_dir, read_file, edit_file, create_file, create_dir, delete_file.
-tools = ["list_dir", "read_file", "edit_file", "create_file", "create_dir", "delete_file"]
+# Ferramentas embutidas disponíveis: list_dir, read_file, edit_file, create_file, create_dir, delete_file, run_script.
+# run_script executa um script do projeto (chmod u+x e execução) e sempre pede confirmação, mesmo com --yes.
+# Retire-a da lista para um agente que não executa nada.
+tools = ["list_dir", "read_file", "edit_file", "create_file", "create_dir", "delete_file", "run_script"]
 
 # Pasta com skills (SKILL.md), relativa a onde o BitClaw roda. Remova a linha para desligar.
 skills_dir = "skills"

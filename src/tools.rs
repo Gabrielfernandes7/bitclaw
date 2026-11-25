@@ -1,5 +1,5 @@
-//! Ferramentas de arquivo do agente (list_dir, read_file, edit_file, create_file, create_dir e
-//! delete_file), a aprovação das alterações e o backup do que é sobrescrito.
+//! Ferramentas do agente (list_dir, read_file, edit_file, create_file, create_dir, delete_file e
+//! run_script), a aprovação das alterações e o backup do que é sobrescrito.
 
 use crate::sandbox::resolve;
 use serde_json::{json, Value};
@@ -61,14 +61,24 @@ pub struct Preview {
 // Injetado para que o core não leia o stdin nem imprima nada.
 pub trait Approver {
     fn approve(&self, preview: &Preview) -> bool;
+
+    // Decide se um script pode ser executado. Por padrão pergunta como qualquer alteração; quem
+    // aprova tudo sem olhar (`--yes`) deve sobrescrever isto: código nunca roda sem alguém ver.
+    fn approve_run(&self, preview: &Preview) -> bool {
+        self.approve(preview)
+    }
 }
 
-// Aprova tudo (uso com `--yes` e testes).
+// Aprova todas as alterações (uso com testes). Não aprova execuções de script.
 pub struct AutoApprover;
 
 impl Approver for AutoApprover {
     fn approve(&self, _preview: &Preview) -> bool {
         true
+    }
+
+    fn approve_run(&self, _preview: &Preview) -> bool {
+        false
     }
 }
 
@@ -162,7 +172,8 @@ impl Registry {
 }
 
 // Nomes das ferramentas embutidas, na ordem padrão.
-pub const BUILTIN_TOOLS: &[&str] = &["list_dir", "read_file", "edit_file", "create_file", "create_dir", "delete_file"];
+pub const BUILTIN_TOOLS: &[&str] =
+    &["list_dir", "read_file", "edit_file", "create_file", "create_dir", "delete_file", "run_script"];
 
 // Constrói uma ferramenta embutida pelo nome. Nome desconhecido devolve `None`.
 fn builtin(name: &str) -> Option<Box<dyn Tool>> {
@@ -173,15 +184,16 @@ fn builtin(name: &str) -> Option<Box<dyn Tool>> {
         "create_file" => Some(Box::new(CreateFile)),
         "create_dir" => Some(Box::new(CreateDir)),
         "delete_file" => Some(Box::new(DeleteFile)),
+        "run_script" => Some(Box::new(crate::script::RunScript)),
         _ => None,
     }
 }
 
-fn wrap(result: Result<Outcome, String>) -> Outcome {
+pub(crate) fn wrap(result: Result<Outcome, String>) -> Outcome {
     result.unwrap_or_else(Outcome::Error)
 }
 
-fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
+pub(crate) fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args.get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| format!("argumento '{key}' ausente ou inválido"))
