@@ -16,6 +16,8 @@
 pub mod agent;
 pub mod config;
 pub mod context;
+pub mod init;
+pub mod models;
 pub mod ollama;
 pub mod sandbox;
 pub mod session;

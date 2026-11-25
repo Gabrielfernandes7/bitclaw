@@ -140,6 +140,17 @@ impl Session {
         result
     }
 
+    // `/init`: cria o AGENTS.md do projeto, depois de aprovação. Não sobrescreve um arquivo existente.
+    pub fn init_agents(&self) -> Result<String, String> {
+        crate::init::write(&self.root, self.approver.as_ref())
+    }
+
+    // Troca o modelo no meio da conversa. O histórico é mensagens neutras de provedor, então segue
+    // com a sessão; a próxima tarefa vai para o novo modelo.
+    pub fn set_model(&mut self, model: Box<dyn crate::agent::ChatModel>) {
+        self.model = model;
+    }
+
     // Uso atual da janela de contexto.
     pub fn usage(&self) -> Usage {
         self.ctx.usage(&self.messages, &self.registry.schemas())
@@ -167,6 +178,7 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::fs;
+    use std::rc::Rc;
 
     struct Scripted(RefCell<VecDeque<Value>>);
 
@@ -283,6 +295,55 @@ url = "http://unused"
         let report = s.submit("crie a.txt", &Silent).unwrap();
         assert!(report.changed());
         assert_eq!(fs::read_to_string(s.root().join("a.txt")).unwrap(), "oi");
+    }
+
+    // Modelo que anota o tamanho do histórico que recebe, para provar que a conversa seguiu com ele.
+    struct Recording {
+        replies: RefCell<VecDeque<Value>>,
+        seen: Rc<RefCell<Vec<Vec<String>>>>,
+    }
+
+    impl ChatModel for Recording {
+        fn complete(&self, messages: &[Value], _t: &Value) -> Result<Reply, String> {
+            let roles: Vec<String> = messages
+                .iter()
+                .map(|m| m.get("content").and_then(Value::as_str).unwrap_or("").to_string())
+                .collect();
+            self.seen.borrow_mut().push(roles);
+            let message = self.replies.borrow_mut().pop_front().ok_or("roteiro esgotado")?;
+            Ok(Reply { message, prompt_tokens: None })
+        }
+    }
+
+    #[test]
+    fn switching_model_mid_conversation_keeps_history_and_tools() {
+        let dir = tempdir("switch");
+        let first = scripted(vec![json!({"role": "assistant", "content": "primeira resposta"})]);
+        let mut s = Session::from_config(&config(""), first, Box::new(AutoApprover), &dir).unwrap();
+        s.submit("primeira tarefa", &Silent).unwrap();
+
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        s.set_model(Box::new(Recording {
+            replies: RefCell::new(
+                vec![
+                    json!({"role": "assistant", "content": "", "tool_calls": [
+                        {"function": {"name": "create_file", "arguments": {"path": "b.txt", "content": "depois"}}}
+                    ]}),
+                    json!({"role": "assistant", "content": "Pronto."}),
+                ]
+                .into(),
+            ),
+            seen: Rc::clone(&seen),
+        }));
+        let report = s.submit("segunda tarefa", &Silent).unwrap();
+
+        // O novo modelo recebeu a primeira troca da conversa antes da nova tarefa.
+        let first_call = &seen.borrow()[0];
+        assert!(first_call.contains(&"primeira tarefa".to_string()), "{first_call:?}");
+        assert!(first_call.contains(&"primeira resposta".to_string()), "{first_call:?}");
+        // E as ferramentas continuam funcionando depois da troca.
+        assert!(report.changed());
+        assert_eq!(fs::read_to_string(s.root().join("b.txt")).unwrap(), "depois");
     }
 
     #[test]

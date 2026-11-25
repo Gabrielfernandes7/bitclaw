@@ -93,7 +93,10 @@ Digite a tarefa em linguagem natural e pressione Enter. A conversa fica no hist�
 Digite `/` para abrir o menu de comandos. Setas escolhem, Tab completa, Enter executa e Esc fecha.
 
 - `/clear`: limpa a tela e apaga o histórico da conversa, como no Claude Code. O prompt do sistema é mantido.
-- `/think`: liga ou desliga o raciocínio do modelo e mostra o aviso de custo. O rodapé mostra `thinking` enquanto estiver ligado. O raciocínio de turnos anteriores sai do histórico, para não gastar contexto.
+- `/model`: abre a lista dos modelos instalados no Ollama, com busca (digite para filtrar, ↑/↓ e enter para escolher). Mostra o ativo, o padrão da configuração e as capacidades de cada um (ferramentas, raciocínio, janela). `/model <id>` troca direto. A troca mantém a conversa; a próxima tarefa vai para o novo modelo. Não é possível trocar durante uma tarefa. A escolha vale só para a sessão: o padrão continua o da configuração.
+- `/effort`: mostra o esforço de raciocínio atual e os níveis que o modelo aceita. `/effort <nível>` aplica, e só aceita níveis que o modelo tem (`off`, `on`, `low`, `medium` ou `high`). Modelos sem raciocínio só aceitam `off`. Ao trocar de modelo, um esforço que não existe no novo modelo cai para o nível mais próximo.
+- `/init`: cria um `AGENTS.md` com o que é verificável no projeto (nome, comandos, estrutura, skills e agentes). Mostra a prévia e só grava depois da sua aprovação. Nunca sobrescreve um arquivo existente. As notas que só você sabe ficam para você preencher.
+- `/think`: atalho de `/effort`. Liga no padrão do modelo ou desliga, e mostra o aviso de custo. O rodapé mostra `esforço <nível>` enquanto estiver ligado. O raciocínio de turnos anteriores sai do histórico, para não gastar contexto.
 - `/help`: mostra os comandos e as teclas.
 - `/exit`: encerra o programa.
 
