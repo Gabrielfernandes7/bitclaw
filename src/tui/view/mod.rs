@@ -6,10 +6,11 @@ mod picker;
 pub(in crate::tui) use self::model_picker::*;
 pub(in crate::tui) use self::picker::*;
 
+use super::commands::keyword_ranges;
 use super::{Cmd, MAX_EDITOR_ROWS, Settings, Work, locked, theme::*};
 use bitclaw::context::Usage;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui_textarea::TextArea;
@@ -65,6 +66,7 @@ pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
     let [mark, text] = Layout::horizontal([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
     f.render_widget(Paragraph::new("›").style(bold(YELLOW)), mark);
     f.render_widget(v.editor, text);
+    highlight_keywords(f, v.editor, text);
 
     // Menu de comandos, abaixo do editor.
     let chosen = v.menu_index.min(v.menu.len().saturating_sub(1));
@@ -116,6 +118,22 @@ pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
         Layout::horizontal([Constraint::Min(1), Constraint::Length(hint.chars().count() as u16)]).areas(footer);
     f.render_widget(Paragraph::new(Line::from(info)), left);
     f.render_widget(Paragraph::new(hint).style(fg(GRAY)), right);
+}
+
+// Destaca no editor as palavras reservadas: o comando e o subcomando de `/model`. Só vale quando a
+// primeira linha está visível, isto é, o editor ainda não rolou.
+fn highlight_keywords(f: &mut Frame, editor: &TextArea<'static>, area: Rect) {
+    let lines = editor.lines();
+    if lines.len() > MAX_EDITOR_ROWS || area.height == 0 {
+        return;
+    }
+    for (start, end) in keyword_ranges(&lines[0]) {
+        let (start, end) = (start as u16, (end as u16).min(area.width));
+        if start >= end {
+            continue;
+        }
+        f.buffer_mut().set_style(Rect::new(area.x + start, area.y, end - start, 1), bold(KEYWORD));
+    }
 }
 
 // Spinner e atividade do turno, ou a pergunta de aprovação.

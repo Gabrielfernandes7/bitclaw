@@ -9,6 +9,7 @@ pub(super) const GRAY: Color = Color::Rgb(150, 150, 150);
 pub(super) const GREEN: Color = Color::Rgb(0, 200, 120);
 pub(super) const RED: Color = Color::Rgb(255, 77, 77);
 pub(super) const ORANGE: Color = Color::Rgb(255, 150, 60);
+pub(super) const KEYWORD: Color = Color::Rgb(110, 200, 255);
 pub(super) const CODE: Color = Color::Rgb(200, 200, 200);
 
 static COLOR: AtomicBool = AtomicBool::new(true);

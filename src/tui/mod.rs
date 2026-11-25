@@ -311,6 +311,8 @@ impl App {
 mod tests {
     use super::*;
     use bitclaw::models::ModelCapabilities;
+    use crate::tui::theme::KEYWORD;
+    use ratatui::style::Color;
     use bitclaw::skills;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -535,5 +537,26 @@ mod tests {
         let footer = screen_with(40, "", None, None, false).pop().unwrap();
         assert!(footer.starts_with("m:1b · Manual · contexto —"));
         assert!(!footer.contains("enter envia"), "{footer}");
+    }
+
+    #[test]
+    fn command_keywords_are_highlighted_in_the_editor() {
+        let cell_colors = |typed: &str| -> Vec<Option<Color>> {
+            let mut editor = new_editor();
+            editor.insert_str(typed);
+            let mut terminal = Terminal::new(TestBackend::new(60, viewport_height(1, 0))).unwrap();
+            let settings = settings(false);
+            let view = View { editor: &editor, work: None, usage: None, settings: &settings, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None };
+            terminal.draw(|f| draw(f, &view)).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            // Linha do editor: status (1) + régua (1) → linha 2; o texto começa na coluna 2.
+            (0..typed.chars().count() as u16).map(|x| buffer[(2 + x, 2)].fg).map(|c| (c != Color::Reset).then_some(c)).collect()
+        };
+        let colors = cell_colors("/model load x");
+        assert!(colors[..6].iter().all(|c| *c == Some(KEYWORD)), "comando: {colors:?}");
+        assert!(colors[7..11].iter().all(|c| *c == Some(KEYWORD)), "subcomando: {colors:?}");
+        assert_eq!(colors[12], None, "o argumento fica normal");
+        assert!(cell_colors("/efort").iter().all(Option::is_none), "comando desconhecido não é destacado");
+        assert!(cell_colors("model").iter().all(Option::is_none), "sem a barra, nada é destacado");
     }
 }
