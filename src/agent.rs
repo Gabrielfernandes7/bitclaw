@@ -165,9 +165,13 @@ pub const INTERRUPTED: &str = "interrompido pelo usuário";
 pub const LOOPING: &str =
     "o modelo entrou em laço e repetiu o mesmo trecho; interrompi a geração. Reformule o pedido ou desligue o raciocínio com /think.";
 
-// Uma linha com pelo menos isto de caracteres, repetida este número de vezes, é laço.
-const LOOP_MIN_LINE: usize = 25;
-const LOOP_LINE_REPEATS: usize = 3;
+// Uma linha com pelo menos isto de letras e dígitos, repetida este número de vezes, é laço. Contar só
+// letras e dígitos deixa de fora separadores como `| --- | --- |` e `=======`, que se repetem à toa.
+const LOOP_MIN_ALNUM: usize = 20;
+// No raciocínio, repetir uma linha longa 3 vezes já é sinal de laço. Na resposta final é mais comum
+// repetir de verdade (linhas de código, itens parecidos), então pede mais.
+const LOOP_REPEATS_THINKING: usize = 3;
+const LOOP_REPEATS_CONTENT: usize = 5;
 // O fim do texto, com este tamanho, já ter aparecido este número de vezes também é laço: é um bloco se repetindo.
 const LOOP_TAIL_CHARS: usize = 160;
 const LOOP_TAIL_REPEATS: usize = 3;
@@ -175,16 +179,20 @@ const LOOP_TAIL_REPEATS: usize = 3;
 const LOOP_CHECK_EVERY: usize = 200;
 
 // O modelo está repetindo o mesmo trecho sem parar? Olha linhas iguais e blocos que se repetem no fim.
-pub fn is_looping(text: &str) -> bool {
+//
+// As repetições não precisam ser seguidas: no laço real que medimos, o modelo chega à resposta,
+// duvida e recomeça a conta, repetindo as mesmas linhas espalhadas pelo texto (a maior repetição
+// seguida era de 1 linha). Exigir linhas consecutivas deixaria esse laço passar.
+pub fn is_looping(text: &str, line_repeats: usize) -> bool {
     let mut seen: HashMap<String, usize> = HashMap::new();
     for line in text.lines() {
         let line = line.trim().to_lowercase();
-        if line.chars().count() < LOOP_MIN_LINE {
+        if line.chars().filter(|c| c.is_alphanumeric()).count() < LOOP_MIN_ALNUM {
             continue;
         }
         let count = seen.entry(line).or_insert(0);
         *count += 1;
-        if *count >= LOOP_LINE_REPEATS {
+        if *count >= line_repeats {
             return true;
         }
     }
@@ -221,7 +229,7 @@ impl LoopGuard {
         self.unchecked += text.len();
         if self.unchecked >= LOOP_CHECK_EVERY {
             self.unchecked = 0;
-            self.looping = is_looping(&self.thinking) || is_looping(&self.content);
+            self.looping = is_looping(&self.thinking, LOOP_REPEATS_THINKING) || is_looping(&self.content, LOOP_REPEATS_CONTENT);
         }
         self.looping
     }
@@ -708,14 +716,37 @@ mod tests {
 
     #[test]
     fn repetition_is_detected_but_ordinary_text_is_not() {
-        assert!(!is_looping(""));
-        assert!(!is_looping("Taxa por máquina por dia = 800 / 144.\nTotal de máquina-dias = 12 * 12 = 144.\nLogo, 16,2 dias."));
+        let think = LOOP_REPEATS_THINKING;
+        assert!(!is_looping("", think));
+        assert!(!is_looping("Taxa por máquina por dia = 800 / 144.\nTotal de máquina-dias = 12 * 12 = 144.\nLogo, 16,2 dias.", think));
         let same_line = "Taxa: 144 máquina-dias produzem 800 apostilas.\n".repeat(3);
-        assert!(is_looping(&same_line), "a mesma linha longa três vezes");
-        assert!(!is_looping(&"Taxa: 144 máquina-dias produzem 800 apostilas.\n".repeat(2)), "repetir o enunciado uma vez é normal");
+        assert!(is_looping(&same_line, think), "a mesma linha longa três vezes");
+        assert!(!is_looping(&"Taxa: 144 máquina-dias produzem 800 apostilas.\n".repeat(2), think), "repetir o enunciado uma vez é normal");
         let block = "Então calculamos de novo o total de dias, passo a passo, sem pressa alguma, e comparamos com o resultado anterior para conferir. ";
-        assert!(is_looping(&block.repeat(6)), "um bloco inteiro se repetindo, mesmo sem quebra de linha");
-        assert!(!is_looping(&"curto\n".repeat(50)), "linhas curtas repetidas não contam");
+        assert!(is_looping(&block.repeat(6), think), "um bloco inteiro se repetindo, mesmo sem quebra de linha");
+        assert!(!is_looping(&"curto\n".repeat(50), think), "linhas curtas repetidas não contam");
+    }
+
+    #[test]
+    fn separators_and_repeated_code_in_an_answer_are_not_a_loop() {
+        let content = LOOP_REPEATS_CONTENT;
+        let table = "| item | valor |\n| --- | --- | --- | --- | --- |\n| a | 1 |\n| --- | --- | --- | --- | --- |\n| b | 2 |\n| --- | --- | --- | --- | --- |\n";
+        assert!(!is_looping(table, LOOP_REPEATS_THINKING), "separador sem letras não conta, nem no raciocínio");
+        assert!(!is_looping(&"echo \"==============================\"\n".repeat(10), content), "régua de sinais não conta");
+        let prose = "Cada máquina imprime a mesma quantidade de apostilas por dia.\n";
+        assert!(!is_looping(&prose.repeat(3), content), "na resposta final, 3 linhas iguais são aceitáveis");
+        assert!(is_looping(&prose.repeat(5), content), "mas 5 já é repetição");
+    }
+
+    #[test]
+    fn the_real_loop_is_scattered_so_consecutive_repeats_would_miss_it() {
+        // Reproduz o formato do laço medido: as mesmas linhas voltam entre outras, nunca em sequência.
+        let round = "12 máquinas imprimem 800 em 12 dias.\nVamos conferir de outro jeito, com calma.\nPortanto, a resposta é 16.2 dias.\nMas talvez o problema espere um número inteiro de dias?\n";
+        let mut text = String::new();
+        for n in 0..3 {
+            text.push_str(&round.replace("jeito", &format!("jeito {n}")));
+        }
+        assert!(is_looping(&text, LOOP_REPEATS_THINKING), "linhas repetidas espalhadas são laço");
     }
 
     #[test]
