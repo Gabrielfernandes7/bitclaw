@@ -1,4 +1,4 @@
-//! Status do turno: o texto com pulso e a torre de blocos de montar que sobe enquanto o agente trabalha.
+//! Status do turno: o glifo que gira e o texto com pulso amarelo enquanto o agente trabalha.
 
 use super::super::Work;
 use super::super::theme::*;
@@ -7,49 +7,6 @@ use ratatui::text::{Line, Span};
 
 // Cores dos blocos, na ordem em que aparecem: amarelo, azul, verde e vermelho.
 const PALETTE: [Color; 4] = [YELLOW, BLUE, GREEN, RED];
-
-// Largura da torre em colunas.
-pub(in crate::tui) const TOWER_WIDTH: u16 = 6;
-
-const STEP_MS: u128 = 140;
-const CYCLE_FRAMES: u128 = 12;
-
-// A torre num instante: a cor de cada linha (de cima para baixo) e se ela está piscando.
-// Em cada ciclo caem três blocos, um após o outro; a torre completa pisca e recomeça.
-// Quadros do ciclo: 0-2 o 1º bloco cai; 3-4 o 2º cai; 5 o 3º encaixa; 6-10 torre completa
-// (6 e 7 piscam); 11 vazio.
-fn tower(ms: u128) -> ([Option<Color>; 3], bool) {
-    let frame = ms / STEP_MS;
-    let (cycle, i) = ((frame / CYCLE_FRAMES) as usize, (frame % CYCLE_FRAMES) as usize);
-    let color = |k: usize| Some(PALETTE[(cycle * 3 + k) % PALETTE.len()]);
-    let mut rows = [None; 3];
-    match i {
-        0..=2 => rows[i] = color(0),
-        3..=4 => {
-            rows[2] = color(0);
-            rows[i - 3] = color(1);
-        }
-        5..=10 => {
-            rows = [color(2), color(1), color(0)];
-        }
-        _ => {}
-    }
-    (rows, (6..=7).contains(&i))
-}
-
-// Três linhas da torre, prontas para desenhar.
-pub(in crate::tui) fn tower_lines(ms: u128) -> Vec<Line<'static>> {
-    let (rows, flash) = tower(ms);
-    rows.iter()
-        .map(|row| match row {
-            Some(color) => {
-                let style = if flash { bold(WHITE) } else { fg(*color) };
-                Line::from(Span::styled("▐████▌", style))
-            }
-            None => Line::from(" ".repeat(TOWER_WIDTH as usize)),
-        })
-        .collect()
-}
 
 // Amarelo que respira: vai do escuro ao claro e volta, num ciclo de 1,4 s.
 fn pulse(ms: u128) -> Color {
@@ -98,50 +55,6 @@ pub(in crate::tui) fn status_line(work: Option<&Work>) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn filled(ms: u128) -> usize {
-        tower(ms).0.iter().flatten().count()
-    }
-
-    #[test]
-    fn the_tower_grows_one_block_at_a_time_then_resets() {
-        let at = |frame: u128| filled(frame * STEP_MS);
-        assert_eq!((at(0), at(2)), (1, 1), "o primeiro bloco cai");
-        assert_eq!((at(3), at(4)), (2, 2), "o segundo cai");
-        assert_eq!((at(5), at(10)), (3, 3), "o terceiro encaixa e a torre fica");
-        assert_eq!(at(11), 0, "recomeça do vazio");
-        assert_eq!(at(12), 1, "e o ciclo se repete");
-    }
-
-    #[test]
-    fn a_block_falls_from_the_top_to_the_bottom() {
-        let row = |frame: u128| tower(frame * STEP_MS).0.iter().position(|c| c.is_some());
-        assert_eq!((row(0), row(1), row(2)), (Some(0), Some(1), Some(2)));
-    }
-
-    #[test]
-    fn colors_run_through_yellow_blue_green_red_across_cycles() {
-        let bottom = |cycle: u128| tower(cycle * CYCLE_FRAMES * STEP_MS + 10 * STEP_MS).0[2];
-        let got: Vec<_> = (0..4).map(bottom).collect();
-        assert_eq!(got, vec![Some(YELLOW), Some(RED), Some(GREEN), Some(BLUE)]);
-        let all: Vec<_> = tower(6 * STEP_MS).0.to_vec();
-        assert_eq!(all, vec![Some(GREEN), Some(BLUE), Some(YELLOW)], "1º ciclo: amarelo, azul, verde de baixo para cima");
-    }
-
-    #[test]
-    fn the_finished_tower_flashes_briefly() {
-        assert!(tower(6 * STEP_MS).1 && tower(7 * STEP_MS).1);
-        assert!(!tower(5 * STEP_MS).1 && !tower(8 * STEP_MS).1);
-    }
-
-    #[test]
-    fn tower_lines_are_always_three_rows_of_the_same_width() {
-        for ms in (0..6000).step_by(70) {
-            let lines = tower_lines(ms);
-            assert_eq!(lines.len(), 3);
-            assert!(lines.iter().all(|l| l.width() == TOWER_WIDTH as usize), "em {ms} ms");
-        }
-    }
 
     #[test]
     fn the_pulse_stays_between_dark_and_bright_yellow() {

@@ -100,16 +100,6 @@ pub(in crate::tui) fn draw(f: &mut Frame, v: &View) {
         }
         None => status,
     };
-    // Enquanto o agente trabalha, uma torre de blocos de montar sobe ao lado do texto.
-    let text_area = match v.work {
-        Some(w) if w.approval.is_none() && text_area.width > TOWER_WIDTH + 14 => {
-            let [tower, rest] =
-                Layout::horizontal([Constraint::Length(TOWER_WIDTH + 2), Constraint::Min(0)]).areas(text_area);
-            f.render_widget(Paragraph::new(tower_lines(w.started.elapsed().as_millis())), tower);
-            rest
-        }
-        _ => text_area,
-    };
     if v.work.is_none() {
         // Ocioso: o nome, o projeto e o modelo ao lado do mascote.
         let active = locked(&v.settings.model).id.clone();
