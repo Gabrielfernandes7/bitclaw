@@ -1,7 +1,7 @@
 //! Modo simples: quando a entrada ou a saída não é um terminal (pipes, scripts), o BitClaw lê
 //! uma tarefa por linha e escreve texto puro, sem cores nem interface interativa.
 
-use crate::brand;
+use super::brand;
 use bitclaw::agent::{Progress, TurnReport};
 use bitclaw::models::{Effort, ModelInfo, SharedEffort};
 use bitclaw::session::Session;

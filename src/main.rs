@@ -1,9 +1,6 @@
 //! Binário do BitClaw: lê a configuração, monta as peças (adaptador do Ollama, aprovação,
 //! interface) e abre o terminal. A lógica do agente fica na biblioteca.
 
-mod brand;
-mod markdown;
-mod plain;
 mod tui;
 
 use bitclaw::agent::ChatModel;
@@ -168,12 +165,12 @@ fn run() -> Result<(), String> {
         )
     } else {
         let approver: Box<dyn Approver> =
-            if args.auto_yes { Box::new(AutoApprover) } else { Box::new(plain::StdinApprover) };
+            if args.auto_yes { Box::new(AutoApprover) } else { Box::new(tui::plain::StdinApprover) };
         let client = build_client(&cfg, &default_info, &effort)?;
         let mut session = Session::from_config(&cfg, Box::new(client), approver, &root)?.with_skills(skills, skills::new_disabled());
         let mut header = vec![cfg.name.clone()];
         header.extend(info);
-        plain::run(&mut session, &header, args.auto_yes, &active, &effort, &skill_lines)
+        tui::plain::run(&mut session, &header, args.auto_yes, &active, &effort, &skill_lines)
     }
 }
 

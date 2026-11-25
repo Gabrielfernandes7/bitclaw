@@ -6,8 +6,11 @@
 //! O agente roda numa thread própria e fala com a interface por canais. Só este módulo escreve
 //! na tela: a biblioteca continua sem imprimir nada.
 
-use crate::brand;
-use crate::markdown::{self, Palette};
+mod brand;
+mod markdown;
+pub mod plain;
+
+use self::markdown::Palette;
 use bitclaw::agent::{ChatModel, INTERRUPTED, Progress, TurnReport};
 use bitclaw::models::{Effort, ModelCapabilities, ModelCatalog, ModelInfo, Reasoning, SharedEffort};
 use bitclaw::context::Usage;
