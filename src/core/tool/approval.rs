@@ -16,6 +16,13 @@ pub struct Preview {
     pub lines: Vec<PreviewLine>,
 }
 
+impl Preview {
+    // Remoção de arquivo: a prévia se chama `remover arquivo …`. Fica fora de qualquer aprovação em lote.
+    pub fn is_removal(&self) -> bool {
+        self.title.starts_with("remover ")
+    }
+}
+
 // Decide se uma alteração proposta pode ser aplicada. Recebe a prévia para mostrar ao usuário.
 // Injetado para que o core não leia o stdin nem imprima nada.
 pub trait Approver {
@@ -38,5 +45,22 @@ impl Approver for AutoApprover {
 
     fn approve_run(&self, _preview: &Preview) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn preview(title: &str) -> Preview {
+        Preview { title: title.into(), lines: Vec::new() }
+    }
+
+    #[test]
+    fn only_removals_are_removals() {
+        assert!(preview("remover arquivo a.txt").is_removal());
+        assert!(!preview("edição proposta em a.txt").is_removal());
+        assert!(!preview("nova pasta docs").is_removal());
+        assert!(!preview("executar scripts/x.sh").is_removal());
     }
 }
