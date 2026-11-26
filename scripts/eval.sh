@@ -13,7 +13,7 @@ if [ ${#MODELS[@]} -eq 0 ]; then
   MODELS=(qwen2.5-coder:3b nemotron-3-nano:4b-mlx)
 fi
 REPEATS="${REPEATS:-3}"
-TASKS=(criar_txt criar_py editar ler_responder nao_alterar)
+TASKS=(criar_txt criar_py editar ler_responder responder_fiel nao_alterar)
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/bitclaw-eval.XXXXXX")"
 
 (cd "$ROOT" && cargo build --quiet) || { echo "build falhou"; exit 1; }
@@ -23,6 +23,7 @@ seed() {
   case "$1" in
     editar) printf 'print(soma(3, 4))\n' > calc.py ;;
     ler_responder) printf 'A capital do Brasil é Brasília.\n' > notas.txt ;;
+    responder_fiel) printf 'O codigo secreto e 4817.\n' > notas.txt ;;
     nao_alterar) printf 'x\n' > a.txt ;;
   esac
 }
@@ -32,15 +33,19 @@ prompt() {
     criar_py) echo "crie um arquivo fib.py com uma função fibonacci(n) que retorna o n-ésimo termo" ;;
     editar) echo "em calc.py troque soma(3, 4) por soma(10, 20)" ;;
     ler_responder) echo "leia notas.txt e diga qual é a capital do Brasil" ;;
+    responder_fiel) echo "leia notas.txt e diga qual é o código secreto" ;;
     nao_alterar) echo "liste os arquivos do diretório. não altere nada" ;;
   esac
 }
+# Resposta final: o texto depois da última linha de ferramenta ('  · ', '  ✓' ou '  ✗') do log.
+answer() { awk '/^  [·✓✗] /{buf=""; next} NF{buf=buf" "$0} END{print buf}' "$1"; }
 check() {  # $1 = tarefa, $2 = log; executado dentro do projeto
   case "$1" in
     criar_txt) grep -q "ola mundo" hello.txt 2>/dev/null ;;
     criar_py) grep -q "def fibonacci" fib.py 2>/dev/null ;;
     editar) grep -q "soma(10, 20)" calc.py 2>/dev/null && ! grep -q "soma(3, 4)" calc.py ;;
     ler_responder) grep -qi "brasília" "$2" ;;
+    responder_fiel) answer "$2" | grep -q "4817" ;;
     nao_alterar) [ "$(cat a.txt 2>/dev/null)" = "x" ] && [ "$(ls -A | tr '\n' ' ')" = "a.txt " ] ;;
   esac
 }
