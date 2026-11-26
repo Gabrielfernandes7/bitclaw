@@ -1,7 +1,7 @@
-# Mesmo agente do BitClaw, usando o OpenRouter.
-# export OPENROUTER_API_KEY=...   e depois:   cargo run -- --config agents/openrouter.toml
+# Agente padrão do BitClaw. Executado com: cargo run -- --config agents/openrouter.toml
+# Outro agente: cargo run -- --config caminho/do/agente.toml
 
-name = "BitClaw (OpenRouter)"
+name = "BitClaw"
 
 system_prompt = """\
 Você é o BitClaw, um assistente que lê e altera arquivos de um projeto local. \
@@ -27,15 +27,15 @@ skills_dir = "skills"
 
 [model]
 provider = "openrouter"
-# Qualquer modelo do OpenRouter que chame ferramentas. Use /model na TUI para ver a lista.
-name = "openai/gpt-4o-mini"
-# Orçamento do histórico. No OpenRouter a janela real é a do modelo.
-context_window = 128000
+name = "baidu/ernie-5.5-flash-preview:free"
+# Janela de contexto, em tokens.
+context_window = 32768
+# Raciocínio do modelo (thinking). Gasta mais tokens e enche a janela de contexto mais rápido;
+# nem todo modelo suporta. Também dá para ligar na hora com --think ou /think.
 think = false
 
 [openrouter]
-# O NOME da variável de ambiente com a chave, nunca a chave.
-api_key_env = "OPENROUTER_API_KEY"
+api_key_env = "OPENROUTER_API_KEY"   # o NOME da variável, nunca a chave
 temperature = 0.1
 
 [limits]

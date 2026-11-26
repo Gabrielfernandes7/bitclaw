@@ -91,6 +91,39 @@ Preencher a tabela antes de decidir a troca.
 
 ## Outros candidatos
 
-Nenhum registrado ainda. Acrescente aqui, com status e fontes, antes de testar.
+Acrescente aqui, com status e fontes, antes de testar.
 
 - https://ollama.com/library/nemotron-3.5-bolt
+
+## FunctionGemma (`functiongemma`, Ollama)
+
+Status: **testado, reprovado na integração atual.** Não é modelo principal.
+
+Fontes: [visão geral](https://gemma.ai/models/functiongemma/), [model card](https://gemma.ai/models/functiongemma/model-card/), [formato](https://gemma.ai/models/functiongemma/formatting/), [blog do Google](https://blog.google/technology/developers/functiongemma/), [Ollama](https://ollama.com/library/functiongemma).
+
+### O que as fontes dizem
+
+- Versão do Gemma 3 270M ajustada para chamada de função. Base para treinar agentes locais que transformam linguagem natural em chamadas de API. Não é feito para diálogo direto.
+- Treinado para chamadas únicas e paralelas. Não há indicação de treino explícito para encadear várias etapas.
+- Usa tokens de controle próprios (`<start_function_call>`, `<end_function_call>` etc.) e declarações de ferramenta em um turno `developer`.
+- Corte de dados: agosto de 2024. Avaliação em inglês. Janela de 32K.
+- Benchmarks (BFCL) são do próprio Google e não foram verificados por nós.
+
+### Diagnóstico (sessão de 25/11/2026)
+
+**Medido**, com Ollama 0.40.18 e `functiongemma` (268M, Q8_0):
+
+| Teste | Resultado |
+| :--- | :--- |
+| `scripts/eval.sh`, 1 execução por tarefa | 1/5. Passou só `nao_alterar`, que passa sem fazer nada. Falhas: ferramenta de nome vazio, recusa em texto ("não posso ajudar com programação"), 79 s sem resultado. |
+| API de chat, prompt mínimo no formato oficial | Sem chamada válida. Loop de `model` e nome de arquivo inventado. |
+| API de chat, prompt do BitClaw com 7 ferramentas | 0 a 1 chamada válida, com argumentos sujos e texto solto. |
+| API crua (`/api/generate`, `raw`), formato oficial, temperatura 0 e 0,1 | **Chamada correta** (`create_file{path: hello.txt, content: ola mundo}`), seguida de repetição em loop. As paradas configuradas (`<end_function_call>`, `<end_of_turn>`) não dispararam. |
+
+**Hipótese principal (não verificada):** o modelo gera o formato certo, mas os tokens de controle não saem como tokens especiais. Por isso a parada não ocorre e o parser do Ollama não extrai a chamada. Verificar no GGUF se esses tokens estão marcados como especiais.
+
+**Não medido:** multi-etapas (`read_file` → `edit_file`). O teste foi inválido, porque o modelo recusou no primeiro passo.
+
+### Decisão
+
+Não entra na avaliação padrão. Reabrir só se a integração com o Ollama passar a gerar chamadas limpas (com parada correta) e, depois, rodar `scripts/eval.sh` de novo.
