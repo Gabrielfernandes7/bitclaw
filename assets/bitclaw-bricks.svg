@@ -1,0 +1,65 @@
+
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 760 330"
+     role="img"
+     aria-labelledby="title desc">
+
+  <title id="title">BitClaw — mascote modular</title>
+  <desc id="desc">Mascote amarelo construído com meio-blocos, encaixando peças coloridas.</desc>
+
+  <rect width="760" height="330" rx="18" fill="#171717"/>
+
+  <!-- Mascote: reprodução vetorial do mapa ASCII de 10 × 3 caracteres -->
+  <g fill="#FFCC00">
+    <path d="
+      M70 90 H122 V116 H70 Z
+      M148 90 H174 V116 H148 Z
+      M226 90 H252 V116 H226 Z
+      M278 90 H330 V116 H278 Z
+
+      M70 116 H330 V142 H70 Z
+
+      M70 142 H122 V168 H70 Z
+      M148 142 H252 V168 H148 Z
+      M278 142 H330 V168 H278 Z
+
+      M70 168 H330 V194 H70 Z
+
+      M122 194 H278 V220 H122 Z
+
+      M96 220 H122 V246 H96 Z
+      M148 220 H174 V246 H148 Z
+      M226 220 H252 V246 H226 Z
+      M278 220 H304 V246 H278 Z
+    "/>
+  </g>
+
+  <!-- Brick vermelho: peça principal sendo encaixada -->
+  <g stroke="#171717" stroke-width="4" stroke-linejoin="round">
+    <path d="M338 172 H354 V158 H438 V218 H354 V204 H338 Z"
+          fill="#F04438"/>
+    <rect x="354" y="136" width="28" height="23" rx="5" fill="#F04438"/>
+    <rect x="400" y="136" width="28" height="23" rx="5" fill="#F04438"/>
+  </g>
+
+  <!-- Brick azul -->
+  <g stroke="#171717" stroke-width="4" stroke-linejoin="round">
+    <rect x="493" y="92" width="90" height="50" rx="5" fill="#3985F5"/>
+    <rect x="510" y="70" width="26" height="24" rx="5" fill="#3985F5"/>
+    <rect x="548" y="70" width="26" height="24" rx="5" fill="#3985F5"/>
+  </g>
+
+  <!-- Brick verde -->
+  <g stroke="#171717" stroke-width="4" stroke-linejoin="round">
+    <rect x="620" y="158" width="82" height="50" rx="5" fill="#36B37E"/>
+    <rect x="646" y="136" width="30" height="24" rx="5" fill="#36B37E"/>
+  </g>
+
+  <!-- Brick roxo -->
+  <g stroke="#171717" stroke-width="4" stroke-linejoin="round">
+    <rect x="493" y="232" width="90" height="50" rx="5" fill="#A47AE0"/>
+    <rect x="510" y="210" width="26" height="24" rx="5" fill="#A47AE0"/>
+    <rect x="548" y="210" width="26" height="24" rx="5" fill="#A47AE0"/>
+  </g>
+
+</svg>
