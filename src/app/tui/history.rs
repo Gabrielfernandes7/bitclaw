@@ -45,6 +45,12 @@ impl History {
         }
     }
 
+    // Se o editor mostra uma entrada recuperada. Um comando recuperado (`/model`) não deve abrir o
+    // menu de `/`, senão ↑ e ↓ passam a andar pelo menu e o histórico fica inacessível.
+    pub(super) fn browsing(&self) -> bool {
+        self.pos.is_some()
+    }
+
     // Editar um item recuperado o torna o texto atual, sem voltar a navegar a partir dele.
     pub(super) fn edited(&mut self) {
         self.pos = None;
@@ -54,6 +60,23 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browsing_lasts_from_the_first_up_until_edit_or_the_end() {
+        let mut h = History::default();
+        h.push("/model");
+        h.push("/effort");
+        assert!(!h.browsing());
+        h.up("");
+        assert!(h.browsing());
+        h.up("");
+        assert!(h.browsing(), "segue navegando em comandos seguidos");
+        h.edited();
+        assert!(!h.browsing());
+        h.up("");
+        h.down();
+        assert!(!h.browsing(), "descer até o fim devolve o editor");
+    }
 
     #[test]
     fn history_walks_back_and_forward_and_restores_the_draft() {

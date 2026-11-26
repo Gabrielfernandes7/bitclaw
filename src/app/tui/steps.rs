@@ -15,21 +15,20 @@ const DETAIL_CHARS: usize = 80;
 // Quantas linhas da saída de um script aparecem na conversa.
 const OUTPUT_LINES: usize = 20;
 
-// Verbos de uma ferramenta: no gerúndio, enquanto roda, e no passado, quando termina.
+// Verbo de uma ferramenta no gerúndio, enquanto roda (`lendo AGENTS.md`).
 struct Verbs {
     doing: &'static str,
-    done: &'static str,
 }
 
 fn verbs(name: &str) -> Option<Verbs> {
     Some(match name {
-        "list_dir" => Verbs { doing: "listando", done: "listou" },
-        "read_file" => Verbs { doing: "lendo", done: "leu" },
-        "edit_file" => Verbs { doing: "editando", done: "editou" },
-        "create_file" => Verbs { doing: "criando", done: "criou" },
-        "create_dir" => Verbs { doing: "criando pasta", done: "criou pasta" },
-        "delete_file" => Verbs { doing: "apagando", done: "apagou" },
-        "run_script" => Verbs { doing: "executando", done: "executou" },
+        "list_dir" => Verbs { doing: "listando" },
+        "read_file" => Verbs { doing: "lendo" },
+        "edit_file" => Verbs { doing: "editando" },
+        "create_file" => Verbs { doing: "criando" },
+        "create_dir" => Verbs { doing: "criando pasta" },
+        "delete_file" => Verbs { doing: "apagando" },
+        "run_script" => Verbs { doing: "executando" },
         _ => return None,
     })
 }
@@ -87,38 +86,77 @@ fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or("").chars().take(DETAIL_CHARS).collect()
 }
 
-// Linha do passo que terminou: `✓ leu AGENTS.md`, `⊘ editando x · recusado` ou `✗ lendo x · motivo`.
-pub(super) fn done(name: &str, args: &Value, result: &StepResult) -> Line<'static> {
-    match result {
-        StepResult::Done => {
-            let finished = match verbs(name) {
-                Some(v) => phrase(v.done, args),
-                None => format!("executou {name}"),
-            };
-            Line::from(vec![Span::raw("  "), Span::styled("✓ ", fg(GREEN)), Span::raw(finished)])
+// Cabeçalho de um grupo: o verbo no passado e o substantivo, no plural quando há mais de um.
+fn group_header(name: &str, n: usize) -> String {
+    let (verb, one, many) = match name {
+        "run_script" => ("executou", "script", "scripts"),
+        "read_file" => ("leu", "arquivo", "arquivos"),
+        "list_dir" => ("listou", "pasta", "pastas"),
+        "edit_file" => ("editou", "arquivo", "arquivos"),
+        "create_file" => ("criou", "arquivo", "arquivos"),
+        "create_dir" => ("criou", "pasta", "pastas"),
+        "delete_file" => ("apagou", "arquivo", "arquivos"),
+        _ => return format!("executou {n} {name}"),
+    };
+    format!("{verb} {n} {}", if n == 1 { one } else { many })
+}
+
+// Uma chamada de ferramenta do grupo: o alvo (ou o nome, sem alvo), com a marca do resultado.
+fn item(name: &str, args: &Value, result: &StepResult) -> Line<'static> {
+    let target = args.get("path").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).unwrap_or(name).to_string();
+    let (mark, color, tail) = match result {
+        StepResult::Done | StepResult::Ran { ok: true, .. } => ("✓ ", GREEN, String::new()),
+        StepResult::Refused(_) => ("⊘ ", YELLOW, " · recusado".to_string()),
+        StepResult::Ran { ok: false, summary, .. } => ("✗ ", RED, format!(" · {summary}")),
+        StepResult::Error(detail) => ("✗ ", RED, format!(" · {detail}")),
+    };
+    Line::from(vec![
+        Span::raw("    ⎿ "),
+        Span::styled(mark, fg(color)),
+        Span::raw(target),
+        Span::styled(tail, fg(GRAY)),
+    ])
+}
+
+// Chamadas seguidas da mesma ferramenta, mostradas como um bloco só: `● executou 2 scripts`, uma linha
+// por chamada e, em script, a saída embaixo. Um bloco fecha quando chega outra coisa na conversa.
+pub(super) struct Group {
+    name: String,
+    items: Vec<(Value, StepResult)>,
+}
+
+impl Group {
+    pub(super) fn new(name: &str) -> Self {
+        Self { name: name.to_string(), items: Vec::new() }
+    }
+
+    pub(super) fn is(&self, name: &str) -> bool {
+        self.name == name
+    }
+
+    pub(super) fn push(&mut self, args: Value, result: StepResult) {
+        self.items.push((args, result));
+    }
+
+    pub(super) fn lines(&self, width: usize) -> Vec<Line<'static>> {
+        let mut out = vec![Line::from(vec![
+            Span::raw("  "),
+            Span::styled("● ", fg(GRAY)),
+            Span::raw(capitalize(&group_header(&self.name, self.items.len()))),
+        ])];
+        for (args, result) in &self.items {
+            out.push(item(&self.name, args, result));
+            out.extend(output_lines(result, width));
         }
-        StepResult::Refused(_) => Line::from(vec![
-            Span::raw("  "),
-            Span::styled("⊘ ", fg(YELLOW)),
-            Span::raw(doing(name, args)),
-            Span::styled(" · recusado", fg(GRAY)),
-        ]),
-        StepResult::Ran { ok: true, .. } => {
-            let finished = phrase(verbs(name).map_or("executou", |v| v.done), args);
-            Line::from(vec![Span::raw("  "), Span::styled("✓ ", fg(GREEN)), Span::raw(finished)])
-        }
-        StepResult::Ran { ok: false, summary, .. } => Line::from(vec![
-            Span::raw("  "),
-            Span::styled("✗ ", fg(RED)),
-            Span::raw(doing(name, args)),
-            Span::styled(format!(" · {summary}"), fg(GRAY)),
-        ]),
-        StepResult::Error(detail) => Line::from(vec![
-            Span::raw("  "),
-            Span::styled("✗ ", fg(RED)),
-            Span::raw(doing(name, args)),
-            Span::styled(format!(" · {detail}"), fg(GRAY)),
-        ]),
+        out
+    }
+}
+
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
     }
 }
 
@@ -160,26 +198,38 @@ mod tests {
     }
 
     #[test]
-    fn a_finished_step_says_what_happened() {
-        let read = json!({"path": "AGENTS.md"});
-        assert_eq!(text(&done("read_file", &read, &StepResult::Done)), "  ✓ leu AGENTS.md");
-        assert_eq!(text(&done("edit_file", &read, &StepResult::Refused(String::new()))), "  ⊘ editando AGENTS.md · recusado");
-        assert_eq!(
-            text(&done("read_file", &read, &StepResult::Error("No such file".into()))),
-            "  ✗ lendo AGENTS.md · No such file"
-        );
+    fn a_group_counts_its_calls_and_lists_each_target() {
+        let mut g = Group::new("read_file");
+        g.push(json!({"path": "AGENTS.md"}), StepResult::Done);
+        g.push(json!({"path": "README.md"}), StepResult::Refused(String::new()));
+        let shown: Vec<String> = g.lines(80).iter().map(text).collect();
+        assert_eq!(shown, vec!["  ● Leu 2 arquivos", "    ⎿ ✓ AGENTS.md", "    ⎿ ⊘ README.md · recusado"]);
+        let mut one = Group::new("list_dir");
+        one.push(json!({"path": "docs/"}), StepResult::Done);
+        assert_eq!(one.lines(80)[0].spans.last().unwrap().content, "Listou 1 pasta");
+        assert!(g.is("read_file") && !g.is("list_dir"));
+    }
+
+    #[test]
+    fn a_failed_call_says_why() {
+        let mut g = Group::new("read_file");
+        g.push(json!({"path": "AGENTS.md"}), StepResult::Error("No such file".into()));
+        assert_eq!(text(&g.lines(80)[1]), "    ⎿ ✗ AGENTS.md · No such file");
     }
 
     #[test]
     fn a_script_run_shows_its_real_output_under_the_step() {
         let args = json!({"path": "ola.sh"});
         let ok = StepResult::from_tool("run_script", &Outcome::Done("código de saída: 0\nOlá, mundo!\nlinha 2".into()));
-        assert_eq!(text(&done("run_script", &args, &ok)), "  ✓ executou ola.sh");
-        let shown: Vec<String> = output_lines(&ok, 80).iter().map(text).collect();
-        assert_eq!(shown, vec!["    │ Olá, mundo!", "    │ linha 2"]);
+        let mut g = Group::new("run_script");
+        g.push(args.clone(), ok.clone());
+        let shown: Vec<String> = g.lines(80).iter().map(text).collect();
+        assert_eq!(shown, vec!["  ● Executou 1 script", "    ⎿ ✓ ola.sh", "    │ Olá, mundo!", "    │ linha 2"]);
 
         let bad = StepResult::from_tool("run_script", &Outcome::Error("saiu com código 3\nantes".into()));
-        assert_eq!(text(&done("run_script", &args, &bad)), "  ✗ executando ola.sh · saiu com código 3");
+        let mut g = Group::new("run_script");
+        g.push(args.clone(), bad.clone());
+        assert_eq!(text(&g.lines(80)[1]), "    ⎿ ✗ ola.sh · saiu com código 3");
         assert_eq!(output_lines(&bad, 80).len(), 1, "a saída da falha também aparece");
 
         let missing = StepResult::from_tool("run_script", &Outcome::Error("ola.sh não existe: crie o script antes com create_file".into()));
@@ -201,7 +251,9 @@ mod tests {
     #[test]
     fn long_failures_are_cut_to_one_line() {
         let long = "x".repeat(200);
-        let line = text(&done("read_file", &json!({}), &StepResult::Error(first_line(&long))));
+        let mut g = Group::new("read_file");
+        g.push(json!({}), StepResult::Error(first_line(&long)));
+        let line = text(&g.lines(80)[1]);
         assert!(line.chars().count() <= DETAIL_CHARS + 20, "{line}");
     }
 }

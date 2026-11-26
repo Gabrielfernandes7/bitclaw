@@ -1,17 +1,22 @@
-//! Interface de terminal do BitClaw, com ratatui em tela cheia.
+//! Interface de terminal do BitClaw, com ratatui em tela cheia, como o Claude Code.
 //!
-//! Tela cheia: o mascote com o nome e o status ficam no topo, a conversa no meio (rola com
-//! PageUp/PageDown e a roda do mouse) e o editor com o rodapé embaixo.
+//! Tela alternativa: o que estava no terminal (o `cargo run`, o shell) some ao abrir e volta ao sair.
+//! A conversa, com o mascote e o cabeçalho como primeiras linhas, ocupa a parte de cima e rola com a
+//! roda do mouse e com PageUp/PageDown; o editor, o rodapé e os painéis ficam fixos embaixo. Com o
+//! mouse capturado o terminal não seleciona sozinho: arrastar na conversa seleciona, e soltar copia.
 //!
 //! O agente roda numa thread própria e fala com a interface por canais. Só este módulo escreve
 //! na tela: a biblioteca continua sem imprimir nada.
 
 pub(crate) mod brand;
+mod clipboard;
 mod commands;
 mod history;
 mod mention;
 mod input;
 mod print;
+mod restart;
+mod transcript;
 mod markdown;
 mod steps;
 mod theme;
@@ -25,22 +30,23 @@ use self::view::*;
 use self::worker::{Command, UiEvent, worker};
 use self::theme::{GRAY, RED, YELLOW, bold, fg, palette};
 use bitclaw::agent::ChatModel;
-use bitclaw::models::{Effort, ModelCatalog, ModelInfo, Reasoning, SharedEffort};
+use bitclaw::models::{ModelCatalog, ModelInfo, Reasoning, SharedEffort};
 use bitclaw::core::options::{Options, SharedOptions};
 use bitclaw::context::Usage;
 use bitclaw::session::Session;
 use bitclaw::skills::{Disabled, Skill};
 use bitclaw::tools::Approver;
+use self::transcript::{Point, Selection, Transcript};
 use crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode,
-    KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyEvent,
+    KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
-use ratatui::layout::{Position, Rect};
+use ratatui::DefaultTerminal;
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::DefaultTerminal;
 use ratatui_textarea::TextArea;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,9 +57,6 @@ use std::time::{Duration, Instant};
 
 // Máximo de linhas do editor. Passando disso, ele rola por dentro.
 const MAX_EDITOR_ROWS: usize = 6;
-
-// Máximo de linhas guardadas na conversa. As mais antigas saem primeiro.
-const MAX_TRANSCRIPT: usize = 20_000;
 
 pub struct Settings {
     pub title: String,
@@ -74,8 +77,8 @@ pub struct Settings {
     pub default_options: Options,
     pub auto_yes: bool,
     pub color: bool,
-    // Captura o mouse, para a roda rolar a conversa e o clique no mascote. Com ela ligada, o terminal
-    // não deixa selecionar texto; por isso vem desligada e liga-se com `--mouse`.
+    // Captura o mouse: a roda rola a conversa e arrastar seleciona e copia. Sem ela (`--no-mouse`), o
+    // terminal seleciona sozinho e a conversa rola só pelo teclado.
     pub mouse: bool,
     // Pasta do projeto, de onde vêm as sugestões de arquivo do `@`.
     pub root: std::path::PathBuf,
@@ -103,6 +106,10 @@ struct Work {
     // Pedido de aprovação aguardando resposta e se ele é para executar um script.
     approval: Option<Sender<bool>>,
     approval_runs: bool,
+    // A decisão pendente aceita `a` (aprovar todas as edições do turno): nem scripts nem remoções.
+    approval_batchable: bool,
+    // O usuário respondeu `a`: as próximas edições do turno passam, mostradas na conversa.
+    approve_all: bool,
     cancelling: bool,
     // Tempo esperando o modelo: o que já fechou e, se ele responde agora, desde quando.
     model_done: Duration,
@@ -120,6 +127,8 @@ impl Work {
             answer: String::new(),
             approval: None,
             approval_runs: false,
+            approval_batchable: false,
+            approve_all: false,
             cancelling: false,
             model_done: Duration::ZERO,
             model_since: (activity == "pensando").then(Instant::now),
@@ -156,10 +165,16 @@ struct App {
     cancel: Arc<AtomicBool>,
     // Item escolhido no menu de comandos.
     menu_index: usize,
-    // A conversa, mostrada entre o cabeçalho e o editor, e quantas linhas ela está rolada para cima
-    // (0 acompanha o fim).
-    transcript: Vec<Line<'static>>,
-    scroll_back: usize,
+    // A conversa, a rolagem e a seleção.
+    transcript: Transcript,
+    // Onde a conversa foi desenhada da última vez, para saber o que o mouse clicou.
+    chat_area: Rect,
+    // Arrastando para selecionar: o botão foi apertado dentro da conversa e ainda não soltou.
+    dragging: bool,
+    // Aviso curto no rodapé (ex.: "copiado") e quando apareceu.
+    flash: Option<(Instant, String)>,
+    // A saudação do mascote está rodando no topo da conversa. Termina sozinha, ou na primeira tecla.
+    greeting: bool,
     history: History,
     // Painel de skills aberto, se houver.
     picker: Option<Picker>,
@@ -167,15 +182,18 @@ struct App {
     model_picker: Option<ModelPicker>,
     // Painel de esforço aberto, se houver.
     effort_panel: Option<EffortPanel>,
-    // Número do mascote em andamento e quantos cliques já houve (decide o próximo número).
+    // O número do mascote em andamento (a saudação de abertura).
     play: Option<(Instant, brand::Mood)>,
-    clicks: usize,
     // `Esc` fechou as sugestões de `@`; voltam ao digitar de novo.
     mention_off: bool,
     // Painel `/status`, se estiver aberto.
     status_panel: Option<StatusPanel>,
     // Turnos, passos e tempo da sessão, mostrados no painel `/status`.
     stats: SessionStats,
+    // Chamadas seguidas da mesma ferramenta, ainda sem ir para a conversa (viram um bloco só).
+    group: Option<steps::Group>,
+    // `/restart-dev` compilou com sucesso: ao sair, reabre o binário novo no lugar deste.
+    restart: bool,
 }
 
 // Roda a interface até o usuário sair. `make_session` roda na thread do agente.
@@ -199,13 +217,13 @@ where
     }
 
     let enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
-    // Tela cheia: a conversa fica entre o cabeçalho e o editor.
+    // Tela cheia na tela alternativa: o terminal de antes volta intacto ao sair.
     let terminal = ratatui::init();
-    let _ = execute!(io::stdout(), EnableBracketedPaste);
-    if settings.mouse {
+    let mouse = settings.mouse;
+    if mouse {
         let _ = execute!(io::stdout(), EnableMouseCapture);
     }
-    let mouse = settings.mouse;
+    let _ = execute!(io::stdout(), EnableBracketedPaste);
     if enhanced {
         let _ = execute!(io::stdout(), PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES));
     }
@@ -220,30 +238,40 @@ where
         events,
         cancel,
         menu_index: 0,
-        transcript: Vec::new(),
-        scroll_back: 0,
+        transcript: Transcript::default(),
+        chat_area: Rect::default(),
+        dragging: false,
+        flash: None,
+        greeting: false,
         history: History::default(),
         picker: None,
         model_picker: None, effort_panel: None,
         // Ao abrir, o mascote faz um dos números, sorteado a cada abertura.
         play: Some((Instant::now(), brand::opening_mood())),
-        clicks: 0,
         mention_off: false,
         status_panel: None,
         stats: SessionStats::new(),
+        group: None,
+        restart: false,
     };
     let result = app.event_loop();
 
     if enhanced {
         let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
     }
+    let _ = execute!(io::stdout(), DisableBracketedPaste);
     if mouse {
         let _ = execute!(io::stdout(), DisableMouseCapture);
     }
-    let _ = execute!(io::stdout(), DisableBracketedPaste);
     ratatui::restore();
+    if result.is_ok() && app.restart {
+        return Err(restart::exec_self());
+    }
     result
 }
+
+// Quanto tempo um aviso curto fica no rodapé.
+const FLASH: Duration = Duration::from_millis(2_500);
 
 fn new_editor() -> TextArea<'static> {
     let mut ta = TextArea::default();
@@ -255,12 +283,22 @@ fn new_editor() -> TextArea<'static> {
 
 impl App {
     fn event_loop(&mut self) -> Result<(), String> {
+        // A abertura é a primeira coisa da conversa. Com espaço para o mascote, ele anima ali mesmo.
+        let width = self.terminal.size().map_err(|e| e.to_string())?.width;
+        self.greeting = mascot_rect(Rect::new(0, 0, width, MASCOT_ROWS)).is_some();
         self.print_header().map_err(|e| e.to_string())?;
         loop {
+            self.animate_greeting().map_err(|e| e.to_string())?;
+            if self.flash.as_ref().is_some_and(|(at, _)| at.elapsed() >= FLASH) {
+                self.flash = None;
+            }
+            let size = self.terminal.size().map_err(|e| e.to_string())?;
+            self.transcript.layout(size.width);
             let menu = self.menu_matches();
             let mentions = self.mention_matches().map(|m| m.entries).unwrap_or_default();
-            let App { terminal, editor, work, usage, settings, menu_index, picker, model_picker, effort_panel, play, transcript, scroll_back, status_panel, stats, .. } = self;
-            let mascot = mascot_for(*play);
+            // O que o modelo gera ao vivo fica embaixo, junto do editor, em até um terço da tela.
+            let live_rows = view::live_lines(self.work.as_ref(), size.width).len().min(usize::from(size.height / 3));
+            let App { terminal, editor, work, usage, settings, menu_index, picker, model_picker, effort_panel, status_panel, stats, transcript, flash, chat_area, .. } = self;
             let view = View {
                 editor,
                 work: work.as_ref(),
@@ -273,12 +311,13 @@ impl App {
                 effort_panel: effort_panel.as_ref(),
                 status_panel: status_panel.as_ref(),
                 stats,
-                mascot,
                 transcript,
-                scroll_back: *scroll_back,
+                flash: flash.as_ref().map(|(_, t)| t.as_str()),
+                live_rows,
                 mentions,
             };
-            terminal.draw(|f| draw(f, &view)).map_err(|e| e.to_string())?;
+            terminal.draw(|f| *chat_area = draw(f, &view)).map_err(|e| e.to_string())?;
+            self.transcript.clamp(usize::from(self.chat_area.height));
             if event::poll(Duration::from_millis(80)).map_err(|e| e.to_string())? {
                 match event::read().map_err(|e| e.to_string())? {
                     Event::Key(key) if key.kind != KeyEventKind::Release => {
@@ -290,6 +329,7 @@ impl App {
                     Event::Paste(text) if self.work.as_ref().is_none_or(|w| w.approval.is_none()) => {
                         self.editor.insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
                     }
+                    // Redimensionar não precisa de nada: o próximo desenho usa a nova largura e reflui a conversa.
                     _ => {}
                 }
             }
@@ -297,42 +337,111 @@ impl App {
         }
     }
 
-    // Comandos que combinam com o que está sendo digitado. Só aparecem com o editor ocioso e
-    // uma única palavra começando por `/`.
-    // Clique no mascote: dispara o próximo número. Ignora cliques com um painel aberto.
-    fn on_mouse(&mut self, event: MouseEvent) {
-        if self.picker.is_some() || self.model_picker.is_some() || self.effort_panel.is_some() || self.status_panel.is_some() {
-            return;
-        }
-        match event.kind {
-            MouseEventKind::ScrollUp => return self.scroll_by(3),
-            MouseEventKind::ScrollDown => return self.scroll_by(-3),
-            MouseEventKind::Down(MouseButton::Left) => {}
-            _ => return,
-        }
-        let area = self.terminal.get_frame().area();
-        let Some(rect) = mascot_rect(Rect::new(area.x, area.y + TOP_GAP, area.width, MASCOT_ROWS)) else { return };
-        if rect.contains(Position::new(event.column, event.row)) {
-            let mood = brand::TRICKS[self.clicks % brand::TRICKS.len()];
-            self.clicks += 1;
-            self.play = Some((Instant::now(), mood));
+    // Roda da mouse rola a conversa; arrastar nela seleciona e, ao soltar, copia.
+    fn on_mouse(&mut self, ev: MouseEvent) {
+        let chat = self.chat_area;
+        let height = usize::from(chat.height);
+        match ev.kind {
+            MouseEventKind::ScrollUp => self.transcript.scroll(3, height),
+            MouseEventKind::ScrollDown => self.transcript.scroll(-3, height),
+            MouseEventKind::Down(MouseButton::Left) => {
+                let inside = ev.row >= chat.y && ev.row < chat.y + chat.height && ev.column >= chat.x;
+                self.transcript.selection = None;
+                self.dragging = inside;
+                if inside {
+                    let p = self.point_at(ev.column, ev.row);
+                    self.transcript.selection = Some(Selection { anchor: p, head: p });
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.dragging => {
+                // Arrastar além da borda rola a conversa, para selecionar mais do que cabe na tela.
+                if ev.row < chat.y {
+                    self.transcript.scroll(1, height);
+                } else if ev.row >= chat.y + chat.height {
+                    self.transcript.scroll(-1, height);
+                }
+                let row = ev.row.clamp(chat.y, (chat.y + chat.height).saturating_sub(1));
+                let p = self.point_at(ev.column, row);
+                if let Some(sel) = &mut self.transcript.selection {
+                    sel.head = p;
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.dragging => {
+                self.dragging = false;
+                self.copy_selection();
+            }
+            _ => {}
         }
     }
 
+    // A posição na conversa sob a célula (`col`, `row`) da tela.
+    fn point_at(&self, col: u16, row: u16) -> Point {
+        let first = self.transcript.first_visible(usize::from(self.chat_area.height));
+        Point { row: first + usize::from(row.saturating_sub(self.chat_area.y)), col: usize::from(col.saturating_sub(self.chat_area.x)) }
+    }
+
+    // Copia o que está selecionado e avisa no rodapé. Um clique sem arrastar só limpa a seleção.
+    pub(super) fn copy_selection(&mut self) {
+        match self.transcript.selected_text() {
+            Some(text) => {
+                let how = clipboard::copy(&text);
+                self.flash = Some((Instant::now(), format!("{how} · {} caracteres", text.chars().count())));
+            }
+            None => self.transcript.selection = None,
+        }
+    }
+
+    // Enquanto o mascote faz o número de abertura, a primeira linha da conversa acompanha o quadro.
+    fn animate_greeting(&mut self) -> io::Result<()> {
+        if !self.greeting {
+            return Ok(());
+        }
+        if self.play.is_none_or(|(at, _)| at.elapsed().as_millis() >= brand::TRICK_MS) {
+            return self.finish_greeting();
+        }
+        let width = self.terminal.size()?.width;
+        let (banner, _) = view::banner_lines(&self.settings, &self.stats, mascot_for(self.play), width);
+        self.transcript.replace_head(banner.into_iter().map(|l| print::clip_line(l, usize::from(width))).collect());
+        Ok(())
+    }
+
+    // Imprime o bloco de passos que estiver aberto, se houver, e o fecha.
+    fn flush_group(&mut self) -> Result<(), String> {
+        let Some(group) = self.group.take() else { return Ok(()) };
+        let width = self.width().map_err(|e| e.to_string())?;
+        self.print(group.lines(width)).map_err(|e| e.to_string())
+    }
+
+    // A saudação acabou (sozinha ou com uma tecla): o mascote para no primeiro quadro.
+    pub(super) fn finish_greeting(&mut self) -> io::Result<()> {
+        if !self.greeting {
+            return Ok(());
+        }
+        self.greeting = false;
+        self.play = None;
+        let width = self.terminal.size()?.width;
+        let (banner, _) = view::banner_lines(&self.settings, &self.stats, mascot_for(None), width);
+        self.transcript.replace_head(banner.into_iter().map(|l| print::clip_line(l, usize::from(width))).collect());
+        Ok(())
+    }
+
+    // Comandos que combinam com o que está sendo digitado. Só aparecem com o editor ocioso e
+    // uma única palavra começando por `/`.
     fn menu_matches(&self) -> Vec<&'static Cmd> {
         let lines = self.editor.lines();
         match lines {
-            [line] if self.work.is_none() && line.starts_with('/') && !line.contains(char::is_whitespace) => {
+            // Comando recuperado do histórico: sem menu, para ↑ e ↓ seguirem no histórico.
+            [line] if self.work.is_none() && !self.history.browsing() && line.starts_with('/') && !line.contains(char::is_whitespace) => {
                 COMMANDS.iter().filter(|c| c.starts_with(line)).collect()
             }
             _ => Vec::new(),
         }
     }
 
+    // `/clear`: apaga a conversa e recomeça com o cabeçalho, como no Claude Code.
     fn clear_screen(&mut self) -> io::Result<()> {
+        self.finish_greeting()?;
         self.transcript.clear();
-        self.scroll_back = 0;
-        self.terminal.clear()?;
         self.print_header()?;
         self.print(vec![note("contexto limpo; o prompt do sistema foi mantido."), Line::default()])
     }
@@ -345,6 +454,10 @@ impl App {
                 Err(TryRecvError::Empty) => return Ok(()),
                 Err(TryRecvError::Disconnected) => return Err("o agente parou inesperadamente".into()),
             };
+            // Um bloco de passos fecha quando chega algo que não é mais um passo da mesma sequência.
+            if !matches!(event, UiEvent::Activity(_) | UiEvent::Chunk { .. } | UiEvent::Usage(_) | UiEvent::Step { .. }) {
+                self.flush_group()?;
+            }
             match event {
                 UiEvent::Activity(a) => {
                     if let Some(w) = &mut self.work {
@@ -385,17 +498,28 @@ impl App {
                         w.steps += 1;
                     }
                     self.stats.steps += 1;
-                    let width = self.width().map_err(|e| e.to_string())?;
-                    let mut lines = vec![steps::done(&name, &args, &result)];
-                    lines.extend(steps::output_lines(&result, width));
-                    self.print(lines).map_err(|e| e.to_string())?;
+                    match &mut self.group {
+                        Some(g) if g.is(&name) => g.push(args, result),
+                        _ => {
+                            self.flush_group()?;
+                            let mut g = steps::Group::new(&name);
+                            g.push(args, result);
+                            self.group = Some(g);
+                        }
+                    }
                 }
                 UiEvent::Approval { preview, reply, runs } => {
                     self.print_preview(&preview, runs).map_err(|e| e.to_string())?;
+                    let batchable = !runs && !preview.is_removal();
                     match &mut self.work {
+                        // `a` já foi dito neste turno: a edição passa, e a prévia acima mostra o que foi aplicado.
+                        Some(w) if w.approve_all && batchable => {
+                            let _ = reply.send(true);
+                        }
                         Some(w) => {
                             w.approval = Some(reply);
                             w.approval_runs = runs;
+                            w.approval_batchable = batchable;
                         }
                         None => {
                             let _ = reply.send(false);
@@ -434,21 +558,13 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitclaw::models::ModelCapabilities;
+    use bitclaw::models::{Effort, ModelCapabilities};
     use crate::app::tui::theme::KEYWORD;
-    use ratatui::layout::{Position, Rect};
+    use ratatui::layout::Rect;
     use ratatui::style::Color;
     use bitclaw::skills;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-
-    // Linhas que as partes fixas pedem (cabeçalho, réguas, editor, menu e rodapé), mais algumas
-    // para a conversa.
-    const TRANSCRIPT_ROWS: usize = 2;
-
-    fn viewport_height(editor_rows: usize, menu_rows: usize, summary_rows: usize) -> u16 {
-        (TOP_GAP as usize + MASCOT_ROWS as usize + summary_rows + TRANSCRIPT_ROWS + 2 + editor_rows.clamp(1, MAX_EDITOR_ROWS) + menu_rows + 1) as u16
-    }
 
     fn settings(auto_yes: bool) -> Settings {
         Settings {
@@ -464,7 +580,7 @@ mod tests {
             default_options: Options::default(),
             auto_yes,
             color: false,
-            mouse: false,
+            mouse: true,
             root: std::env::temp_dir(),
         }
     }
@@ -477,12 +593,12 @@ mod tests {
             [line] if work.is_none() && line.starts_with('/') => COMMANDS.iter().filter(|c| c.starts_with(line)).collect(),
             _ => Vec::new(),
         };
-        let summary = if work.is_some() { 2 } else { 0 };
-        let height = viewport_height(editor.lines().len(), menu.len(), summary);
+        let summary = if work.is_some() { 1 } else { 0 };
+        let height = viewport_height(editor.lines().len(), menu.len(), summary, 0);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let settings = settings(auto_yes);
-        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0, picker: None, model_picker: None, effort_panel: None, status_panel: None, stats: &SessionStats::new(), mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
-        terminal.draw(|f| draw(f, &view)).unwrap();
+        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0, picker: None, model_picker: None, effort_panel: None, status_panel: None, stats: &SessionStats::new(), transcript: &Transcript::default(), flash: None, live_rows: 0, mentions: Vec::new() };
+        terminal.draw(|f| { draw(f, &view); }).unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height)
             .map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
@@ -504,20 +620,18 @@ mod tests {
     fn idle_screen_is_compact_with_one_editor_row() {
         let usage = Usage { tokens: 861, window: 16384, percent: 5.0 };
         let lines = screen(None, Some(usage), false);
-        assert_eq!(lines.len(), 10, "folga (1), mascote (3), conversa (2), régua, 1 linha de editor, régua e rodapé: {lines:?}");
-        assert!(lines[1..4].iter().all(|l| !l.contains("pensando") && !l.contains("executando")), "sem status quando ocioso");
-        assert!(lines[0].is_empty(), "a folga do topo fica em branco: {lines:?}");
-        assert!(lines[1].contains('▀') || lines[2].contains('█'), "o mascote aparece: {lines:?}");
-        assert!(lines[6].starts_with('─') && lines[8].starts_with('─'));
-        assert!(lines[7].starts_with('❯') && lines[7].contains("Digite uma tarefa…"), "{lines:?}");
-        assert!(lines[9].starts_with("m:1b · Manual · contexto 5% (861/16384)"), "{}", lines[9]);
-        assert!(lines[9].ends_with("enter envia · / comandos"), "versão curta dos atalhos em 80 colunas");
+        assert_eq!(lines.len(), 4, "régua, 1 linha de editor, régua e rodapé: {lines:?}");
+        assert!(lines.iter().all(|l| !l.contains("pensando") && !l.contains("executando")), "sem status quando ocioso");
+        assert!(lines[0].starts_with('─') && lines[2].starts_with('─'));
+        assert!(lines[1].starts_with('❯') && lines[1].contains("Digite uma tarefa…"), "{lines:?}");
+        assert!(lines[3].starts_with("m:1b · contexto 5% (861/16384)"), "{}", lines[3]);
+        assert!(lines[3].ends_with("enter envia · / comandos"), "versão curta dos atalhos em 80 colunas");
     }
 
     #[test]
     fn editor_grows_with_the_text_up_to_a_limit() {
-        assert_eq!(screen_with(80, "a\nb\nc", None, None, false).len(), 12);
-        assert_eq!(screen_with(80, &"x\n".repeat(20), None, None, false).len(), 10 + MAX_EDITOR_ROWS - 1);
+        assert_eq!(screen_with(80, "a\nb\nc", None, None, false).len(), 6);
+        assert_eq!(screen_with(80, &"x\n".repeat(20), None, None, false).len(), 4 + MAX_EDITOR_ROWS - 1);
     }
 
     #[test]
@@ -545,33 +659,34 @@ mod tests {
     #[test]
     fn typing_a_slash_lists_every_command_below_the_editor() {
         let lines = screen_with(100, "/", None, None, false);
-        assert_eq!(lines.len(), 10 + COMMANDS.len());
-        assert!(lines[9].starts_with("› /help") && lines[9].contains("mostra os comandos"), "{lines:?}");
-        assert!(lines[10].starts_with("  /model") && lines[11].starts_with("  /effort"), "{lines:?}");
-        assert!(lines[12].starts_with("  /context") && lines[13].starts_with("  /temp"), "{lines:?}");
-        assert!(lines[14].starts_with("  /init"), "{lines:?}");
-        assert!(lines[15].starts_with("  /clear") && lines[16].starts_with("  /think"), "{lines:?}");
-        assert!(lines[17].starts_with("  /skills"), "{lines:?}");
-        assert!(lines[18].starts_with("  /status"), "{lines:?}");
-        assert!(lines[19].starts_with("  /exit"), "{lines:?}");
+        assert_eq!(lines.len(), 4 + COMMANDS.len());
+        assert!(lines[3].starts_with("› /help") && lines[3].contains("mostra os comandos"), "{lines:?}");
+        assert!(lines[4].starts_with("  /model") && lines[5].starts_with("  /effort"), "{lines:?}");
+        assert!(lines[6].starts_with("  /context") && lines[7].starts_with("  /temp"), "{lines:?}");
+        assert!(lines[8].starts_with("  /init"), "{lines:?}");
+        assert!(lines[9].starts_with("  /clear") && lines[10].starts_with("  /think"), "{lines:?}");
+        assert!(lines[11].starts_with("  /skills"), "{lines:?}");
+        assert!(lines[12].starts_with("  /status"), "{lines:?}");
+        assert!(lines[13].starts_with("  /restart-dev"), "{lines:?}");
+        assert!(lines[14].starts_with("  /exit"), "{lines:?}");
         assert!(lines.last().unwrap().contains("tab completa · enter executa"));
     }
 
     #[test]
     fn the_menu_filters_by_name() {
         let lines = screen_with(100, "/cl", None, None, false);
-        assert_eq!(lines.len(), 11);
-        assert!(lines[9].starts_with("› /clear"), "{lines:?}");
+        assert_eq!(lines.len(), 5);
+        assert!(lines[3].starts_with("› /clear"), "{lines:?}");
         let lines = screen_with(100, "/ex", None, None, false);
-        assert!(lines[9].starts_with("› /exit"), "{lines:?}");
+        assert!(lines[3].starts_with("› /exit"), "{lines:?}");
         // Sem correspondência, não há menu.
-        assert_eq!(screen_with(100, "/zzz", None, None, false).len(), 10);
+        assert_eq!(screen_with(100, "/zzz", None, None, false).len(), 4);
     }
 
     #[test]
     fn the_think_command_explains_its_cost_in_the_menu() {
         let lines = screen_with(120, "/th", None, None, false);
-        assert!(lines[9].starts_with("› /think") && lines[9].contains("gasta mais contexto"), "{lines:?}");
+        assert!(lines[3].starts_with("› /think") && lines[3].contains("gasta mais contexto"), "{lines:?}");
     }
 
     #[test]
@@ -582,12 +697,12 @@ mod tests {
         editor.insert_str("");
         let cfg = settings(false);
         *cfg.effort.lock().unwrap() = Effort::Medium;
-        let mut terminal = Terminal::new(TestBackend::new(100, viewport_height(1, 0, 0))).unwrap();
-        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, effort_panel: None, status_panel: None, stats: &SessionStats::new(), mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
-        terminal.draw(|f| draw(f, &view)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, viewport_height(1, 0, 0, 0))).unwrap();
+        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, effort_panel: None, status_panel: None, stats: &SessionStats::new(), transcript: &Transcript::default(), flash: None, live_rows: 0, mentions: Vec::new() };
+        terminal.draw(|f| { draw(f, &view); }).unwrap();
         let buffer = terminal.backend().buffer().clone();
-        let footer: String = (0..100).map(|x| buffer[(x, 9)].symbol().to_string()).collect();
-        assert!(footer.starts_with("m:1b · Manual · esforço medium · contexto"), "{footer}");
+        let footer: String = (0..100).map(|x| buffer[(x, 3)].symbol().to_string()).collect();
+        assert!(footer.starts_with("m:1b · esforço medium · contexto"), "{footer}");
     }
 
     #[test]
@@ -641,7 +756,7 @@ mod tests {
         *cfg.model.lock().unwrap() = models[1].clone();
         let picker = ModelPicker { query: String::new(), index: 0, models };
         let mut terminal = Terminal::new(TestBackend::new(120, 7)).unwrap();
-        terminal.draw(|f| draw_model_picker(f, &cfg, &picker)).unwrap();
+        terminal.draw(|f| draw_model_picker(f, f.area(), &cfg, &picker)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         let row = |y: u16| -> String { (0..120).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string() };
         assert!(row(0).contains("2 modelos · ativo qwen2.5-coder:3b · padrão gpt-oss:20b"), "{}", row(0));
@@ -653,16 +768,16 @@ mod tests {
     #[test]
     fn footer_shows_the_automatic_mode_and_unknown_usage() {
         let lines = screen(None, None, true);
-        assert!(lines[9].starts_with("m:1b · Automático · contexto —"), "{}", lines[9]);
+        assert!(lines[3].starts_with("m:1b · Automático · contexto —"), "{}", lines[3]);
     }
 
     #[test]
     fn working_screen_shows_the_activity_and_how_to_interrupt() {
         let lines = screen(Some(&work(false, false)), None, false);
-        assert!(lines[5].contains("executando read_file a.txt… (0s)"), "{}", lines[1]);
+        assert!(lines[0].contains("executando read_file a.txt… (0s)"), "{}", lines[0]);
         assert!(lines.last().unwrap().ends_with("esc interrompe"));
         let lines = screen(Some(&work(false, true)), None, false);
-        assert!(lines[5].contains("interrompendo, aguardando o modelo"), "{}", lines[1]);
+        assert!(lines[0].contains("interrompendo, aguardando o modelo"), "{}", lines[0]);
     }
 
     #[test]
@@ -670,21 +785,47 @@ mod tests {
         let mut w = work(true, false);
         w.approval_runs = true;
         let lines = screen(Some(&w), None, false);
-        assert!(lines[5].contains("Executar este script? [s] sim · [n] não"), "{lines:?}");
-        assert!(lines.last().unwrap().ends_with("s executa · n recusa"), "{lines:?}");
+        assert!(lines[2].contains("Executar este script?") && lines[2].contains("s  executar"), "{lines:?}");
+        assert!(lines.iter().all(|l| !l.contains("[s] sim")), "uma só pergunta na tela: {lines:?}");
     }
 
     #[test]
     fn approval_screen_asks_for_a_decision() {
         let lines = screen(Some(&work(true, false)), None, false);
-        assert!(lines[5].contains("Aplicar esta alteração? [s] sim · [n] não"), "{}", lines[1]);
-        assert!(lines.last().unwrap().ends_with("s aplica · n recusa"));
+        assert!(lines[2].contains("Aplicar esta alteração?") && lines[2].contains("n  recusar"), "{lines:?}");
+        assert!(lines.iter().all(|l| !l.contains("[s] sim") && !l.contains("s aplica")), "{lines:?}");
+    }
+
+    #[test]
+    fn the_composer_becomes_the_question_while_waiting_for_a_decision() {
+        let composer = |lines: &[String]| lines.iter().find(|l| l.starts_with('❯')).cloned().unwrap();
+        let mut w = work(true, false);
+        w.approval_batchable = true;
+        let line = composer(&screen(Some(&w), None, false));
+        assert!(line.contains("Aplicar esta alteração?"), "{line}");
+        assert!(line.contains(" s  aplicar") && line.contains(" a  todas neste turno") && line.contains(" n  recusar"), "{line}");
+        assert!(!line.contains("Digite uma tarefa"), "o placeholder some: {line}");
+        // Estreito: as ações encurtam, mas as três teclas continuam à vista.
+        let narrow = composer(&screen_with(50, "", Some(&w), None, false));
+        assert!(narrow.contains(" s  sim") && narrow.contains(" a  todas") && narrow.ends_with(" n  não"), "{narrow}");
+        // Sem decisão pendente, volta o editor.
+        let line = composer(&screen(Some(&work(false, false)), None, false));
+        assert!(line.contains("Digite uma tarefa"), "{line}");
+    }
+
+    #[test]
+    fn an_edit_can_be_approved_for_the_whole_turn() {
+        let mut w = work(true, false);
+        w.approval_batchable = true;
+        let lines = screen(Some(&w), None, false);
+        assert!(lines[2].contains("a  todas neste turno"), "{lines:?}");
+        assert!(lines.iter().all(|l| !l.contains("[a] sim")), "{lines:?}");
     }
 
     #[test]
     fn footer_drops_the_hints_when_the_window_is_narrow() {
         let footer = screen_with(40, "", None, None, false).pop().unwrap();
-        assert!(footer.starts_with("m:1b · Manual · contexto —"));
+        assert!(footer.starts_with("m:1b · contexto —"));
         assert!(!footer.contains("enter envia"), "{footer}");
     }
 
@@ -693,13 +834,13 @@ mod tests {
         let cell_colors = |typed: &str| -> Vec<Option<Color>> {
             let mut editor = new_editor();
             editor.insert_str(typed);
-            let mut terminal = Terminal::new(TestBackend::new(60, viewport_height(1, 0, 0))).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(60, viewport_height(1, 0, 0, 0))).unwrap();
             let settings = settings(false);
-            let view = View { editor: &editor, work: None, usage: None, settings: &settings, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, effort_panel: None, status_panel: None, stats: &SessionStats::new(), mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
-            terminal.draw(|f| draw(f, &view)).unwrap();
+            let view = View { editor: &editor, work: None, usage: None, settings: &settings, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, effort_panel: None, status_panel: None, stats: &SessionStats::new(), transcript: &Transcript::default(), flash: None, live_rows: 0, mentions: Vec::new() };
+            terminal.draw(|f| { draw(f, &view); }).unwrap();
             let buffer = terminal.backend().buffer().clone();
-            // Linha do editor: folga (1) + cabeçalho (3) + conversa (2) + régua (1) → linha 7; o texto começa na coluna 2.
-            (0..typed.chars().count() as u16).map(|x| buffer[(2 + x, 7)].fg).map(|c| (c != Color::Reset).then_some(c)).collect()
+            // Linha do editor: logo depois da régua de cima → linha 1; o texto começa na coluna 2.
+            (0..typed.chars().count() as u16).map(|x| buffer[(2 + x, 1)].fg).map(|c| (c != Color::Reset).then_some(c)).collect()
         };
         let colors = cell_colors("/model load x");
         assert!(colors[..6].iter().all(|c| *c == Some(KEYWORD)), "comando: {colors:?}");
@@ -719,15 +860,6 @@ mod tests {
     }
 
     #[test]
-    fn only_the_mascot_area_is_clickable_and_it_hides_in_narrow_windows() {
-        let status = Rect::new(0, 7, 80, MASCOT_ROWS);
-        let rect = mascot_rect(status).unwrap();
-        assert!(rect.contains(Position::new(0, 7)) && rect.contains(Position::new(9, 9)));
-        assert!(!rect.contains(Position::new(10, 7)) && !rect.contains(Position::new(0, 10)));
-        assert_eq!(mascot_rect(Rect::new(0, 0, 20, MASCOT_ROWS)), None);
-    }
-
-    #[test]
     fn work_counts_the_time_spent_waiting_for_the_model() {
         let mut w = Work::new("pensando");
         assert!(w.model_since.is_some(), "começa esperando o modelo");
@@ -744,20 +876,61 @@ mod tests {
     }
 
     #[test]
-    fn the_name_stays_beside_the_mascot_and_the_step_summary_sits_under_it() {
-        let idle = screen(None, None, false);
-        assert!(idle[1].starts_with("██") && idle[1].contains("BitClaw"), "{idle:?}");
+    fn the_step_line_sits_right_above_the_editor_while_working() {
         let busy = screen(Some(&work(false, false)), None, false);
-        assert!(busy[1].contains("BitClaw"), "o nome continua no topo: {busy:?}");
-        assert!(busy[4].is_empty(), "linha em branco antes do resumo: {busy:?}");
-        assert!(busy[5].contains("executando"), "o resumo do passo tem linha própria: {busy:?}");
+        assert!(busy[0].contains("executando"), "o passo fica na linha de cima: {busy:?}");
+        assert!(busy[1].starts_with('─') && busy[2].starts_with('❯'), "{busy:?}");
     }
 
-    // Desenha a tela inteira com a conversa dada e `back` linhas de rolagem.
-    fn screen_with_transcript(height: u16, lines: &[&str], back: usize) -> Vec<String> {
-        let transcript: Vec<Line<'static>> = lines.iter().map(|l| Line::from(l.to_string())).collect();
+    // Desenha a tela com o que o modelo está gerando, na altura dada e 60 colunas.
+    fn render_live(live: &str, height: u16) -> Vec<String> {
         let editor = new_editor();
         let settings = settings(false);
+        let mut w = Work::new("pensando");
+        w.answer = live.to_string();
+        let view = View {
+            editor: &editor,
+            work: (!live.is_empty()).then_some(&w),
+            usage: None,
+            settings: &settings,
+            menu: Vec::new(),
+            menu_index: 0,
+            picker: None,
+            model_picker: None,
+            effort_panel: None,
+            status_panel: None,
+            stats: &SessionStats::new(),
+            transcript: &Transcript::default(),
+            flash: None,
+            live_rows: if live.is_empty() { 0 } else { 3 },
+            mentions: Vec::new(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, height)).unwrap();
+        terminal.draw(|f| { draw(f, &view); }).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height)
+            .map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn the_bottom_is_only_as_tall_as_the_editor_when_idle() {
+        // Régua, editor, régua e rodapé.
+        assert_eq!(viewport_height(1, 0, 0, 0), 4);
+        assert_eq!(viewport_height(3, 2, 1, 0), 3 + 2 + 2 + 1 + 1);
+        assert_eq!(viewport_height(99, 0, 0, 0), (MAX_EDITOR_ROWS + 3) as u16, "o editor para de crescer no limite");
+        let lines = render_live("", viewport_height(1, 0, 0, 0));
+        assert!(lines[0].starts_with('─') && lines[1].starts_with('❯') && lines[2].starts_with('─'), "{lines:?}");
+    }
+
+    // Desenha a tela inteira com uma conversa de `n` linhas, rolada `back` linhas para cima.
+    fn render_chat(n: usize, back: usize, height: u16) -> Vec<String> {
+        let editor = new_editor();
+        let settings = settings(false);
+        let mut transcript = Transcript::default();
+        transcript.layout(60);
+        transcript.push((0..n).map(|i| Line::from(format!("linha {i}"))).collect());
+        transcript.scroll(back as isize, usize::from(height) - 4);
         let view = View {
             editor: &editor,
             work: None,
@@ -766,16 +939,19 @@ mod tests {
             menu: Vec::new(),
             menu_index: 0,
             picker: None,
-            model_picker: None, effort_panel: None,
+            model_picker: None,
+            effort_panel: None,
             status_panel: None,
             stats: &SessionStats::new(),
-            mascot: Mascot { mood: brand::Mood::Idle, ms: 0 },
             transcript: &transcript,
-            scroll_back: back,
+            flash: None,
+            live_rows: 0,
             mentions: Vec::new(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, height)).unwrap();
-        terminal.draw(|f| draw(f, &view)).unwrap();
+        let mut chat = Rect::default();
+        terminal.draw(|f| chat = draw(f, &view)).unwrap();
+        assert_eq!(chat, Rect::new(0, 0, 60, height - 4), "a conversa fica com tudo acima do editor");
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height)
             .map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
@@ -783,36 +959,80 @@ mod tests {
     }
 
     #[test]
-    fn the_conversation_sits_between_the_header_and_the_prompt() {
-        let lines = screen_with_transcript(12, &["primeira", "segunda"], 0);
-        assert!(lines[1].contains("BitClaw"), "cabeçalho no topo: {lines:?}");
-        assert_eq!(lines[4], "primeira", "{lines:?}");
-        assert_eq!(lines[5], "segunda", "{lines:?}");
-        let ruler = lines.iter().position(|l| l.starts_with('─')).unwrap();
-        assert!(ruler > 4, "o prompt vem depois da conversa: {lines:?}");
-        assert!(lines[ruler + 1].starts_with('❯'));
+    fn the_conversation_fills_the_top_and_the_editor_stays_fixed_at_the_bottom() {
+        let lines = render_chat(20, 0, 10);
+        assert_eq!(lines[0], "linha 14", "acompanha o fim: {lines:?}");
+        assert_eq!(lines[5], "linha 19", "{lines:?}");
+        assert!(lines[6].starts_with('─') && lines[7].starts_with('❯'), "o editor logo abaixo: {lines:?}");
+        // Pouca conversa: começa no topo, e o editor continua embaixo.
+        let short = render_chat(2, 0, 10);
+        assert_eq!((short[0].as_str(), short[1].as_str(), short[2].as_str()), ("linha 0", "linha 1", ""));
+        assert!(short[7].starts_with('❯'), "{short:?}");
     }
 
     #[test]
-    fn a_long_conversation_follows_the_end_and_can_be_scrolled_back() {
-        let all: Vec<String> = (1..=30).map(|n| format!("linha {n}")).collect();
-        let refs: Vec<&str> = all.iter().map(String::as_str).collect();
-        // 13 linhas de tela: 1 de folga, 3 de cabeçalho, 4 de partes fixas (régua, editor, régua e rodapé) e 5 para a conversa.
-        let at_end = screen_with_transcript(13, &refs, 0);
-        assert_eq!(&at_end[4..9], ["linha 26", "linha 27", "linha 28", "linha 29", "linha 30"]);
-        let back = screen_with_transcript(13, &refs, 10);
-        assert_eq!(&back[4..9], ["linha 16", "linha 17", "linha 18", "linha 19", "linha 20"]);
-        let too_far = screen_with_transcript(13, &refs, 500);
-        assert_eq!(&too_far[4..9], ["linha 1", "linha 2", "linha 3", "linha 4", "linha 5"], "para no começo");
+    fn scrolled_up_it_says_how_to_go_back_to_the_end() {
+        let lines = render_chat(20, 5, 10);
+        assert_eq!(lines[0], "linha 9", "{lines:?}");
+        assert!(lines[5].contains("↓ 5 linhas abaixo"), "{lines:?}");
+        assert!(lines[6].starts_with('─'), "o editor não se move: {lines:?}");
     }
 
     #[test]
-    fn visible_range_clamps_to_the_conversation() {
-        assert_eq!(visible_range(0, 5, 0), (0, 0));
-        assert_eq!(visible_range(3, 5, 0), (0, 3), "cabe inteira");
-        assert_eq!(visible_range(10, 4, 0), (6, 10));
-        assert_eq!(visible_range(10, 4, 3), (3, 7));
-        assert_eq!(visible_range(10, 4, 99), (0, 4));
+    fn a_panel_opens_below_the_conversation_without_hiding_it() {
+        let editor = new_editor();
+        let settings = settings(false);
+        let mut transcript = Transcript::default();
+        transcript.layout(80);
+        transcript.push(vec![Line::from("a conversa continua visível")]);
+        let panel = StatusPanel::default();
+        let view = View {
+            editor: &editor,
+            work: None,
+            usage: None,
+            settings: &settings,
+            menu: Vec::new(),
+            menu_index: 0,
+            picker: None,
+            model_picker: None,
+            effort_panel: None,
+            status_panel: Some(&panel),
+            stats: &SessionStats::new(),
+            transcript: &transcript,
+            flash: None,
+            live_rows: 0,
+            mentions: Vec::new(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|f| {
+            draw(f, &view);
+        })
+        .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let rows: Vec<String> = (0..30)
+            .map(|y| (0..80).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
+            .collect();
+        assert_eq!(rows[0], "a conversa continua visível", "{rows:?}");
+        let rule = 30 - STATUS_PANEL_ROWS as usize - 1;
+        assert!(rows[rule].starts_with('─'), "uma régua separa o painel da conversa: {rows:?}");
+        assert!(rows[rule + 1].contains("BitClaw"), "{rows:?}");
+        assert_eq!(rows.iter().filter(|r| r.contains("██")).count(), 0, "nenhum mascote no painel: {rows:?}");
+    }
+
+    #[test]
+    fn what_the_model_generates_sits_right_above_the_step_line() {
+        let height = viewport_height(1, 0, 1, 3);
+        let lines = render_live("primeira\nsegunda", height);
+        let step = lines.iter().position(|l| l.contains("pensando")).expect("a linha do passo");
+        assert_eq!(lines[step - 1], "  │ segunda", "{lines:?}");
+        assert!(lines[step - 3].contains("respondendo"), "{lines:?}");
+    }
+
+    #[test]
+    fn the_mascot_hides_in_narrow_windows() {
+        let rect = mascot_rect(Rect::new(0, 7, 80, MASCOT_ROWS)).unwrap();
+        assert_eq!((rect.width, rect.height), (brand::WIDTH, MASCOT_ROWS));
+        assert_eq!(mascot_rect(Rect::new(0, 0, 20, MASCOT_ROWS)), None);
     }
 
     #[test]
@@ -835,19 +1055,19 @@ mod tests {
             model_picker: None, effort_panel: None,
             status_panel: None,
             stats: &SessionStats::new(),
-            mascot: Mascot { mood: brand::Mood::Idle, ms: 0 },
-            transcript: &[],
-            scroll_back: 0,
+            transcript: &Transcript::default(),
+            flash: None,
+            live_rows: 0,
             mentions,
         };
         let mut terminal = Terminal::new(TestBackend::new(80, 14)).unwrap();
-        terminal.draw(|f| draw(f, &view)).unwrap();
+        terminal.draw(|f| { draw(f, &view); }).unwrap();
         let buffer = terminal.backend().buffer().clone();
         let rows: Vec<String> = (0..14)
             .map(|y| (0..80).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
             .collect();
         let at = rows.iter().position(|r| r.starts_with("› @docs/")).unwrap_or_else(|| panic!("{rows:?}"));
         assert_eq!(rows[at + 1], "  @README.md", "{rows:?}");
-        assert!(rows.last().unwrap().contains("tab ou enter completa"), "{rows:?}");
+        assert!(rows.iter().any(|r| r.contains("tab ou enter completa")), "{rows:?}");
     }
 }

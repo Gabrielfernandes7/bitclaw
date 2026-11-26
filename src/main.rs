@@ -25,8 +25,8 @@ struct Args {
     dir: PathBuf,
     auto_yes: bool,
     no_color: bool,
-    mouse: bool,
     think: bool,
+    no_mouse: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -37,8 +37,8 @@ fn parse_args() -> Result<Args, String> {
         dir: std::env::current_dir().map_err(|e| e.to_string())?,
         auto_yes: false,
         no_color: false,
-        mouse: false,
         think: false,
+        no_mouse: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -49,10 +49,13 @@ fn parse_args() -> Result<Args, String> {
             "--dir" => args.dir = PathBuf::from(it.next().ok_or("--dir precisa de valor")?),
             "--yes" => args.auto_yes = true,
             "--no-color" => args.no_color = true,
-            "--mouse" => args.mouse = true,
+            // O mouse é capturado por padrão: a roda rola a conversa e arrastar seleciona e copia.
+            // `--no-mouse` devolve o mouse ao terminal (seleção nativa; a conversa rola com PageUp/PageDown).
+            "--no-mouse" => args.no_mouse = true,
+            "--mouse" => args.no_mouse = false,
             "--think" => args.think = true,
             "-h" | "--help" => {
-                println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color] [--mouse] [--think]");
+                println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color] [--no-mouse] [--think]");
                 std::process::exit(0);
             }
             other => return Err(format!("argumento desconhecido: {other}")),
@@ -159,7 +162,7 @@ fn run() -> Result<(), String> {
             catalog: Arc::clone(&catalog),
             auto_yes: args.auto_yes,
             color,
-            mouse: args.mouse,
+            mouse: !args.no_mouse,
             root: root.clone(),
         };
         // A sessão é montada na thread do agente, que recebe o aprovador pronto.

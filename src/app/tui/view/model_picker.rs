@@ -1,10 +1,11 @@
 //! Painel de modelos (`/model`).
 
+use super::keys::key_hints;
 use super::super::{Settings, locked, theme::*};
 use super::PICKER_VISIBLE;
 use bitclaw::models::{Effort, ModelCapabilities, ModelInfo, Reasoning};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
@@ -40,7 +41,7 @@ pub(in crate::app::tui) fn capabilities_text(caps: &ModelCapabilities) -> String
     parts.join(" · ")
 }
 
-pub(in crate::app::tui) fn draw_model_picker(f: &mut Frame, settings: &Settings, p: &ModelPicker) {
+pub(in crate::app::tui) fn draw_model_picker(f: &mut Frame, area: Rect, settings: &Settings, p: &ModelPicker) {
     let rows = model_rows(p);
     let active = locked(&settings.model).id.clone();
     let [title, search, list, hint] = Layout::vertical([
@@ -49,7 +50,7 @@ pub(in crate::app::tui) fn draw_model_picker(f: &mut Frame, settings: &Settings,
         Constraint::Min(1),
         Constraint::Length(1),
     ])
-    .areas(f.area());
+    .areas(area);
 
     let head = vec![
         Span::styled(format!("{} modelos", p.models.len()), bold(YELLOW)),
@@ -88,8 +89,11 @@ pub(in crate::app::tui) fn draw_model_picker(f: &mut Frame, settings: &Settings,
     }
     f.render_widget(Paragraph::new(lines), list);
 
-    let help = "↑/↓ navega · enter escolhe · digite para buscar · esc fecha";
-    f.render_widget(Paragraph::new(Line::from(Span::styled(help, fg(GRAY)))), hint);
+    let keys = key_hints(
+        &[("↑/↓", "navega"), ("enter", "escolhe"), ("digite", "busca"), ("esc", "fecha")],
+        hint.width as usize,
+    );
+    f.render_widget(Paragraph::new(keys), hint);
 }
 
 // Ficha de um modelo para `/model show`.

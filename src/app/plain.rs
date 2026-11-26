@@ -175,10 +175,10 @@ pub fn run(
 
 fn print_report(report: &TurnReport) {
     for t in &report.trims {
-        println!(
-            "[contexto] descartados {} turno(s) antigo(s); caracteres {} → {} (orçamento {})",
-            t.turns, t.chars_before, t.chars_after, t.budget
-        );
+        println!("{}", t.summary());
+    }
+    if std::env::var_os("BITCLAW_STATS").is_some() && !report.actions.is_empty() {
+        println!("{}", report.tool_usage_line());
     }
     for a in &report.actions {
         let target = a.args.get("path").and_then(Value::as_str).unwrap_or("");

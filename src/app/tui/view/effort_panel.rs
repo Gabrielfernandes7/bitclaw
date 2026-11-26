@@ -1,9 +1,10 @@
 //! Painel de esforço (`/effort` sem argumento): um controle deslizante com os níveis do modelo ativo.
 
+use super::keys::key_hints;
 use super::super::theme::*;
 use bitclaw::models::Effort;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -55,7 +56,10 @@ pub(in crate::app::tui) fn effort_help(effort: Effort) -> &'static str {
     }
 }
 
-pub(in crate::app::tui) fn draw_effort_panel(f: &mut Frame, panel: &EffortPanel) {
+// Título, folga, controle, nível, ajuda e dica: o painel não pede mais que isso.
+pub(in crate::app::tui) const EFFORT_PANEL_ROWS: u16 = 6;
+
+pub(in crate::app::tui) fn draw_effort_panel(f: &mut Frame, area: Rect, panel: &EffortPanel) {
     let [title, _gap, slider, label, help, _rest, hint] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
@@ -65,7 +69,7 @@ pub(in crate::app::tui) fn draw_effort_panel(f: &mut Frame, panel: &EffortPanel)
         Constraint::Min(0),
         Constraint::Length(1),
     ])
-    .areas(f.area());
+    .areas(area);
 
     f.render_widget(Paragraph::new(Line::from(Span::styled("Esforço de raciocínio", bold(YELLOW)))), title);
 
@@ -88,14 +92,14 @@ pub(in crate::app::tui) fn draw_effort_panel(f: &mut Frame, panel: &EffortPanel)
     if let Some(level) = panel.chosen() {
         let mut label_spans = vec![Span::styled(level.as_str(), bold(effort_color(level)))];
         if level == panel.current {
-            label_spans.push(Span::styled("  (current)", fg(GREEN)));
+            label_spans.push(Span::styled("  (atual)", fg(GREEN)));
         }
         f.render_widget(Paragraph::new(Line::from(label_spans)), label);
         f.render_widget(Paragraph::new(Line::from(Span::styled(effort_help(level), fg(GRAY)))), help);
     }
 
-    let hint_text = "←/→ muda o nível · enter escolhe · esc fecha";
-    f.render_widget(Paragraph::new(Line::from(Span::styled(hint_text, fg(GRAY)))), hint);
+    let keys = key_hints(&[("←/→", "muda o nível"), ("enter", "aplica"), ("esc", "fecha")], hint.width as usize);
+    f.render_widget(Paragraph::new(keys), hint);
 }
 
 #[cfg(test)]

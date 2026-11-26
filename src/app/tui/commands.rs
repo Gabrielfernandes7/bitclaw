@@ -8,7 +8,7 @@ pub(super) struct Cmd {
     pub(super) desc: &'static str,
 }
 
-pub(super) const COMMANDS: [Cmd; 11] = [
+pub(super) const COMMANDS: [Cmd; 12] = [
     Cmd { name: "/help", aliases: &[], desc: "mostra os comandos e as teclas" },
     Cmd { name: "/model", aliases: &[], desc: "troca o modelo: load <nome>, show [nome] ou busca entre os instalados" },
     Cmd { name: "/effort", aliases: &[], desc: "esforço de raciocínio: só os níveis que o modelo aceita" },
@@ -19,6 +19,7 @@ pub(super) const COMMANDS: [Cmd; 11] = [
     Cmd { name: "/think", aliases: &[], desc: "liga ou desliga o raciocínio do modelo (gasta mais contexto)" },
     Cmd { name: "/skills", aliases: &[], desc: "abre as skills para ligar e desligar" },
     Cmd { name: "/status", aliases: &[], desc: "versão, modelo, contexto e estatísticas da sessão" },
+    Cmd { name: "/restart-dev", aliases: &[], desc: "recompila e reabre o BitClaw com as alterações do código (desenvolvimento)" },
     Cmd { name: "/exit", aliases: &["/quit"], desc: "encerra o BitClaw" },
 ];
 

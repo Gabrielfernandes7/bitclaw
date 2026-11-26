@@ -1,8 +1,7 @@
 //! Painel de status (`/status`): versão, modelo, contexto e estatísticas da sessão, em abas.
 
-use super::super::brand::{self, Mood};
+use super::keys::key_hints;
 use super::super::{Settings, theme::*};
-use super::MASCOT_ROWS;
 use bitclaw::context::Usage;
 use bitclaw::skills;
 use bitclaw::toolkit::BUILTIN_TOOLS;
@@ -10,7 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
 use std::time::Instant;
 
 // Nomes das abas, na ordem em que aparecem.
@@ -97,7 +96,6 @@ pub(in crate::app::tui) fn rows(tab: usize, s: &Snapshot) -> Vec<(&'static str, 
             ("Temperatura", format!("{} (padrão {})", options.temperature, st.default_options.temperature)),
             ("Modo", mode.to_string()),
             ("Cores", if st.color { "ligadas" } else { "desligadas" }.to_string()),
-            ("Mouse", if st.mouse { "ligado" } else { "desligado" }.to_string()),
             ("Skills desligadas", (st.skills.len() - on).to_string()),
         ],
         2 => match s.usage {
@@ -116,27 +114,27 @@ pub(in crate::app::tui) fn rows(tab: usize, s: &Snapshot) -> Vec<(&'static str, 
     }
 }
 
-// Desenha o painel inteiro: cabeçalho com o mascote, abas e o conteúdo da aba.
-pub(in crate::app::tui) fn draw_status_panel(f: &mut Frame, s: &Snapshot, panel: &StatusPanel) {
+// Altura do painel: título, folga, abas, folga, o conteúdo da aba (até 8 linhas) e a dica.
+// Sem mascote: ele já está no topo da conversa, logo acima.
+pub(in crate::app::tui) const STATUS_PANEL_ROWS: u16 = 13;
+
+// Desenha o painel inteiro: título com a versão, abas e o conteúdo da aba.
+pub(in crate::app::tui) fn draw_status_panel(f: &mut Frame, area: Rect, s: &Snapshot, panel: &StatusPanel) {
     let [head, _, tabs, _, body, hint] = Layout::vertical([
-        Constraint::Length(MASCOT_ROWS),
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(1),
     ])
-    .areas(f.area());
+    .areas(area);
 
-    // Mascote à esquerda e o nome com a versão ao lado, como no cabeçalho da conversa.
-    let mascot: Vec<Line> = brand::frame(Mood::Idle, 0).into_iter().map(|l| Line::from(Span::styled(l, fg(YELLOW)))).collect();
-    f.render_widget(Paragraph::new(mascot), Rect::new(head.x, head.y, brand::WIDTH, head.height));
     let title = Line::from(vec![
         Span::styled(s.settings.title.clone(), bold(YELLOW)),
         Span::styled(format!("  v{}", env!("CARGO_PKG_VERSION")), fg(GRAY)),
     ]);
-    let text_x = head.x + brand::WIDTH + 2;
-    f.render_widget(Paragraph::new(title), Rect::new(text_x, head.y + 1, head.width.saturating_sub(brand::WIDTH + 2), 1));
+    f.render_widget(Paragraph::new(title), head);
 
     // Abas: a escolhida em amarelo e sublinhada.
     let tab_line: Vec<Span> = TABS
@@ -161,10 +159,10 @@ pub(in crate::app::tui) fn draw_status_panel(f: &mut Frame, s: &Snapshot, panel:
             ])
         })
         .collect();
-    f.render_widget(Paragraph::new(lines), body);
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body);
 
-    let help = "←/→ troca de aba · esc fecha";
-    f.render_widget(Paragraph::new(Line::from(Span::styled(help, fg(GRAY)))), hint);
+    let keys = key_hints(&[("←/→", "troca de aba"), ("esc", "fecha")], hint.width as usize);
+    f.render_widget(Paragraph::new(keys), hint);
 }
 
 #[cfg(test)]
@@ -198,7 +196,7 @@ mod tests {
             default_options: bitclaw::core::options::Options::default(),
             auto_yes: false,
             color: false,
-            mouse: false,
+            mouse: true,
             root: std::path::PathBuf::from("/projeto"),
         }
     }
@@ -245,18 +243,20 @@ mod tests {
     }
 
     #[test]
-    fn the_panel_draws_its_tabs_and_the_mascot() {
+    fn the_panel_draws_its_title_and_tabs_without_a_second_mascot() {
         let st = settings();
         let stats = SessionStats::new();
         let usage = Usage { tokens: 861, window: 16384, percent: 5.0 };
         let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
         let panel = StatusPanel { tab: 2 };
-        terminal.draw(|f| draw_status_panel(f, &snapshot(&st, &stats, Some(usage), "m:1b"), &panel)).unwrap();
+        terminal.draw(|f| draw_status_panel(f, f.area(), &snapshot(&st, &stats, Some(usage), "m:1b"), &panel)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         let lines: Vec<String> = (0..buffer.area.height)
             .map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
             .collect();
-        assert!(lines[4].contains("Status") && lines[4].contains("Usage") && lines[4].contains("Stats"), "{lines:?}");
+        assert!(lines[0].contains("BitClaw") && lines[0].contains("v0."), "{lines:?}");
+        assert!(lines.iter().all(|l| !l.contains("██")), "o mascote fica só no topo da conversa: {lines:?}");
+        assert!(lines[2].contains("Status") && lines[2].contains("Usage") && lines[2].contains("Stats"), "{lines:?}");
         assert!(lines.iter().any(|l| l.contains("861 de 16384")), "{lines:?}");
         assert!(lines[9].contains("esc fecha"), "{lines:?}");
     }

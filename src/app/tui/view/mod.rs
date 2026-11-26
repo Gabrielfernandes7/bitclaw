@@ -1,7 +1,8 @@
-//! O que a interface desenha: a área fixa embaixo e os painéis.
+//! O que a interface desenha: a conversa rolável em cima e, fixos embaixo, o editor ou um painel.
 
 mod effort_panel;
 mod info;
+mod keys;
 mod model_picker;
 mod picker;
 mod status;
@@ -17,6 +18,7 @@ pub(in crate::app::tui) use self::status_panel::*;
 use super::brand::{self, Mood, TRICK_MS};
 use super::commands::keyword_ranges;
 use super::mention::Entry;
+use super::transcript::Transcript;
 use super::{Cmd, MAX_EDITOR_ROWS, Settings, Work, locked, theme::*};
 use bitclaw::context::Usage;
 use ratatui::Frame;
@@ -59,9 +61,12 @@ pub(in crate::app::tui) struct View<'a> {
     // Painel `/status`, se estiver aberto, e as estatísticas que ele mostra.
     pub(in crate::app::tui) status_panel: Option<&'a StatusPanel>,
     pub(in crate::app::tui) stats: &'a SessionStats,
-    pub(in crate::app::tui) mascot: Mascot,
-    pub(in crate::app::tui) transcript: &'a [Line<'static>],
-    pub(in crate::app::tui) scroll_back: usize,
+    // A conversa, já quebrada na largura da janela.
+    pub(in crate::app::tui) transcript: &'a Transcript,
+    // Aviso curto no rodapé (ex.: "copiado"), no lugar dos atalhos, por alguns instantes.
+    pub(in crate::app::tui) flash: Option<&'a str>,
+    // Linhas reservadas ao que o modelo está gerando agora.
+    pub(in crate::app::tui) live_rows: usize,
     // Sugestões de arquivo para o `@` sob o cursor. Vazio quando não há menção.
     pub(in crate::app::tui) mentions: Vec<Entry>,
 }
@@ -87,94 +92,160 @@ pub(in crate::app::tui) fn mascot_rect(area: Rect) -> Option<Rect> {
         .then(|| Rect::new(area.x, area.y, brand::WIDTH, MASCOT_ROWS))
 }
 
-pub(in crate::app::tui) fn draw(f: &mut Frame, v: &View) {
+// Linhas da abertura (a folga e o mascote com o nome, o projeto e o modelo ao lado). São as primeiras
+// linhas da conversa: durante a saudação o mascote anima ali mesmo, e depois elas rolam como o resto.
+pub(in crate::app::tui) const BANNER_ROWS: usize = (TOP_GAP + MASCOT_ROWS) as usize;
+
+// Altura da parte fixa embaixo: réguas e editor, menu, rodapé, a linha do passo e o que o modelo gera.
+pub(in crate::app::tui) fn viewport_height(editor_rows: usize, menu_rows: usize, summary_rows: usize, extra_rows: usize) -> u16 {
+    (editor_rows.clamp(1, MAX_EDITOR_ROWS) + 2 + menu_rows + 1 + summary_rows + extra_rows) as u16
+}
+
+// Nome, projeto e modelo, com os tokens gastos na sessão na linha do modelo.
+fn header_lines(settings: &Settings, stats: &SessionStats) -> Vec<Line<'static>> {
+    let active = locked(&settings.model).id.clone();
+    let window = locked(&settings.options).num_ctx;
+    let info = with_window(&settings.info, settings.default_options.num_ctx, window);
+    let mut lines = info_lines(&settings.title, &info, &active, &settings.default_model);
+    let full = lines.len() == INFO_ROWS;
+    if stats.tokens > 0
+        && full
+        && let Some(model) = lines.last_mut()
+    {
+        model.spans.push(Span::styled(format!(" · {} tokens gastos", stats.tokens), fg(GRAY)));
+    }
+    lines
+}
+
+// A abertura: `BANNER_ROWS` linhas, com o mascote à esquerda do texto. Em janela estreita o mascote some.
+// O segundo valor diz se o mascote foi desenhado.
+pub(in crate::app::tui) fn banner_lines(settings: &Settings, stats: &SessionStats, mascot: Mascot, width: u16) -> (Vec<Line<'static>>, bool) {
+    let mut lines = vec![Line::default(); TOP_GAP as usize];
+    let head = header_lines(settings, stats);
+    let with_mascot = mascot_rect(Rect::new(0, 0, width, MASCOT_ROWS)).is_some();
+    if with_mascot {
+        for (i, art) in brand::frame(mascot.mood, mascot.ms).into_iter().enumerate().take(MASCOT_ROWS as usize) {
+            let mut spans = vec![Span::styled(art, fg(YELLOW)), Span::raw("  ")];
+            if let Some(h) = head.get(i) {
+                spans.extend(h.spans.iter().cloned());
+            }
+            lines.push(Line::from(spans));
+        }
+    } else {
+        lines.extend(head.into_iter().take(MASCOT_ROWS as usize));
+    }
+    lines.resize(BANNER_ROWS, Line::default());
+    (lines, with_mascot)
+}
+
+// Altura do painel aberto, se houver, com a régua que o separa da conversa.
+fn panel_height(v: &View) -> Option<u16> {
+    let rows = if v.effort_panel.is_some() {
+        EFFORT_PANEL_ROWS
+    } else if let Some(mp) = v.model_picker {
+        picker_height(model_rows(mp).len())
+    } else if let Some(p) = v.picker {
+        picker_height(picker_rows(&v.settings.skills, p).len())
+    } else if v.status_panel.is_some() {
+        STATUS_PANEL_ROWS
+    } else {
+        return None;
+    };
+    Some(rows + 1)
+}
+
+// Altura da parte fixa embaixo: o painel aberto, ou o editor com o menu, o passo e o que o modelo gera.
+pub(in crate::app::tui) fn bottom_height(v: &View) -> u16 {
+    panel_height(v).unwrap_or_else(|| {
+        let menu = v.menu.len().max(v.mentions.len());
+        viewport_height(v.editor.lines().len(), menu, usize::from(v.work.is_some()), v.live_rows)
+    })
+}
+
+// Desenha a tela: a conversa em cima e, fixos embaixo, o painel aberto ou o editor. Devolve a área da
+// conversa, para o mouse saber o que foi clicado.
+pub(in crate::app::tui) fn draw(f: &mut Frame, v: &View) -> Rect {
+    let area = f.area();
+    let bottom = bottom_height(v).min(area.height);
+    let [chat, fixed] = Layout::vertical([Constraint::Min(0), Constraint::Length(bottom)]).areas(area);
+    draw_chat(f, v, chat);
+    if panel_height(v).is_some() {
+        let [rule, panel] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(fixed);
+        f.render_widget(Paragraph::new("─".repeat(rule.width as usize)).style(fg(GRAY)), rule);
+        draw_panel(f, v, panel);
+    } else {
+        draw_composer(f, v, fixed);
+    }
+    chat
+}
+
+fn draw_panel(f: &mut Frame, v: &View, area: Rect) {
     if let Some(panel) = v.effort_panel {
-        draw_effort_panel(f, panel);
-        return;
-    }
-    if let Some(models) = v.model_picker {
-        draw_model_picker(f, v.settings, models);
-        return;
-    }
-    if let Some(picker) = v.picker {
-        draw_picker(f, v.settings, picker);
-        return;
-    }
-    if let Some(panel) = v.status_panel {
+        draw_effort_panel(f, area, panel);
+    } else if let Some(models) = v.model_picker {
+        draw_model_picker(f, area, v.settings, models);
+    } else if let Some(picker) = v.picker {
+        draw_picker(f, area, v.settings, picker);
+    } else if let Some(panel) = v.status_panel {
         let active = locked(&v.settings.model).id.clone();
         let effort = locked(&v.settings.effort).as_str().to_string();
         let snapshot = Snapshot { settings: v.settings, model: active, effort, usage: v.usage, stats: v.stats };
-        draw_status_panel(f, &snapshot, panel);
+        draw_status_panel(f, area, &snapshot, panel);
+    }
+}
+
+// A conversa. Rolada para cima, a última linha vira um aviso de como voltar ao fim.
+fn draw_chat(f: &mut Frame, v: &View, area: Rect) {
+    if area.height == 0 {
         return;
     }
+    f.render_widget(Paragraph::new(v.transcript.visible(area.height as usize)), area);
+    let back = v.transcript.scroll_back.min(v.transcript.total_rows().saturating_sub(area.height as usize));
+    if back > 0 {
+        let text = format!(" ↓ {back} linhas abaixo · PageDown ou a roda do mouse voltam ao fim ");
+        let width = (text.chars().count() as u16).min(area.width);
+        let at = Rect::new(area.x + area.width - width, area.y + area.height - 1, width, 1);
+        f.render_widget(Paragraph::new(text).style(fg(YELLOW).add_modifier(ratatui::style::Modifier::REVERSED)), at);
+    }
+}
+
+// O editor e o que fica junto dele: o que o modelo gera, o passo, o menu e o rodapé.
+fn draw_composer(f: &mut Frame, v: &View, area: Rect) {
     let editor_rows = v.editor.lines().len().clamp(1, MAX_EDITOR_ROWS) as u16;
-    // Enquanto o agente trabalha, uma linha própria para o resumo do passo, com uma linha em branco acima.
-    let summary_rows = if v.work.is_some() { 2 } else { 0 };
-    let [_gap, status, summary, conversation, composer, menu, footer] = Layout::vertical([
-        Constraint::Length(TOP_GAP),
-        Constraint::Length(MASCOT_ROWS),
+    // Enquanto o agente trabalha, uma linha com o passo atual fica logo acima do editor.
+    let summary_rows = if v.work.is_some() { 1 } else { 0 };
+    let [live_area, summary, composer, menu, footer] = Layout::vertical([
+        Constraint::Length(v.live_rows as u16),
         Constraint::Length(summary_rows),
-        Constraint::Min(1),
         Constraint::Length(editor_rows + 2),
         Constraint::Length(v.menu.len().max(v.mentions.len()) as u16),
         Constraint::Length(1),
     ])
-    .areas(f.area());
+    .areas(area);
 
-    // Mascote à esquerda; o texto do turno fica ao lado, na linha do meio.
-    let text_area = match mascot_rect(status) {
-        Some(rect) => {
-            let lines: Vec<Line> = brand::frame(v.mascot.mood, v.mascot.ms)
-                .into_iter()
-                .map(|l| Line::from(Span::styled(l, fg(YELLOW))))
-                .collect();
-            f.render_widget(Paragraph::new(lines), rect);
-            Rect::new(status.x + brand::WIDTH + 2, status.y, status.width - brand::WIDTH - 2, status.height)
-        }
-        None => status,
-    };
-    // Cabeçalho: nome, projeto e modelo, com os tokens gastos na sessão na linha do modelo.
-    let header = |v: &View| {
-        let active = locked(&v.settings.model).id.clone();
-        let window = locked(&v.settings.options).num_ctx;
-        let info = with_window(&v.settings.info, v.settings.default_options.num_ctx, window);
-        let mut lines = info_lines(&v.settings.title, &info, &active, &v.settings.default_model);
-        let full = lines.len() == INFO_ROWS;
-        if v.stats.tokens > 0
-            && full
-            && let Some(model) = lines.last_mut()
-        {
-            model.spans.push(Span::styled(format!(" · {} tokens gastos", v.stats.tokens), fg(GRAY)));
-        }
-        lines
-    };
-    if v.work.is_none() {
-        // Ocioso: o nome, o projeto e o modelo ao lado do mascote.
-        f.render_widget(Paragraph::new(header(v)), text_area);
-    } else {
-        // Trabalhando: o nome e o projeto continuam ao lado do mascote; o resumo fica na linha de baixo.
-        f.render_widget(Paragraph::new(header(v)), text_area);
-        let [_blank, row] = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(summary);
-        f.render_widget(Paragraph::new(status_line(v.work)), Rect::new(row.x + 2, row.y, row.width.saturating_sub(2), 1));
+    // O que o modelo está gerando agora, encostado embaixo da sua área (logo acima do passo).
+    let live = live_lines(v.work, live_area.width);
+    let shown = live.len().min(live_area.height as usize);
+    if shown > 0 {
+        let area = Rect::new(live_area.x, live_area.y + live_area.height - shown as u16, live_area.width, shown as u16);
+        f.render_widget(Paragraph::new(live[live.len() - shown..].to_vec()), area);
     }
-
-    // A conversa, entre o cabeçalho e o editor, com o que o modelo está gerando agora no fim.
-    let live = live_lines(v.work, conversation.width);
-    let live_rows = live.len().min(conversation.height.saturating_sub(1) as usize);
-    let [chat, live_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(live_rows as u16)]).areas(conversation);
-    let (from, to) = visible_range(v.transcript.len(), chat.height as usize, v.scroll_back);
-    f.render_widget(Paragraph::new(v.transcript[from..to].to_vec()), chat);
-    f.render_widget(Paragraph::new(live[live.len() - live_rows..].to_vec()), live_area);
+    f.render_widget(Paragraph::new(status_line(v.work)), Rect::new(summary.x + 2, summary.y, summary.width.saturating_sub(2), summary.height));
 
     // Editor delimitado por réguas, como no Claude Code.
-    let block = Block::new().borders(Borders::TOP | Borders::BOTTOM).border_style(fg(GRAY));
+    // Esperando a decisão do usuário: o compositor vira a pergunta, com as réguas em amarelo.
+    let deciding = v.work.filter(|w| w.approval.is_some());
+    let block = Block::new().borders(Borders::TOP | Borders::BOTTOM).border_style(fg(if deciding.is_some() { YELLOW } else { GRAY }));
     let inner = block.inner(composer);
     f.render_widget(block, composer);
     let [mark, text] = Layout::horizontal([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
     f.render_widget(Paragraph::new("❯").style(bold(YELLOW)), mark);
-    f.render_widget(v.editor, text);
-    highlight_keywords(f, v.editor, text);
+    if let Some(work) = deciding {
+        f.render_widget(Paragraph::new(approval_prompt(work, text.width as usize)), text);
+    } else {
+        f.render_widget(v.editor, text);
+        highlight_keywords(f, v.editor, text);
+    }
 
     // Menu de comandos, abaixo do editor.
     let chosen = v.menu_index.min(v.menu.len().saturating_sub(1));
@@ -210,10 +281,9 @@ pub(in crate::app::tui) fn draw(f: &mut Frame, v: &View) {
 
     // Rodapé: modelo, modo e contexto à esquerda; atalhos à direita, na versão que couber.
     let model_id = locked(&v.settings.model).id.clone();
-    let mut info = vec![Span::styled(
-        format!("{} · {} · ", model_id, if v.settings.auto_yes { "Automático" } else { "Manual" }),
-        fg(GRAY),
-    )];
+    // O modo só aparece quando é o diferente do normal (`--yes`, "Automático"); o padrão fica implícito.
+    let mode = if v.settings.auto_yes { "Automático · " } else { "" };
+    let mut info = vec![Span::styled(format!("{model_id} · {mode}"), fg(GRAY))];
     let effort = *locked(&v.settings.effort);
     if !effort.is_off() {
         info.push(Span::styled(format!("esforço {}", effort.as_str()), fg(YELLOW)));
@@ -234,22 +304,20 @@ pub(in crate::app::tui) fn draw(f: &mut Frame, v: &View) {
         _ if !v.mentions.is_empty() => &["↑↓ escolhe · tab ou enter completa · esc fecha", "tab completa · esc fecha", ""],
         _ if !v.menu.is_empty() => &["↑↓ escolhe · tab completa · enter executa", "tab completa · enter executa", ""],
         None => &["enter envia · shift+enter nova linha · / comandos", "enter envia · / comandos", ""],
-        Some(w) if w.approval.is_some() && w.approval_runs => &["s executa · n recusa", ""],
-        Some(w) if w.approval.is_some() => &["s aplica · n recusa", ""],
+        // A pergunta e as teclas já estão no compositor; o rodapé não repete.
+        Some(w) if w.approval.is_some() => &[""],
         Some(_) => &["esc interrompe", ""],
     };
     let hint = hints.iter().find(|h| h.chars().count() <= room).copied().unwrap_or("");
+    // Um aviso curto (como "copiado") toma o lugar dos atalhos por alguns instantes.
+    let (hint, hint_style) = match v.flash {
+        Some(text) if text.chars().count() <= room => (text, bold(GREEN)),
+        _ => (hint, fg(GRAY)),
+    };
     let [left, right] =
         Layout::horizontal([Constraint::Min(1), Constraint::Length(hint.chars().count() as u16)]).areas(footer);
     f.render_widget(Paragraph::new(Line::from(info)), left);
-    f.render_widget(Paragraph::new(hint).style(fg(GRAY)), right);
-}
-
-// Trecho da conversa que cabe na tela: `back` é quantas linhas ela está rolada para cima.
-pub(in crate::app::tui) fn visible_range(len: usize, height: usize, back: usize) -> (usize, usize) {
-    let back = back.min(len.saturating_sub(height));
-    let end = len - back;
-    (end.saturating_sub(height), end)
+    f.render_widget(Paragraph::new(hint).style(hint_style), right);
 }
 
 // Destaca no editor as palavras reservadas: o comando e o subcomando de `/model`. Só vale quando a
