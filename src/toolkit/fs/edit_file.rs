@@ -6,7 +6,6 @@ use serde_json::{json, Value};
 use std::path::Path;
 use super::backup::backup;
 use super::preview::edit_preview;
-use super::BACKUP_DIR;
 use std::fs;
 
 pub struct EditFile;
@@ -70,7 +69,11 @@ fn edit_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Outco
     backup(root, rel, &content)?;
 
     fs::write(&path, &updated).map_err(|e| e.to_string())?;
+    // Só o essencial volta ao modelo: o diff já foi mostrado ao usuário na aprovação, e o caminho do
+    // backup não serve a ele. Repetir a edição é o erro mais comum, por isso o aviso fica.
     Ok(Outcome::Done(format!(
-        "edição aplicada em {rel} (backup: {BACKUP_DIR}/). Não repita esta edição; se a tarefa estiver completa, responda ao usuário sem chamar mais ferramentas."
+        "edição aplicada em {rel}: +{} −{} linhas. Não repita; se a tarefa estiver completa, responda ao usuário.",
+        new.lines().count(),
+        old.lines().count()
     )))
 }

@@ -155,7 +155,7 @@ name = "m"
         let cfg = AgentConfig::from_toml(BUNDLED).expect("agents/bitclaw.toml deve ser válido");
         assert_eq!(cfg.name, "BitClaw");
         assert_eq!(cfg.model.name, "nemotron-3-nano:4b-mlx");
-        assert_eq!(cfg.tools.len(), 7);
+        assert_eq!(cfg.tools.len(), 8);
         assert!(cfg.tools.iter().any(|t| t == "run_script"), "o agente padrão executa scripts, com confirmação");
     }
 

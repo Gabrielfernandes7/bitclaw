@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BitClaw — Identidade: proposta de mascote</title>
+<style>
+:root{
+  --yellow:#FFCC00;
+  --light:#FFE477;
+  --side:#D9AB00;
+  --ink:#171717;
+  --graphite:#30343B;
+  --paper:#F5F3EB;
+  --white:#FFFDF7;
+  --muted:#77736B;
+  --line:#E3DFD3;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#1B1C1F;
+    --white:#24262A;
+    --ink:#F5F3EB;
+    --muted:#A8A399;
+    --line:#3A3D43;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#1B1C1F;
+  --white:#24262A;
+  --ink:#F5F3EB;
+  --muted:#A8A399;
+  --line:#3A3D43;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  background:var(--paper);
+  color:var(--ink);
+  font-family:Inter,system-ui,-apple-system,sans-serif;
+  line-height:1.6;
+}
+.page{max-width:1080px;margin:auto;padding:34px 26px 75px}
+header{
+  display:flex;justify-content:space-between;align-items:center;
+  padding-bottom:20px;border-bottom:1px solid var(--line);gap:12px;flex-wrap:wrap
+}
+.wordmark{font-size:22px;font-weight:900;letter-spacing:-1.3px}
+.wordmark span{color:#9B7700}
+.meta{font:10px ui-monospace,monospace;color:var(--muted)}
+.hero{padding:56px 0 34px}
+.eyebrow{
+  color:#967300;font-size:10px;font-weight:800;
+  letter-spacing:1.8px;text-transform:uppercase
+}
+h1{
+  font-size:clamp(38px,6vw,64px);line-height:1;
+  letter-spacing:-3px;margin:16px 0
+}
+.hero p{max-width:620px;color:var(--muted);font-size:14px}
+.heading{
+  display:flex;justify-content:space-between;align-items:center;
+  gap:12px;margin:40px 0 15px;flex-wrap:wrap
+}
+.heading h2{font-size:11px;letter-spacing:1.5px;margin:0}
+.heading span{font:10px ui-monospace,monospace;color:var(--muted)}
+.card{
+  background:var(--white);border:1px solid var(--line);
+  border-radius:12px;padding:20px
+}
+.card p{font-size:12px;color:var(--muted);margin:8px 0 0}
+.card strong{font-size:13px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.grid-4{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+.art{
+  background:#FAF8F1;border-radius:10px;padding:22px;
+  display:flex;align-items:center;justify-content:center;min-height:240px
+}
+[data-theme="dark"] .art,
+:root:not([data-theme="light"]) .art{background:#2A2C31}
+.pixel{display:grid;gap:3px}
+.pixel i{display:block;width:26px;height:26px;border-radius:3px}
+.pixel i.on{background:var(--yellow)}
+.pixel i.eye{background:var(--ink)}
+.pixel i.off{background:transparent}
+.tag{
+  font:9px ui-monospace,monospace;color:var(--muted);
+  border:1px solid var(--line);padding:4px 8px;border-radius:20px;white-space:nowrap
+}
+.status{
+  display:inline-block;margin-top:12px;font-size:9px;font-weight:800;
+  letter-spacing:.8px;color:#876700;background:#FFF1B9;padding:6px 9px;border-radius:4px
+}
+ol.points{padding:0;margin:0;list-style:none;display:grid;gap:12px}
+ol.points li{
+  background:var(--white);border:1px solid var(--line);border-radius:10px;padding:16px 18px;
+  display:grid;grid-template-columns:44px 1fr;gap:10px
+}
+ol.points .n{font:11px ui-monospace,monospace;color:#977300;padding-top:2px}
+ol.points strong{font-size:13px;display:block;margin-bottom:4px}
+ol.points p{font-size:12px;color:var(--muted);margin:0}
+.question{
+  background:var(--white);border:1px solid var(--line);border-left:4px solid var(--yellow);
+  border-radius:10px;padding:16px 18px
+}
+.question strong{font-size:13px;display:block;margin-bottom:6px}
+.question ul{margin:8px 0 0;padding-left:18px;font-size:12px;color:var(--muted)}
+.palette{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+.swatch{height:53px;border-radius:8px;border:1px solid #0000000C}
+.color-info{margin-top:8px;font:10px ui-monospace,monospace;color:var(--muted)}
+.color-info strong{display:block;color:var(--ink);margin-bottom:3px}
+.note{
+  margin-top:30px;padding:20px;background:var(--white);border:1px solid var(--line);border-radius:10px;
+  font-size:12px;color:var(--muted)
+}
+.footer{
+  display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:60px;
+  border-top:1px solid var(--line);padding-top:18px;
+  font:10px ui-monospace,monospace;color:var(--muted)
+}
+img.fig{display:block;max-width:100%;height:auto;border-radius:10px}
+.art.dark{background:#0C0C0E}
+.art.flush{padding:0;overflow:hidden;min-height:0}
+.specs{width:100%;border-collapse:collapse;font-size:12px}
+.specs td{padding:7px 0;border-bottom:1px solid var(--line);vertical-align:top}
+.specs td:first-child{font:11px ui-monospace,monospace;color:#977300;width:46%;padding-right:10px}
+.specs td:last-child{color:var(--muted)}
+.status.old{color:#6b665c;background:var(--line)}
+@media(max-width:760px){
+  .page{padding:23px 16px 55px}
+  h1{letter-spacing:-2px}
+  .grid-2,.grid-3,.grid-4{grid-template-columns:1fr}
+  .palette{grid-template-columns:repeat(3,1fr)}
+  .heading{align-items:flex-start;flex-direction:column}
+  .art{min-height:200px}
+}
+</style>
+</head>
+<body>
+<main class="page">
+
+<header>
+  <div class="wordmark">bit<span>claw</span></div>
+  <div class="meta">IDENTIDADE VISUAL / PROPOSTA DE MASCOTE</div>
+</header>
+
+<section class="hero">
+  <div class="eyebrow">Proposta 2 · peças de verdade</div>
+  <h1>Um caranguejo<br>feito de peças.</h1>
+  <p>
+    A primeira versão tratava cada célula como um ladrilho chapado, e isso não
+    lia como peça de montar. Esta revisão parte do pote de blocos de verdade:
+    peças com frente, topo e lateral, pinos em duas fileiras e juntas
+    escalonadas. A grade do terminal continua sendo o mapa; o que muda é como
+    cada célula é construída.
+  </p>
+</section>
+
+<div class="heading">
+  <h2>01 — NOVA DIREÇÃO</h2>
+  <span>PEÇAS EMPILHADAS DE VERDADE</span>
+</div>
+
+<section class="card">
+  <div class="art dark flush">
+    <img class="fig" src="bricks-cena.svg" alt="BitClaw, caranguejo de peças amarelas, segurando uma peça vermelha ao lado de uma pilha roxa, verde e azul">
+  </div>
+  <div style="margin-top:14px">
+    <strong>BitClaw montando</strong>
+    <p>
+      O caranguejo é construído fileira por fileira, como no pote: peças de 1 a 4
+      pinos, cada junta deslocada em relação à da fileira de baixo. A peça
+      vermelha na pinça e a pilha ao lado mostram o que ele faz: montar.
+      Arquivo: <code>bricks-cena.svg</code>.
+    </p>
+  </div>
+</section>
+
+<div class="heading">
+  <h2>02 — ANATOMIA DA PEÇA</h2>
+  <span>O QUE FAZ PARECER BRINQUEDO</span>
+</div>
+
+<section class="grid-2">
+  <article class="card">
+    <div class="art"><img class="fig" src="bricks-pecas.svg" alt="Peças de 1, 2, 3 e 4 pinos em vermelho, azul, amarelo, verde e roxo"></div>
+    <div style="margin-top:14px">
+      <strong>Três faces e pinos de verdade</strong>
+      <p>
+        Frente na cor base, topo mais claro, lateral mais escura. Os pinos são
+        cilindros com tampa, não bolinhas, e há duas fileiras deles, como nos
+        blocos da foto. Arquivo: <code>bricks-pecas.svg</code>.
+      </p>
+    </div>
+  </article>
+  <article class="card">
+    <strong>Regras de construção</strong>
+    <table class="specs" style="margin-top:10px">
+      <tr><td>Proporção da peça</td><td>altura = 1,2 × passo do pino</td></tr>
+      <tr><td>Projeção</td><td>oblíqua, 45°, vista de cima e da esquerda</td></tr>
+      <tr><td>Profundidade</td><td>2 pinos (2 fileiras no topo)</td></tr>
+      <tr><td>Comprimentos</td><td>1, 2, 3 ou 4 pinos; evitar 1×1 no corpo</td></tr>
+      <tr><td>Juntas</td><td>nunca alinhadas com a fileira de baixo</td></tr>
+      <tr><td>Contorno</td><td>Core Black, ≈ 11% do passo, junta arredondada</td></tr>
+      <tr><td>Pinos</td><td>só onde nada está por cima</td></tr>
+      <tr><td>Olhos e sorriso</td><td>Core Black, sobre a face frontal</td></tr>
+    </table>
+  </article>
+</section>
+
+<div class="heading">
+  <h2>03 — VERSÕES E CORES</h2>
+  <span>MASCOTE E APLICAÇÕES</span>
+</div>
+
+<section class="grid-2">
+  <article class="card">
+    <div class="art"><img class="fig" src="bitclaw-bricks.svg" alt="BitClaw sobre fundo claro" style="max-width:300px"></div>
+    <div style="margin-top:14px">
+      <strong>Versão principal, fundo claro</strong>
+      <p>Amarelo apenas. <code>bitclaw-bricks.svg</code>, fundo transparente.</p>
+    </div>
+  </article>
+  <article class="card">
+    <div class="art dark"><img class="fig" src="bitclaw-bricks-dark.svg" alt="BitClaw sobre fundo escuro" style="max-width:300px"></div>
+    <div style="margin-top:14px">
+      <strong>Versão principal, fundo escuro</strong>
+      <p>O contorno some no preto, então a separação vem do topo claro e da lateral escura. <code>bitclaw-bricks-dark.svg</code>.</p>
+    </div>
+  </article>
+</section>
+
+<section class="card" style="margin-top:14px">
+  <div class="art flush"><img class="fig" src="bricks-feliz.svg" alt="BitClaw em amarelo, vermelho, azul e verde"></div>
+  <div style="margin-top:14px">
+    <strong>Variações de cor, só para aplicações</strong>
+    <p>
+      Vermelho, azul e verde vêm do pote e servem para estados e categorias
+      (erro, informação, sucesso). O mascote oficial segue amarelo.
+      Arquivo: <code>bricks-feliz.svg</code>.
+    </p>
+  </div>
+</section>
+
+<p class="note">
+  Os SVGs são gerados por <code>docs/identidade/gerar-bricks.py</code>. Para
+  mudar a pose, edite o mapa <code>CRAB</code> e rode o script.
+</p>
+
+<div class="heading">
+  <h2>04 — PONTO DE PARTIDA</h2>
+  <span>DUAS REFERÊNCIAS</span>
+</div>
+
+<section class="grid-2">
+  <article class="card">
+    <div class="tag">BRAND BOOK · MICRO BRICK</div>
+    <p>
+      Vetorial e detalhado. Módulos empilhados, pinos marcados, contorno
+      Core Black e faces em dois tons. A nova direção (seção 01) o refaz com peças de montar de verdade.
+    </p>
+    <span class="status old">REFERÊNCIA ANTERIOR, SUBSTITUÍDA PELA SEÇÃO 01</span>
+  </article>
+  <article class="card">
+    <div class="tag">TERMINAL · GRADE 10×6</div>
+    <p>
+      Blocos quadrados sem contorno, sem olhos e sem sombra. Já lê como
+      caranguejo só pela silhueta: pinças, pinos e patas. É a versão
+      mais próxima do nome "bit".
+    </p>
+  </article>
+</section>
+
+<div class="heading">
+  <h2>05 — A GRADE COMO MASTER</h2>
+  <span>PROPOSTA</span>
+</div>
+
+<section class="grid-2">
+  <article class="card">
+    <div class="art">
+      <div class="pixel" id="grid-original"></div>
+    </div>
+    <div style="margin-top:14px">
+      <strong>Terminal atual</strong>
+      <p>Desenho original, reproduzido célula a célula a partir do SVG do terminal.</p>
+    </div>
+  </article>
+  <article class="card">
+    <div class="art">
+      <div class="pixel" id="grid-eyes"></div>
+    </div>
+    <div style="margin-top:14px">
+      <strong>Exploração: olhos como células</strong>
+      <p>
+        Dois olhos em tinta Core Black, ocupando células da grade, sem
+        sair do sistema. Só para mostrar que a expressão cabe na
+        construção por peças. A posição é uma sugestão.
+      </p>
+    </div>
+  </article>
+</section>
+
+<div class="heading">
+  <h2>06 — O QUE EU ENTENDI</h2>
+  <span>SÍNTESE</span>
+</div>
+
+<section class="grid-3">
+  <article class="card">
+    <div class="tag">FORMA</div>
+    <p>Caranguejo reconhecível pela silhueta: corpo, duas pinças e patas laterais.</p>
+  </article>
+  <article class="card">
+    <div class="tag">MATERIAL</div>
+    <p>Peças de montar: cada divisão tem função construtiva, e o pino é a assinatura.</p>
+  </article>
+  <article class="card">
+    <div class="tag">TOM</div>
+    <p>Curioso e metódico, amigável, mas com cara de ferramenta profissional.</p>
+  </article>
+</section>
+
+<div class="heading">
+  <h2>07 — SUGESTÕES</h2>
+  <span>PARA DEBATER</span>
+</div>
+
+<ol class="points">
+  <li>
+    <span class="n">01</span>
+    <div>
+      <strong>Um master só</strong>
+      <p>
+        Hoje o Micro Brick do brand book e o pixel do terminal são desenhos
+        diferentes. Sugiro escolher a grade como master e derivar o vetor a
+        partir dela, para que terminal, ícone e documentação sejam o mesmo
+        caranguejo.
+      </p>
+    </div>
+  </li>
+  <li>
+    <span class="n">02</span>
+    <div>
+      <strong>Diferenciar do Claude</strong>
+      <p>
+        O caranguejo do Claude Code também é pixel art. Ser "parecido" ajuda a
+        comunicar que é uma ferramenta de código com IA, mas pode soar oficial
+        ou derivado. A diferença deve vir de elementos próprios: amarelo de
+        tijolo, pinos e a grade visível.
+      </p>
+    </div>
+  </li>
+  <li>
+    <span class="n">03</span>
+    <div>
+      <strong>Contorno em duas versões</strong>
+      <p>
+        O brand book pede contorno Core Black, mas o terminal não tem contorno.
+        Proponho uma versão principal com contorno (documentos, site) e uma
+        versão sólida, sem contorno, para tamanhos pequenos e terminal.
+      </p>
+    </div>
+  </li>
+  <li>
+    <span class="n">04</span>
+    <div>
+      <strong>Expressão por células</strong>
+      <p>
+        Os olhos podem ser células de tinta escura na grade. Isso mantém a
+        lógica de peças e evita rostos desenhados à parte, que não existem
+        no mundo dos blocos.
+      </p>
+    </div>
+  </li>
+  <li>
+    <span class="n">05</span>
+    <div>
+      <strong>Versão mínima</strong>
+      <p>
+        Abaixo de cerca de 16px, pinos internos e divisões somem. Defino uma
+        versão reduzida que mantém só a silhueta com pinças e pinos, e uma
+        versão completa para tamanhos grandes.
+      </p>
+    </div>
+  </li>
+  <li>
+    <span class="n">06</span>
+    <div>
+      <strong>Paleta restrita ao mascote</strong>
+      <p>
+        O mascote usa amarelo, amarelo claro nas faces superiores e preto.
+        As outras cores do sistema ficam para aplicações, para o mascote
+        não perder força.
+      </p>
+    </div>
+  </li>
+</ol>
+
+<div class="heading">
+  <h2>08 — PALETA</h2>
+  <span>MASCOTE + PEÇAS DE APLICAÇÃO</span>
+</div>
+
+<section class="palette">
+  <div>
+    <div class="swatch" style="background:#FFCC00"></div>
+    <div class="color-info"><strong>Claw Yellow</strong>#FFCC00</div>
+  </div>
+  <div>
+    <div class="swatch" style="background:#FFE477"></div>
+    <div class="color-info"><strong>Light Yellow</strong>#FFE477</div>
+  </div>
+  <div>
+    <div class="swatch" style="background:#D9AB00"></div>
+    <div class="color-info"><strong>Side Yellow</strong>#D9AB00</div>
+  </div>
+  <div>
+    <div class="swatch" style="background:#171717"></div>
+    <div class="color-info"><strong>Core Black</strong>#171717</div>
+  </div>
+  <div>
+    <div class="swatch" style="background:#F5F3EB"></div>
+    <div class="color-info"><strong>Warm Paper</strong>#F5F3EB</div>
+  </div>
+  <div>
+    <div class="swatch" style="background:#E8352B"></div>
+    <div class="color-info"><strong>Brick Red</strong>#E8352B</div>
+  </div>
+  <div>
+    <div class="swatch" style="background:#1F6FE0"></div>
+    <div class="color-info"><strong>Brick Blue</strong>#1F6FE0</div>
+  </div>
+  <div>
+    <div class="swatch" style="background:#3DAE2B"></div>
+    <div class="color-info"><strong>Brick Green</strong>#3DAE2B</div>
+  </div>
+  <div>
+    <div class="swatch" style="background:#8E3FD1"></div>
+    <div class="color-info"><strong>Brick Purple</strong>#8E3FD1</div>
+  </div>
+</section>
+
+<div class="heading">
+  <h2>09 — DECISÕES EM ABERTO</h2>
+  <span>PRECISAM DE RESPOSTA</span>
+</div>
+
+<section class="grid-3">
+  <div class="question">
+    <strong>Master: grade ou vetor?</strong>
+    <ul>
+      <li>Grade (recomendado)</li>
+      <li>Vetor do Micro Brick</li>
+    </ul>
+  </div>
+  <div class="question">
+    <strong>Contorno na versão principal?</strong>
+    <ul>
+      <li>Sim, com contorno Core Black</li>
+      <li>Não, sólido e com silhueta</li>
+    </ul>
+  </div>
+  <div class="question">
+    <strong>Expressão do rosto?</strong>
+    <ul>
+      <li>Olhos como células</li>
+      <li>Sem rosto, só silhueta</li>
+    </ul>
+  </div>
+</section>
+
+<div class="heading">
+  <h2>10 — MICRO BRICK NO TERMINAL</h2>
+  <span>GRADE 10×6 COMO MASTER</span>
+</div>
+
+<section class="grid-2">
+  <article class="card">
+    <div class="art">
+      <svg class="mascot" viewBox="0 0 432 272" width="300" role="img" aria-label="Micro Brick do BitClaw: caranguejo de peças em grade 10×6">
+<rect x="18" y="18" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="58" y="18" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="138" y="18" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="149" y="16" width="14" height="10" rx="2" fill="#FFE477" stroke="#171717" stroke-width="2"/>
+<rect x="258" y="18" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="269" y="16" width="14" height="10" rx="2" fill="#FFE477" stroke="#171717" stroke-width="2"/>
+<rect x="338" y="18" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="378" y="18" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="18" y="58" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="22" y="62" width="28" height="6" rx="2" fill="#FFE477"/>
+<rect x="58" y="58" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="62" y="62" width="28" height="6" rx="2" fill="#FFE477"/>
+<rect x="98" y="58" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="102" y="62" width="28" height="6" rx="2" fill="#FFE477"/>
+<rect x="138" y="58" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="142" y="62" width="28" height="6" rx="2" fill="#FFE477"/>
+<rect x="178" y="58" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="182" y="62" width="28" height="6" rx="2" fill="#FFE477"/>
+<rect x="218" y="58" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="222" y="62" width="28" height="6" rx="2" fill="#FFE477"/>
+<rect x="258" y="58" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="262" y="62" width="28" height="6" rx="2" fill="#FFE477"/>
+<rect x="298" y="58" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="302" y="62" width="28" height="6" rx="2" fill="#FFE477"/>
+<rect x="338" y="58" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="342" y="62" width="28" height="6" rx="2" fill="#FFE477"/>
+<rect x="378" y="58" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="382" y="62" width="28" height="6" rx="2" fill="#FFE477"/>
+<rect x="18" y="98" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="58" y="98" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="138" y="98" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="178" y="98" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="218" y="98" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="258" y="98" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="338" y="98" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="378" y="98" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="18" y="138" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="58" y="138" width="36" height="36" rx="4" fill="#D9AB00" stroke="#171717" stroke-width="2"/>
+<rect x="98" y="138" width="36" height="36" rx="4" fill="#D9AB00" stroke="#171717" stroke-width="2"/>
+<rect x="138" y="138" width="36" height="36" rx="4" fill="#D9AB00" stroke="#171717" stroke-width="2"/>
+<rect x="178" y="138" width="36" height="36" rx="4" fill="#D9AB00" stroke="#171717" stroke-width="2"/>
+<rect x="218" y="138" width="36" height="36" rx="4" fill="#D9AB00" stroke="#171717" stroke-width="2"/>
+<rect x="258" y="138" width="36" height="36" rx="4" fill="#D9AB00" stroke="#171717" stroke-width="2"/>
+<rect x="298" y="138" width="36" height="36" rx="4" fill="#D9AB00" stroke="#171717" stroke-width="2"/>
+<rect x="338" y="138" width="36" height="36" rx="4" fill="#D9AB00" stroke="#171717" stroke-width="2"/>
+<rect x="378" y="138" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="98" y="178" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="138" y="178" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="178" y="178" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="218" y="178" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="258" y="178" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="298" y="178" width="36" height="36" rx="4" fill="#FFCC00" stroke="#171717" stroke-width="2"/>
+<rect x="58" y="218" width="36" height="36" rx="2" fill="#D9AB00" stroke="#171717" stroke-width="2"/>
+<rect x="138" y="218" width="36" height="36" rx="2" fill="#D9AB00" stroke="#171717" stroke-width="2"/>
+<rect x="258" y="218" width="36" height="36" rx="2" fill="#D9AB00" stroke="#171717" stroke-width="2"/>
+<rect x="338" y="218" width="36" height="36" rx="2" fill="#D9AB00" stroke="#171717" stroke-width="2"/>
+<rect x="107" y="107" width="18" height="18" rx="3" fill="#171717"/>
+<rect x="307" y="107" width="18" height="18" rx="3" fill="#171717"/>
+      </svg>
+    </div>
+    <div style="margin-top:14px">
+      <strong>Micro Brick derivado da grade</strong>
+      <p>
+        Mesmo mapa do terminal, desenhado como peças: cada célula é um módulo
+        com contorno Core Black, face superior clara e face lateral em Side
+        Yellow. Pinos nas células de cima, emenda de tijolo no meio, pés
+        embaixo e olhos como células escuras.
+      </p>
+    </div>
+  </article>
+  <article class="card">
+    <div class="art">
+      <pre aria-label="Mascote no terminal, meio-blocos" style="margin:0;font:22px/1 ui-monospace,Menlo,monospace;color:#FFCC00;background:#171717;padding:18px 22px;border-radius:8px;white-space:pre;letter-spacing:0">██▄█▄▄█▄██
+██▄████▄██
+ ▄▀█▀▀█▀▄</pre>
+    </div>
+    <div style="margin-top:14px">
+      <strong>Como fica no TUI</strong>
+      <p>
+        Renderização real do cabeçalho: 10 colunas por 3 linhas, com meio-blocos
+        (<code>▀</code>, <code>▄</code>, <code>█</code>). Os olhos são buracos,
+        então aparecem como espaço no fundo escuro do terminal. O mesmo mapa
+        alimenta as animações em <code>src/app/tui/brand.rs</code>.
+      </p>
+    </div>
+  </article>
+</section>
+
+<section class="note">
+  Próximo passo, se a nova direção for aprovada: definir o desenho final na grade,
+  gerar as versões (completa, mínima, com e sem contorno) e atualizar o brand
+  book com a decisão. Os desenhos originais continuam preservados como
+  referência histórica.
+</section>
+
+<footer class="footer">
+  <span>BITCLAW / IDENTIDADE VISUAL</span>
+  <span>PROPOSTA 2 · RASCUNHO</span>
+</footer>
+
+</main>
+
+<script>
+  // Grade do terminal (10 colunas x 6 linhas, cada célula = 24px no SVG original).
+  // 1 = bloco amarelo, 0 = vazio. "E" = célula de olho (tinta escura).
+  const terminal = [
+    "1101001101",
+    "1111111111",
+    "1101111011",
+    "1111111111",
+    "0011111100",
+    "0101001010"
+  ];
+
+  // Exploração: dois olhos nas células centrais da linha 2.
+  const withEyes = terminal.map((row, r) =>
+    r === 2 ? row.split("").map((c, i) => (i === 4 || i === 5 ? "E" : c)).join("") : row
+  );
+
+  function render(id, map) {
+    const el = document.getElementById(id);
+    el.style.gridTemplateColumns = `repeat(${map[0].length}, 26px)`;
+    map.forEach(row => {
+      row.split("").forEach(cell => {
+        const i = document.createElement("i");
+        if (cell === "1") i.className = "on";
+        else if (cell === "E") i.className = "eye";
+        else i.className = "off";
+        el.appendChild(i);
+      });
+    });
+  }
+
+  render("grid-original", terminal);
+  render("grid-eyes", withEyes);
+</script>
+</body>
+</html>

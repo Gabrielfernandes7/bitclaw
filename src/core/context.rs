@@ -5,19 +5,38 @@
 //! começa conservadora e é calibrada com `prompt_eval_count`, que o Ollama devolve a cada chamada.
 
 use serde_json::Value;
+use std::collections::VecDeque;
 
 const DEFAULT_CHARS_PER_TOKEN: f64 = 3.0;
 const MIN_CHARS_PER_TOKEN: f64 = 1.0;
 const MAX_CHARS_PER_TOKEN: f64 = 6.0;
+// Resultados de ferramenta menores que isso não valem a poda: o marcador quase não os encolheria.
+const MIN_PRUNE_CHARS: usize = 200;
+// Começo do texto que substitui um resultado podado. Também evita podar duas vezes o mesmo.
+const PRUNED_MARK: &str = "[resultado antigo de ";
 
 // Registro de um ajuste feito antes de uma chamada ao modelo.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Trim {
     // Turnos antigos removidos.
     pub turns: usize,
+    // Resultados antigos de ferramenta trocados por um marcador curto (antes de remover turnos).
+    pub pruned: usize,
     pub chars_before: usize,
     pub chars_after: usize,
     pub budget: usize,
+}
+
+impl Trim {
+    // Uma linha para o terminal dizer o que foi tirado do histórico.
+    pub fn summary(&self) -> String {
+        let sizes = format!("caracteres {} → {} (orçamento {})", self.chars_before, self.chars_after, self.budget);
+        match (self.turns, self.pruned) {
+            (0, p) => format!("[contexto] {p} resultado(s) antigo(s) de ferramenta resumido(s); {sizes}"),
+            (t, 0) => format!("[contexto] descartados {t} turno(s) antigo(s); {sizes}"),
+            (t, p) => format!("[contexto] {p} resultado(s) resumido(s) e {t} turno(s) antigo(s) descartado(s); {sizes}"),
+        }
+    }
 }
 
 // Ocupação atual da janela de contexto.
@@ -81,7 +100,8 @@ impl ContextManager {
         self.chars_per_token = ratio.clamp(MIN_CHARS_PER_TOKEN, MAX_CHARS_PER_TOKEN);
     }
 
-    // Garante que o histórico cabe no orçamento, descartando turnos antigos inteiros.
+    // Garante que o histórico cabe no orçamento: primeiro troca resultados antigos de ferramenta por um
+    // marcador curto e, se ainda não bastar, descarta turnos antigos inteiros.
     // Devolve `None` se nada foi descartado. Erra se o turno atual sozinho não cabe.
     pub fn fit(&self, messages: &mut Vec<Value>, tools: &Value) -> Result<Option<Trim>, String> {
         let budget = self.budget_chars(tools);
@@ -104,6 +124,11 @@ impl ContextManager {
         }
 
         let mut total = before;
+        // Primeiro encolhe o que é mais barato de perder: resultados de ferramenta de turnos antigos.
+        let pruned = prune_old_results(messages, head, current, &mut total, budget);
+        if total <= budget {
+            return Ok(Some(Trim { turns: 0, pruned, chars_before: before, chars_after: total, budget }));
+        }
         let mut turns = 0;
         while total > budget {
             // Um turno vai de uma mensagem de usuário até a próxima (ou até o turno atual).
@@ -122,8 +147,83 @@ impl ContextManager {
             turns += 1;
         }
 
-        Ok(Some(Trim { turns, chars_before: before, chars_after: total, budget }))
+        Ok(Some(Trim { turns, pruned, chars_before: before, chars_after: total, budget }))
     }
+}
+
+// A ferramenta e o caminho de uma chamada, para saber a que resultado ela pertence.
+#[derive(Clone)]
+struct Target {
+    name: String,
+    path: Option<String>,
+}
+
+fn target_of(call: &Value) -> Target {
+    let func = call.get("function").unwrap_or(&Value::Null);
+    let name = func.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+    let args = match func.get("arguments") {
+        Some(Value::String(text)) => serde_json::from_str(text).unwrap_or(Value::Null),
+        Some(other) => other.clone(),
+        None => Value::Null,
+    };
+    Target { name, path: args.get("path").and_then(Value::as_str).map(str::to_string) }
+}
+
+// Para cada mensagem de resultado (`role: tool`), a chamada que a originou. Os resultados vêm na ordem
+// das chamadas da mensagem do assistente que os precede.
+fn tool_targets(messages: &[Value]) -> Vec<Option<Target>> {
+    let mut out = vec![None; messages.len()];
+    let mut pending: VecDeque<Target> = VecDeque::new();
+    for (i, m) in messages.iter().enumerate() {
+        if is_role(m, "assistant") {
+            pending = m
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .map(|calls| calls.iter().map(target_of).collect())
+                .unwrap_or_default();
+        } else if is_role(m, "tool") {
+            out[i] = pending.pop_front();
+        }
+    }
+    out
+}
+
+// Troca resultados de ferramenta anteriores a `current` por um marcador, do mais antigo ao mais novo,
+// até caber no orçamento. Resultados já superados (uma chamada posterior mexeu no mesmo caminho: leu de
+// novo, editou ou removeu) vão primeiro, porque o modelo já tem a versão nova. Devolve quantos podou.
+fn prune_old_results(messages: &mut [Value], head: usize, current: usize, total: &mut usize, budget: usize) -> usize {
+    let targets = tool_targets(messages);
+    let candidate = |i: usize, m: &Value| {
+        is_role(m, "tool")
+            && m.get("content").and_then(Value::as_str).is_some_and(|c| c.chars().count() > MIN_PRUNE_CHARS && !c.starts_with(PRUNED_MARK))
+            && targets[i].is_some()
+            && i < current
+    };
+    let superseded = |i: usize| {
+        let Some(Target { path: Some(path), .. }) = &targets[i] else { return false };
+        targets[i + 1..].iter().flatten().any(|t| t.path.as_ref() == Some(path))
+    };
+    let mut order: Vec<usize> = (head..current).filter(|&i| candidate(i, &messages[i])).collect();
+    // Estável: dentro de cada grupo, o mais antigo primeiro.
+    order.sort_by_key(|&i| !superseded(i));
+
+    let mut pruned = 0;
+    for i in order {
+        if *total <= budget {
+            break;
+        }
+        let Some(target) = &targets[i] else { continue };
+        let old = messages[i].get("content").and_then(Value::as_str).unwrap_or("").chars().count();
+        let what = match &target.path {
+            Some(p) => format!("{} {p}", target.name),
+            None => target.name.clone(),
+        };
+        let before = value_size(&messages[i]);
+        messages[i]["content"] = Value::String(format!("{PRUNED_MARK}{what} omitido ({old} car.); chame de novo se precisar]"));
+        *total = *total - before + value_size(&messages[i]);
+        pruned += 1;
+    }
+    pruned
 }
 
 // Tamanho de um valor JSON (mensagem ou esquemas), em caracteres.
@@ -216,7 +316,7 @@ mod tests {
     #[test]
     fn above_limit_drops_oldest_whole_turns() {
         let mut m = history(5, 400);
-        let budget = size(&m) - 1500; // força descarte de alguns turnos
+        let budget = size(&m) - 3000; // mais do que a poda dos resultados recupera: força descarte de turnos
         let cm = manager_with_budget(budget);
         let trim = cm.fit(&mut m, &no_tools()).unwrap().expect("deveria descartar");
         assert!(trim.turns >= 1);
@@ -343,5 +443,85 @@ mod tests {
         assert!(with < without);
         // Reserva de saída: (8192 - 1024) tokens × 3 caracteres, menos o JSON dos esquemas ("[]" = 2).
         assert_eq!(without, (8192 - 1024) * 3 - value_size(&no_tools()));
+    }
+
+    // Turno em que `tool` devolveu `pad` caracteres para o caminho `path`.
+    fn turn_on(task: &str, tool: &str, path: &str, pad: usize) -> Vec<Value> {
+        vec![
+            msg("user", task),
+            json!({"role": "assistant", "content": "", "tool_calls": [{"function": {"name": tool, "arguments": {"path": path}}}]}),
+            json!({"role": "tool", "tool_name": tool, "content": "x".repeat(pad)}),
+            msg("assistant", "feito"),
+        ]
+    }
+
+    fn tool_text(m: &Value) -> &str {
+        m["content"].as_str().unwrap()
+    }
+
+    #[test]
+    fn old_tool_results_are_shrunk_before_any_turn_is_dropped() {
+        let mut m = vec![system()];
+        m.extend(turn_on("lê a", "read_file", "a.rs", 3_000));
+        m.extend(turn_on("lê b", "read_file", "b.rs", 3_000));
+        m.push(msg("user", "agora"));
+        // Cabe se um dos dois resultados virar marcador, e só o mais antigo precisa virar.
+        let cm = manager_with_budget(size(&m) - 2_500);
+        let trim = cm.fit(&mut m, &no_tools()).unwrap().expect("deveria ter ajustado");
+        assert_eq!((trim.turns, trim.pruned), (0, 1), "{trim:?}");
+        assert!(tool_text(&m[3]).starts_with("[resultado antigo de read_file a.rs omitido (3000 car.)"), "{}", tool_text(&m[3]));
+        assert_eq!(tool_text(&m[7]).len(), 3_000, "o mais novo fica intacto");
+        assert_eq!(m.len(), 10, "nenhum turno foi descartado");
+        assert!(trim.summary().contains("1 resultado(s) antigo(s)"), "{}", trim.summary());
+    }
+
+    #[test]
+    fn a_result_superseded_by_a_later_call_on_the_same_path_goes_first() {
+        let mut m = vec![system()];
+        m.extend(turn_on("lê a", "read_file", "a.rs", 3_000));
+        m.extend(turn_on("lê b", "read_file", "b.rs", 3_000));
+        m.extend(turn_on("edita a", "edit_file", "a.rs", 10));
+        m.push(msg("user", "agora"));
+        // O mais antigo (a.rs) já foi superado pela edição, mas o b.rs não: poda a.rs e só ele.
+        let cm = manager_with_budget(size(&m) - 2_500);
+        cm.fit(&mut m, &no_tools()).unwrap();
+        assert!(tool_text(&m[3]).starts_with(PRUNED_MARK));
+        assert_eq!(tool_text(&m[7]).len(), 3_000);
+
+        // Invertendo a ordem: o mais antigo (b.rs) NÃO foi superado e o mais novo (a.rs) foi.
+        let mut m = vec![system()];
+        m.extend(turn_on("lê b", "read_file", "b.rs", 3_000));
+        m.extend(turn_on("lê a", "read_file", "a.rs", 3_000));
+        m.extend(turn_on("edita a", "edit_file", "a.rs", 10));
+        m.push(msg("user", "agora"));
+        let cm = manager_with_budget(size(&m) - 2_500);
+        cm.fit(&mut m, &no_tools()).unwrap();
+        assert_eq!(tool_text(&m[3]).len(), 3_000, "b.rs ainda vale");
+        assert!(tool_text(&m[7]).starts_with(PRUNED_MARK), "a.rs foi superado pela edição");
+    }
+
+    #[test]
+    fn pruning_is_not_enough_then_turns_are_dropped_too() {
+        let mut m = history(3, 2_000);
+        let cm = manager_with_budget(size(&m) / 8);
+        let trim = cm.fit(&mut m, &no_tools()).unwrap().unwrap();
+        assert!(trim.pruned > 0 && trim.turns > 0, "{trim:?}");
+        assert!(size(&m) <= cm.budget_chars(&no_tools()));
+        assert!(trim.summary().contains("resumido(s) e"), "{}", trim.summary());
+    }
+
+    #[test]
+    fn small_results_and_the_current_turn_are_never_pruned() {
+        let mut m = vec![system()];
+        m.extend(turn_on("antiga", "read_file", "a.rs", 100));
+        m.push(msg("user", "atual"));
+        m.push(json!({"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "read_file", "arguments": {"path": "b.rs"}}}]}));
+        m.push(json!({"role": "tool", "tool_name": "read_file", "content": "y".repeat(5_000)}));
+        let before = m.clone();
+        let cm = manager_with_budget(size(&m) - 50);
+        // O resultado pequeno não rende e o grande é do turno atual: sobra descartar o turno antigo.
+        let trim = cm.fit(&mut m, &no_tools()).unwrap().unwrap();
+        assert_eq!(trim.pruned, 0, "{trim:?}");
+        assert_eq!(m.last(), before.last());
     }
 }

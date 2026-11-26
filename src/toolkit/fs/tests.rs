@@ -84,7 +84,7 @@ fn read_file_truncates_large_files() {
     let out = run(&r, "read_file", json!({"path": "grande.txt"}));
     let Outcome::Done(text) = out else { panic!("esperava Done") };
     assert!(text.contains("truncado em"));
-    assert!(text.len() < MAX_READ_BYTES + 100);
+    assert!(text.len() < MAX_READ_BYTES + 300);
 }
 
 #[test]
@@ -144,4 +144,107 @@ fn mutating_tools_are_marked() {
 #[should_panic(expected = "duplicados")]
 fn duplicate_names_are_rejected() {
     Registry::new(vec![Box::new(ListDir), Box::new(ListDir)]);
+}
+
+#[test]
+fn read_file_returns_only_the_requested_lines() {
+    let r = root("range");
+    fs::write(r.join("a.txt"), "um\ndois\ntrês\nquatro\ncinco\n").unwrap();
+    let out = run(&r, "read_file", json!({"path": "a.txt", "start_line": 2, "end_line": 3}));
+    assert_eq!(out, Outcome::Done("[linhas 2-3 de 5]\ndois\ntrês".into()));
+    // Aceita número como texto e fim omitido.
+    let out = run(&r, "read_file", json!({"path": "a.txt", "start_line": "4"}));
+    assert_eq!(out, Outcome::Done("[linhas 4-5 de 5]\nquatro\ncinco".into()));
+}
+
+#[test]
+fn read_file_rejects_a_bad_line_number_and_reports_past_the_end() {
+    let r = root("range-bad");
+    fs::write(r.join("a.txt"), "um\ndois\n").unwrap();
+    assert!(matches!(run(&r, "read_file", json!({"path": "a.txt", "start_line": 0})), Outcome::Error(_)));
+    assert_eq!(
+        run(&r, "read_file", json!({"path": "a.txt", "start_line": 9})),
+        Outcome::Done("[o arquivo tem só 2 linhas]".into())
+    );
+}
+
+#[test]
+fn read_file_outline_lists_declarations_with_line_numbers() {
+    let r = root("outline");
+    fs::write(
+        r.join("a.rs"),
+        "//! Módulo de teste.\n\nuse std::fs;\n\npub struct A;\n\nimpl A {\n    pub fn novo() -> Self {\n        let x = 1;\n        A\n    }\n}\n\nfn solta() {}\n",
+    )
+    .unwrap();
+    let Outcome::Done(text) = run(&r, "read_file", json!({"path": "a.rs", "mode": "outline"})) else { panic!() };
+    assert!(text.contains("1: //! Módulo de teste."), "{text}");
+    assert!(text.contains("5: pub struct A;"), "{text}");
+    assert!(text.contains("8:     pub fn novo() -> Self {"), "{text}");
+    assert!(text.contains("14: fn solta() {}"), "{text}");
+    assert!(!text.contains("let x"), "{text}");
+    assert!(!text.contains("use std"), "{text}");
+}
+
+#[test]
+fn read_file_truncation_tells_how_to_read_the_rest() {
+    let r = root("trunc");
+    fs::write(r.join("big.txt"), "linha\n".repeat(MAX_READ_BYTES)).unwrap();
+    let Outcome::Done(text) = run(&r, "read_file", json!({"path": "big.txt"})) else { panic!() };
+    assert!(text.contains("start_line"), "{text}");
+    assert!(text.contains(&format!("{} linhas", MAX_READ_BYTES)), "{text}");
+}
+
+#[test]
+fn grep_files_finds_lines_and_skips_target() {
+    let r = root("grep");
+    fs::create_dir_all(r.join("src")).unwrap();
+    fs::create_dir_all(r.join("target")).unwrap();
+    fs::write(r.join("src/a.rs"), "fn main() {}\nlet Token = 1;\n").unwrap();
+    fs::write(r.join("target/b.rs"), "token oculto\n").unwrap();
+    let out = run(&r, "grep_files", json!({"pattern": "token"}));
+    assert_eq!(out, Outcome::Done("src/a.rs:2: let Token = 1;".into()));
+    let none = run(&r, "grep_files", json!({"pattern": "inexistente"}));
+    assert_eq!(none, Outcome::Done("nada encontrado para \"inexistente\"".into()));
+}
+
+#[test]
+fn grep_files_caps_results_and_refuses_paths_outside_the_project() {
+    let r = root("grep-cap");
+    fs::write(r.join("a.txt"), "alvo\n".repeat(100)).unwrap();
+    let Outcome::Done(text) = run(&r, "grep_files", json!({"pattern": "alvo"})) else { panic!() };
+    assert_eq!(text.lines().count(), 41, "{text}");
+    assert!(text.contains("[+60 resultados omitidos"), "{text}");
+    assert!(matches!(run(&r, "grep_files", json!({"pattern": "x", "path": "../"})), Outcome::Error(_)));
+    assert!(matches!(run(&r, "grep_files", json!({"pattern": "  "})), Outcome::Error(_)));
+}
+
+#[test]
+fn read_file_outline_stops_at_the_test_module() {
+    let r = root("outline-tests");
+    fs::write(r.join("a.rs"), "pub fn real() {}\n\n#[cfg(test)]\nmod tests {\n    fn um_teste() {}\n}\n").unwrap();
+    let Outcome::Done(text) = run(&r, "read_file", json!({"path": "a.rs", "mode": "outline"})) else { panic!() };
+    assert!(text.contains("1: pub fn real() {}"), "{text}");
+    assert!(!text.contains("um_teste") && !text.contains("mod tests"), "{text}");
+    assert!(text.contains("[testes a partir da linha 3 omitidos]"), "{text}");
+}
+
+#[test]
+fn edit_file_answers_with_the_line_counts_and_not_the_diff() {
+    let r = root("edit-short");
+    fs::write(r.join("a.txt"), "um\ndois\ntrês\n").unwrap();
+    let out = run(&r, "edit_file", json!({"path": "a.txt", "old": "dois\ntrês", "new": "2"}));
+    let Outcome::Done(text) = out else { panic!("{out:?}") };
+    assert!(text.contains("+1 −2 linhas"), "{text}");
+    assert!(text.len() < 120, "a resposta ao modelo deve ser curta: {text}");
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "um\n2\n");
+}
+
+#[test]
+fn read_file_errors_say_what_to_do_instead() {
+    let r = root("read-hints");
+    fs::create_dir(r.join("src")).unwrap();
+    let Outcome::Error(dir) = run(&r, "read_file", json!({"path": "src"})) else { panic!() };
+    assert!(dir.contains("é uma pasta") && dir.contains("list_dir"), "{dir}");
+    let Outcome::Error(missing) = run(&r, "read_file", json!({"path": "novo.py"})) else { panic!() };
+    assert!(missing.contains("não existe") && missing.contains("create_file"), "{missing}");
 }

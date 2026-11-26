@@ -1,6 +1,6 @@
 # BitClaw
 
-<p align="center"><img src="assets/bitclaw-crab.svg" alt="Mascote do BitClaw" width="160"></p>
+<p align="center"><img src="assets/bitclaw-crab.svg" alt="Mascote do BitClaw" width="160"></p> 
 
 Núcleo experimental de agente de IA, local e enxuto, escrito em Rust. Hoje ele funciona como um agente de linha de comando que lê e edita arquivos de um projeto, usando um modelo servido pelo [Ollama](https://ollama.com).
 
@@ -116,7 +116,7 @@ let relatorio = sessao.submit("liste os arquivos", &Silent)?;
 
 ## Uso no prompt
 
-Digite a tarefa em linguagem natural e pressione Enter. A conversa fica no histórico normal do terminal (você rola, seleciona e copia como sempre); só o status, o editor e o rodapé ficam fixos embaixo.
+Digite a tarefa em linguagem natural e pressione Enter. O BitClaw abre em tela cheia, como o Claude Code: a conversa ocupa a parte de cima e rola, e o editor, o rodapé e os painéis ficam fixos embaixo. O que estava no terminal antes (o `cargo run`, o shell) some ao abrir e volta intacto ao sair.
 
 | Tecla | Efeito |
 |---|---|
@@ -131,8 +131,11 @@ Digite `/` para abrir o menu de comandos. Setas escolhem, Tab completa, Enter ex
 
 - `/clear`: limpa a tela e apaga o histórico da conversa, como no Claude Code. O prompt do sistema é mantido.
 - Comandos e o subcomando de `/model` (`load`, `show`) aparecem destacados em azul no editor.
-- A tela é dividida em três partes: o mascote com o nome, o projeto e o modelo no topo, a conversa no meio e o editor embaixo. A conversa rola com PageUp/PageDown. Como é tela cheia, a conversa some ao sair e o terminal não guarda o histórico. Por padrão o mouse não é capturado, então dá para selecionar e copiar texto normalmente; com `--mouse`, a roda rola a conversa, mas a seleção só funciona segurando Option (macOS).
-- O mascote fica no topo, ao lado do nome, do projeto e do modelo (que viram o status enquanto o agente trabalha), e cumprimenta ao abrir (pisca, olha para os lados e estala as pinças). Cada clique nele mostra um número: estalo, pinos contando em binário, pinças batucando e o cumprimento de novo. Com `--mouse`, o clique usa o mouse do terminal, o que impede selecionar texto sem uma tecla modificadora (Option no macOS, em muitos terminais).
+- Rolar a conversa: roda do mouse ou trackpad, PageUp/PageDown (fn+↑/↓ no Mac), Shift+↑/↓ linha a linha, Ctrl+Home e Ctrl+End para o começo e o fim. Rolada para cima, o que chega não a move, e um aviso diz quantas linhas há abaixo. Enviar uma tarefa volta ao fim.
+- Copiar: arraste na conversa para selecionar (o trecho fica em destaque) e solte para copiar; o rodapé confirma com "copiado". A cópia usa `pbcopy` (macOS), `wl-copy` ou `xclip` e, sem nenhum deles, a sequência OSC 52 do terminal. Ctrl+C com algo selecionado copia de novo em vez de interromper. Com `--no-mouse`, o mouse volta para o terminal (seleção nativa), e a conversa rola só pelo teclado.
+- Redimensionar a janela reflui a conversa na nova largura.
+- O cabeçalho (mascote, nome, projeto e modelo) é a primeira coisa da conversa e rola junto com ela. Ao abrir, o mascote faz um dos números (pisca, olha para os lados e estala as pinças) ali mesmo; quando acaba, ou na primeira tecla, ele para. Os painéis (`/status`, `/model`, `/skills`, `/effort`) abrem embaixo, no lugar do editor, com a conversa visível acima.
+- Limitação do modo inline: se você redimensionar a janela, o terminal reflui as linhas já desenhadas, e uma cópia antiga e quebrada da área de baixo pode ficar no histórico. A conversa em si não é afetada.
 - Enquanto o agente trabalha, o status mostra uma lâmpada que pulsa e o passo atual (`lendo AGENTS.md…`). Cada ferramenta aparece na conversa quando termina (`✓ leu AGENTS.md`, `⊘` se recusada, `✗` se falhou). Isso vem das próprias chamadas de ferramenta, então não gasta token. O tempo vem em `(59s · modelo 52s)`: total do turno e quanto foi espera pelo modelo.
 - `@` no editor lista os arquivos e pastas do projeto (`@docs/` mostra o conteúdo de `docs`). ↑/↓ escolhem, Tab ou Enter completam (pasta termina em `/` e continua descendo) e Esc fecha. Pastas ocultas, `target` e `node_modules` ficam de fora, e nada sai da pasta do projeto. O texto `@caminho` vai para o modelo como escrito: o conteúdo do arquivo não é anexado, o modelo o lê com `read_file` se precisar.
 - `/model`: abre a lista dos modelos instalados no Ollama, com busca (digite para filtrar, ↑/↓ e enter para escolher). Mostra o ativo, o padrão da configuração e as capacidades de cada um (ferramentas, raciocínio, janela). `/model load <id>` troca direto (`/model <id>` continua valendo). `/model show [id]` mostra a ficha do modelo pedido, ou do ativo, e funciona até durante uma tarefa. A troca mantém a conversa; a próxima tarefa vai para o novo modelo. Não é possível trocar durante uma tarefa. A escolha vale só para a sessão: o padrão continua o da configuração.
@@ -143,11 +146,12 @@ Digite `/` para abrir o menu de comandos. Setas escolhem, Tab completa, Enter ex
 - `/status`: painel em abas (Status, Config, Usage e Stats), com versão, modelo, esforço, contexto e contagens da sessão. ←/→ troca de aba, esc fecha.
 - `/think`: atalho de `/effort`. Liga no padrão do modelo ou desliga, e mostra o aviso de custo. O rodapé mostra `esforço <nível>` enquanto estiver ligado. O raciocínio de turnos anteriores sai do histórico, para não gastar contexto.
 - `/help`: mostra os comandos e as teclas.
+- `/restart-dev`: recompila (`cargo build`) e reabre o BitClaw no lugar, com os mesmos argumentos, para ver alterações do código sem sair do terminal. Se a compilação falhar, mostra o erro e continua na sessão atual. A conversa não é preservada. Só funciona em desenvolvimento, com o código-fonte onde foi compilado.
 - `/exit`: encerra o programa.
 
 `/quit` também encerra o programa, como alias de `/exit`.
 
-O rodapé mostra o modelo, o modo (`Manual`, ou `Automático` com `--yes`) e o uso da janela de contexto. Quando a entrada ou a saída não é um terminal (pipes, scripts), o BitClaw usa um modo simples: uma tarefa por linha, texto puro e sem cores.
+O rodapé mostra o modelo, o uso da janela de contexto e, só com `--yes`, o aviso `Automático`. Quando a entrada ou a saída não é um terminal (pipes, scripts), o BitClaw usa um modo simples: uma tarefa por linha, texto puro e sem cores.
 
 Exemplos de tarefas:
 
@@ -161,7 +165,8 @@ troque o nome da função soma por adiciona em calc.py
 ## Ferramentas
 
 - `list_dir`: lista um diretório do projeto.
-- `read_file`: lê um arquivo. Arquivos com mais de 8 KB são truncados e o programa avisa.
+- `read_file`: lê um arquivo. Arquivos com mais de 8 KB são truncados e o aviso diz quantas linhas ele tem. Para gastar menos contexto, `mode: "outline"` devolve só a estrutura (declarações e `//!`, com o número da linha, sem o módulo de testes) e `start_line`/`end_line` leem só um trecho.
+- `grep_files`: procura um texto (sem regex, ignora maiúsculas) e devolve `arquivo:linha: trecho`, no máximo 40 resultados. Pula `target`, `node_modules`, `.git` e `.bitclaw`.
 - `edit_file`: troca um trecho exato que aparece uma única vez. Mostra o diff com contexto, pede confirmação e salva um backup em `.bitclaw/backup/`. Só altera arquivos existentes.
 - `create_file`: cria um arquivo novo com o conteúdo dado. Recusa sobrescrever um arquivo existente e pede confirmação.
 - `create_dir`: cria uma pasta nova e vazia, com as pastas pais que faltarem. Recusa pasta existente e pede confirmação.
@@ -172,7 +177,7 @@ Ao fim de cada tarefa, o programa lista as ações executadas: `✓` (feita), `�
 
 ## Contexto
 
-O histórico da conversa tem orçamento. Quando ele excede a janela (`context_window` = 16384 tokens no padrão, com 1024 reservados para a resposta), o programa descarta os turnos mais antigos inteiros e registra cada descarte no terminal. O prompt do sistema e o turno atual nunca são descartados. Se o próprio turno atual não couber, a tarefa é recusada com erro.
+O histórico da conversa tem orçamento. Quando ele excede a janela (`context_window` = 16384 tokens no padrão, com 1024 reservados para a resposta), o programa primeiro troca resultados antigos de ferramenta por um marcador curto (os já superados por uma leitura ou edição posterior do mesmo caminho vão primeiro) e, se ainda não bastar, descarta os turnos mais antigos inteiros. Cada ajuste aparece no terminal. Com `BITCLAW_STATS=1`, cada turno mostra quantos caracteres cada ferramenta devolveu ao modelo. O prompt do sistema e o turno atual nunca são descartados. Se o próprio turno atual não couber, a tarefa é recusada com erro.
 
 ## Avaliação com modelos reais
 
@@ -224,7 +229,9 @@ Os testes não dependem de rede nem de modelo: usam um modelo falso com resposta
 | `src/main.rs` | Binário: lê a configuração, monta as peças e escolhe a interface. |
 | `src/tui/mod.rs` | Interface de terminal (ratatui, viewport inline): estado, laço de eventos e `run`. |
 | `src/tui/input.rs` | Teclas, painéis e comandos com `/`. |
-| `src/tui/print.rs` | Saída para o scrollback: cabeçalho, avisos, prévias e relatório. |
+| `src/tui/print.rs` | Saída para a conversa: cabeçalho, avisos, prévias e relatório. |
+| `src/tui/transcript.rs` | A conversa em tela cheia: rolagem, refluxo e seleção com o mouse. |
+| `src/tui/clipboard.rs` | Cópia da seleção (`pbcopy`, `wl-copy`, `xclip` ou OSC 52). |
 | `src/tui/worker.rs` | Thread do agente e canais entre ela e a interface. |
 | `src/tui/commands.rs`, `history.rs` | Lista de comandos com `/` e histórico de entrada (↑ ↓). |
 | `src/tui/view/` | Desenho da área fixa e dos painéis `/skills`, `/model` e `/status`. |

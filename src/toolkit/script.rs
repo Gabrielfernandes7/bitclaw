@@ -71,15 +71,47 @@ fn visible(line: &str) -> String {
 }
 
 fn run_preview(rel: &str, extra: &[String], content: &str) -> Preview {
-    let command = if extra.is_empty() { format!("./{rel}") } else { format!("./{rel} {}", visible(&extra.join(" "))) };
-    let mut lines = vec![
-        PreviewLine::Context(format!("$ chmod u+x {rel}")),
-        PreviewLine::Context(format!("$ {command}")),
-        PreviewLine::Context(String::new()),
-    ];
+    let interpreter = interpreter_for(rel, content);
+    let program = match interpreter {
+        Some(i) => format!("{i} {rel}"),
+        None => format!("./{rel}"),
+    };
+    let command = if extra.is_empty() { program } else { format!("{program} {}", visible(&extra.join(" "))) };
+    let mut lines = Vec::new();
+    if interpreter.is_none() {
+        lines.push(PreviewLine::Context(format!("$ chmod u+x {rel}")));
+    }
+    lines.push(PreviewLine::Context(format!("$ {command}")));
+    lines.push(PreviewLine::Context(String::new()));
     lines.extend(content.lines().map(|l| PreviewLine::Context(visible(l))));
     lines.push(PreviewLine::Note("o script roda com as suas permissões, sem isolamento: confira o conteúdo antes de aceitar.".into()));
     Preview { title: format!("executar {rel}"), lines }
+}
+
+// Script sem shebang de uma linguagem conhecida: roda com o interpretador da extensão. Sem isso, o sistema
+// o entregaria ao `sh`, e um `.py` daria erro de sintaxe de shell (os modelos pequenos esquecem o shebang).
+// Com shebang, ele decide.
+fn interpreter_for(rel: &str, content: &str) -> Option<&'static str> {
+    if content.starts_with("#!") {
+        return None;
+    }
+    match Path::new(rel).extension().and_then(|e| e.to_str()) {
+        Some("py") => Some("python3"),
+        Some("js" | "mjs") => Some("node"),
+        Some("rb") => Some("ruby"),
+        Some("sh") => Some("bash"),
+        _ => None,
+    }
+}
+
+// Shebang sugerido pela extensão do script, para o erro dizer a linha exata que falta.
+fn shebang_for(rel: &str) -> &'static str {
+    match Path::new(rel).extension().and_then(|e| e.to_str()) {
+        Some("py") => "#!/usr/bin/env python3",
+        Some("js" | "mjs") => "#!/usr/bin/env node",
+        Some("rb") => "#!/usr/bin/env ruby",
+        _ => "#!/bin/bash",
+    }
 }
 
 fn run_script(root: &Path, args: &Value, approver: &dyn Approver, limit: Duration) -> Result<Outcome, String> {
@@ -113,25 +145,34 @@ fn run_script(root: &Path, args: &Value, approver: &dyn Approver, limit: Duratio
     if fs::read_to_string(&path).ok().as_deref() != Some(content.as_str()) {
         return Err(format!("{rel} mudou depois da aprovação; nada foi executado"));
     }
-    execute(root, rel, &path, &extra, limit)
+    execute(root, rel, &path, interpreter_for(rel, &content), &extra, limit)
 }
 
 #[cfg(not(unix))]
-fn execute(_root: &Path, _rel: &str, _path: &Path, _extra: &[String], _limit: Duration) -> Result<Outcome, String> {
+fn execute(_root: &Path, _rel: &str, _path: &Path, _interpreter: Option<&str>, _extra: &[String], _limit: Duration) -> Result<Outcome, String> {
     Err("run_script só funciona em macOS e Linux".into())
 }
 
 #[cfg(unix)]
-fn execute(root: &Path, rel: &str, path: &Path, extra: &[String], limit: Duration) -> Result<Outcome, String> {
+fn execute(root: &Path, rel: &str, path: &Path, interpreter: Option<&str>, extra: &[String], limit: Duration) -> Result<Outcome, String> {
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::CommandExt;
 
-    // `chmod u+x`: só o dono ganha permissão de execução.
-    let mut permissions = fs::metadata(path).map_err(|e| e.to_string())?.permissions();
-    permissions.set_mode(permissions.mode() | 0o100);
-    fs::set_permissions(path, permissions).map_err(|e| format!("não consegui aplicar chmod em {rel}: {e}"))?;
-
-    let mut command = Command::new(path);
+    let mut command = match interpreter {
+        // Pelo interpretador: o arquivo é lido, não executado, então não precisa de chmod.
+        Some(program) => {
+            let mut c = Command::new(program);
+            c.arg(path);
+            c
+        }
+        None => {
+            // `chmod u+x`: só o dono ganha permissão de execução.
+            let mut permissions = fs::metadata(path).map_err(|e| e.to_string())?.permissions();
+            permissions.set_mode(permissions.mode() | 0o100);
+            fs::set_permissions(path, permissions).map_err(|e| format!("não consegui aplicar chmod em {rel}: {e}"))?;
+            Command::new(path)
+        }
+    };
     command
         .args(extra)
         .current_dir(root)
@@ -148,7 +189,8 @@ fn execute(root: &Path, rel: &str, path: &Path, extra: &[String], limit: Duratio
     }
     let mut child = command.spawn().map_err(|e| match e.raw_os_error() {
         // ENOEXEC: sem shebang, o sistema não sabe qual interpretador usar.
-        Some(8) => format!("{rel} não pôde ser executado: a primeira linha precisa ser um shebang, como #!/bin/bash"),
+        Some(8) => format!("{rel} não pôde ser executado: a primeira linha precisa ser um shebang, como {}", shebang_for(rel)),
+        _ if interpreter.is_some() => format!("não consegui executar {rel} com {}: {e}", interpreter.unwrap_or("")),
         _ => format!("não consegui executar {rel}: {e}"),
     })?;
 
@@ -399,6 +441,31 @@ mod tests {
         assert_eq!(visible("com\ttab"), "com\ttab", "tab é normal");
         let preview = run_preview("a.sh", &[], "echo ok\x1b[8m");
         assert!(preview.lines.contains(&PreviewLine::Context("echo ok\\x1b[8m".into())));
+    }
+
+    #[test]
+    fn a_script_without_shebang_runs_with_the_interpreter_of_its_extension() {
+        let root = project("interp");
+        script(&root, "conta.py", "taxa = 960 / (8 * 6 * 10)\nprint(int(12 * 8 * 15 * taxa))\n");
+        let out = run(&root, json!({"path": "conta.py"}), &yes(), RUN_TIMEOUT);
+        match out {
+            Outcome::Done(text) => assert!(text.contains("2880"), "{text}"),
+            other => panic!("esperava Done: {other:?}"),
+        }
+        let preview = run_preview("conta.py", &[], "print(1)");
+        assert!(preview.lines.contains(&PreviewLine::Context("$ python3 conta.py".into())), "{:?}", preview.lines);
+        assert!(!preview.lines.iter().any(|l| matches!(l, PreviewLine::Context(t) if t.contains("chmod"))));
+        // Com shebang, quem decide é ele.
+        assert_eq!(interpreter_for("a.py", "#!/usr/bin/env python3\nprint(1)"), None);
+        assert_eq!(interpreter_for("dados.txt", "x"), None);
+    }
+
+    #[test]
+    fn the_missing_shebang_is_suggested_by_extension() {
+        assert_eq!(shebang_for("problema.py"), "#!/usr/bin/env python3");
+        assert_eq!(shebang_for("app.js"), "#!/usr/bin/env node");
+        assert_eq!(shebang_for("info.sh"), "#!/bin/bash");
+        assert_eq!(shebang_for("sem_extensao"), "#!/bin/bash");
     }
 
     #[test]

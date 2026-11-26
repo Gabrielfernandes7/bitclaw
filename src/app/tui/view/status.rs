@@ -2,7 +2,7 @@
 
 use super::super::Work;
 use super::super::theme::*;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 // Amarelo que respira: vai do escuro ao claro e volta, num ciclo de 1,4 s.
@@ -48,13 +48,34 @@ pub(in crate::app::tui) fn live_lines(work: Option<&Work>, width: u16) -> Vec<Li
     lines
 }
 
+// A decisão pendente, desenhada no lugar do editor: pergunta e teclas como botões (a tecla em vídeo
+// reverso, a ação ao lado). Sem cor, o vídeo reverso e o negrito ainda distinguem as teclas.
+pub(in crate::app::tui) fn approval_prompt(work: &Work, width: usize) -> Line<'static> {
+    let question = if work.approval_runs { "Executar este script?" } else { "Aplicar esta alteração?" };
+    let (yes, all, no) = if work.approval_runs { ("executar", "", "recusar") } else { ("aplicar", "todas neste turno", "recusar") };
+    let build = |question: &str, yes: &str, all: &str, no: &str| {
+        let key = |k: &str, color| Span::styled(format!(" {k} "), bold(color).add_modifier(Modifier::REVERSED));
+        let mut spans = vec![Span::styled(format!("{question}  "), bold(YELLOW)), key("s", GREEN), Span::raw(format!(" {yes}  "))];
+        if work.approval_batchable {
+            spans.extend([key("a", GREEN), Span::raw(format!(" {all}  "))]);
+        }
+        spans.extend([key("n", RED), Span::raw(format!(" {no}"))]);
+        Line::from(spans)
+    };
+    // Do mais completo ao mais curto, o primeiro que cabe.
+    let tiers = [
+        build(question, yes, all, no),
+        build(question, "sim", "todas", "não"),
+        build("Aplicar?", "sim", "todas", "não"),
+    ];
+    let last = tiers.len() - 1;
+    tiers.into_iter().enumerate().find(|(i, l)| *i == last || l.width() <= width).map(|(_, l)| l).unwrap_or_default()
+}
+
 // Atividade do turno com pulso, ou a pergunta de aprovação.
 pub(in crate::app::tui) fn status_line(work: Option<&Work>) -> Line<'static> {
     let Some(work) = work else { return Line::default() };
-    if work.approval.is_some() {
-        let question = if work.approval_runs { "Executar este script?" } else { "Aplicar esta alteração?" };
-        return Line::from(Span::styled(format!("▸ {question} [s] sim · [n] não"), bold(YELLOW)));
-    }
+    // Com uma decisão pendente, a pergunta fica só no compositor (`approval_prompt`).
     let ms = work.started.elapsed().as_millis();
     let label = if work.cancelling {
         "interrompendo, aguardando o modelo".to_string()

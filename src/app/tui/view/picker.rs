@@ -1,9 +1,10 @@
 //! Painel de skills (`/skills`).
 
+use super::keys::key_hints;
 use super::super::{Settings, theme::*};
 use bitclaw::skills::{self, Skill};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
@@ -33,7 +34,12 @@ pub(in crate::app::tui) fn picker_rows(skills: &[Skill], p: &Picker) -> Vec<usiz
 
 pub(in crate::app::tui) const PICKER_VISIBLE: usize = 8;
 
-pub(in crate::app::tui) fn draw_picker(f: &mut Frame, settings: &Settings, p: &Picker) {
+// Título (1), caixa de busca (3), lista (até PICKER_VISIBLE linhas) e dica (1).
+pub(in crate::app::tui) fn picker_height(rows: usize) -> u16 {
+    (1 + 3 + rows.clamp(1, PICKER_VISIBLE) + 1) as u16
+}
+
+pub(in crate::app::tui) fn draw_picker(f: &mut Frame, area: Rect, settings: &Settings, p: &Picker) {
     let rows = picker_rows(&settings.skills, p);
     let off = skills::disabled_now(&settings.skills_off);
     let enabled: Vec<&Skill> = settings.skills.iter().filter(|s| !off.contains(&s.name)).collect();
@@ -44,7 +50,7 @@ pub(in crate::app::tui) fn draw_picker(f: &mut Frame, settings: &Settings, p: &P
         Constraint::Min(1),
         Constraint::Length(1),
     ])
-    .areas(f.area());
+    .areas(area);
 
     let head = vec![
         Span::styled(format!("{} skills", settings.skills.len()), bold(YELLOW)),
@@ -95,6 +101,9 @@ pub(in crate::app::tui) fn draw_picker(f: &mut Frame, settings: &Settings, p: &P
     }
     f.render_widget(Paragraph::new(lines), list);
 
-    let help = "↑/↓ navega · espaço liga/desliga · digite para buscar · tab ordena · esc fecha";
-    f.render_widget(Paragraph::new(Line::from(Span::styled(help, fg(GRAY)))), hint);
+    let keys = key_hints(
+        &[("↑/↓", "navega"), ("espaço", "liga/desliga"), ("tab", "ordena"), ("digite", "busca"), ("esc", "fecha")],
+        hint.width as usize,
+    );
+    f.render_widget(Paragraph::new(keys), hint);
 }

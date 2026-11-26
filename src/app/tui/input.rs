@@ -59,6 +59,24 @@ impl App {
     // Trata uma tecla. Devolve `true` para sair.
     pub(super) fn on_key(&mut self, key: KeyEvent) -> io::Result<bool> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // Qualquer tecla encerra a saudação: o mascote para antes de a conversa começar.
+        self.finish_greeting()?;
+
+        // Com algo selecionado na conversa, Ctrl+C copia (como num terminal) em vez de interromper ou sair.
+        // Qualquer outra tecla desfaz a seleção e segue normalmente.
+        if self.transcript.selection.is_some() {
+            if ctrl && key.code == KeyCode::Char('c') {
+                self.copy_selection();
+                self.transcript.selection = None;
+                return Ok(false);
+            }
+            self.transcript.selection = None;
+        }
+
+        // Rolagem da conversa pelo teclado: vale sempre, até com painel aberto ou decisão pendente.
+        if self.scroll_key(key) {
+            return Ok(false);
+        }
 
         // Decisão pendente: só as teclas de resposta valem.
         if let Some(work) = &mut self.work
@@ -66,6 +84,10 @@ impl App {
         {
             match key.code {
                 KeyCode::Char('s' | 'S' | 'y' | 'Y') if !ctrl => {
+                    let _ = reply.send(true);
+                }
+                KeyCode::Char('a' | 'A') if !ctrl && work.approval_batchable => {
+                    work.approve_all = true;
                     let _ = reply.send(true);
                 }
                 KeyCode::Char('c') if ctrl => {
@@ -82,6 +104,9 @@ impl App {
         }
 
         // Painel de skills aberto: ele recebe todas as teclas, inclusive ↑/↓ (que, sem isso, iam para o histórico do editor).
+        if self.effort_panel.is_some() {
+            return self.effort_panel_key(key);
+        }
         if self.model_picker.is_some() {
             return self.model_picker_key(key);
         }
@@ -90,20 +115,6 @@ impl App {
         }
         if self.status_panel.is_some() {
             return self.status_panel_key(key);
-        }
-
-        // Rolagem da conversa.
-        let page = (self.terminal.size()?.height / 2).max(1) as isize;
-        match key.code {
-            KeyCode::PageUp => {
-                self.scroll_by(page);
-                return Ok(false);
-            }
-            KeyCode::PageDown => {
-                self.scroll_by(-page);
-                return Ok(false);
-            }
-            _ => {}
         }
 
         // Sugestões de arquivo (`@`): ficam com ↑/↓, Tab, Enter e Esc enquanto aparecem.
@@ -216,6 +227,25 @@ impl App {
         Ok(false)
     }
 
+    // PageUp/PageDown rolam meia tela; Shift+↑/↓, uma linha; Ctrl+Home e Ctrl+End vão ao começo e ao fim.
+    // Devolve `true` se a tecla era de rolagem.
+    fn scroll_key(&mut self, key: KeyEvent) -> bool {
+        let height = usize::from(self.chat_area.height);
+        let page = (height / 2).max(1) as isize;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        match key.code {
+            KeyCode::PageUp => self.transcript.scroll(page, height),
+            KeyCode::PageDown => self.transcript.scroll(-page, height),
+            KeyCode::Up if shift => self.transcript.scroll(1, height),
+            KeyCode::Down if shift => self.transcript.scroll(-1, height),
+            KeyCode::Home if ctrl => self.transcript.scroll(isize::MAX / 2, height),
+            KeyCode::End if ctrl => self.transcript.to_end(),
+            _ => return false,
+        }
+        true
+    }
+
     // A menção `@` sob o cursor e as sugestões para ela. `None` se não há menção, se `Esc` a fechou
     // ou se o agente está trabalhando.
     pub(super) fn mention_matches(&self) -> Option<Mention> {
@@ -240,14 +270,6 @@ impl App {
         self.menu_index = 0;
     }
 
-    // Rola a conversa: positivo sobe, negativo desce. Fica entre o início e o fim.
-    pub(super) fn scroll_by(&mut self, lines: isize) {
-        // Linhas fixas embaixo e em cima da conversa: a folga, o mascote, as réguas do editor e o rodapé.
-        let visible = self.terminal.size().map_or(0, |s| s.height).saturating_sub(7 + view::TOP_GAP) as usize;
-        let max = self.transcript.len().saturating_sub(visible);
-        self.scroll_back = (self.scroll_back as isize + lines).clamp(0, max as isize) as usize;
-    }
-
     pub(super) fn interrupt(&mut self) {
         if let Some(work) = &mut self.work {
             work.cancelling = true;
@@ -257,6 +279,8 @@ impl App {
 
     // Envia o texto do editor: comando `/` ou tarefa para o agente. Devolve `true` para sair.
     pub(super) fn submit(&mut self, text: &str) -> io::Result<bool> {
+        // Mandou algo: a conversa volta ao fim, para a resposta aparecer.
+        self.transcript.to_end();
         self.editor = new_editor();
         self.history.push(text);
         // Comando com argumento: `/model <id>` e `/effort <nível>`. O nome decide o comando; o resto é o argumento.
@@ -267,6 +291,7 @@ impl App {
             .filter(|c| arg.is_empty() || ARG_COMMANDS.contains(&c.name));
         match text {
             _ if command.is_some_and(|c| c.name == "/exit") => return Ok(true),
+            _ if command.is_some_and(|c| c.name == "/restart-dev") => return self.restart_dev_command(),
             _ if command.is_some_and(|c| c.name == "/clear") => {
                 let _ = self.commands.send(Command::Clear);
                 self.clear_screen()?;
@@ -291,6 +316,8 @@ impl App {
                 let mut lines: Vec<Line<'static>> =
                     COMMANDS.iter().map(|c| note(&format!("{:<8} {}", c.name, c.desc))).collect();
                 lines.push(note("enter envia · shift+enter ou ctrl+j nova linha · esc interrompe"));
+                lines.push(note("roda do mouse, PageUp/PageDown ou shift+↑/↓ rolam a conversa · ctrl+end volta ao fim"));
+                lines.push(note("arrastar seleciona e copia · ctrl+c com seleção copia de novo · --no-mouse devolve a seleção ao terminal"));
                 lines.push(Line::default());
                 self.print(lines)?;
             }
@@ -351,14 +378,36 @@ impl App {
         Ok(())
     }
 
-    // `/effort`: sem argumento mostra o nível atual e os níveis deste modelo; com um, valida e aplica.
+    // `/restart-dev`: recompila e, se deu certo, sai para o `run` reabrir o binário novo. Se a compilação
+    // falhar, mostra o fim da saída do compilador e continua na sessão atual. Devolve `true` para sair.
+    pub(super) fn restart_dev_command(&mut self) -> io::Result<bool> {
+        if self.work.is_some() {
+            self.print(vec![note("espere a tarefa terminar para reiniciar."), Line::default()])?;
+            return Ok(false);
+        }
+        self.print(vec![note("recompilando…")])?;
+        match super::restart::build() {
+            Ok(()) => {
+                self.restart = true;
+                Ok(true)
+            }
+            Err(msg) => {
+                let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled("  a compilação falhou; continuo na versão atual:", fg(RED)))];
+                lines.extend(msg.lines().map(|l| note(l)));
+                lines.push(Line::default());
+                self.print(lines)?;
+                Ok(false)
+            }
+        }
+    }
+
+    // `/effort`: sem argumento abre o painel deslizante com os níveis deste modelo; com um, valida e aplica.
     pub(super) fn effort_command(&mut self, arg: &str) -> io::Result<()> {
         let model = self.active_model();
         if arg.is_empty() {
             let current = *locked(&self.settings.effort);
-            let levels: Vec<&str> = model.capabilities.supported_efforts().into_iter().map(Effort::as_str).collect();
-            let text = format!("esforço {} · níveis deste modelo: {}", current.as_str(), levels.join(", "));
-            return self.print(vec![note(&text), Line::default()]);
+            self.effort_panel = Some(EffortPanel::new(model.capabilities.supported_efforts(), current));
+            return Ok(());
         }
         let text = match model.capabilities.parse_for(arg) {
             Ok(effort) => {
@@ -368,6 +417,27 @@ impl App {
             Err(msg) => msg,
         };
         self.print(vec![note(&text), Line::default()])
+    }
+
+    // Teclas do painel de esforço. ←/→ mudam o nível, Enter aplica (pelo mesmo caminho do `/effort <nível>`) e Esc fecha.
+    pub(super) fn effort_panel_key(&mut self, key: KeyEvent) -> io::Result<bool> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(p) = self.effort_panel.as_mut() else { return Ok(false) };
+        let chosen = p.chosen();
+        match key.code {
+            KeyCode::Esc => self.effort_panel = None,
+            KeyCode::Char('c') if ctrl => self.effort_panel = None,
+            KeyCode::Left => p.step(false),
+            KeyCode::Right => p.step(true),
+            KeyCode::Enter => {
+                self.effort_panel = None;
+                if let Some(effort) = chosen {
+                    self.effort_command(effort.as_str())?;
+                }
+            }
+            _ => {}
+        }
+        Ok(false)
     }
 
     // `/context`: sem argumento mostra a janela e o que muda ao mexer nela; com um valor (ou `reset`), troca.

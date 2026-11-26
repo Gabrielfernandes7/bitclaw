@@ -286,7 +286,7 @@ fn long_history_is_trimmed_before_calling_the_model() {
         msgs.push(json!({"role": "assistant", "content": "y".repeat(2_000)}));
     }
     msgs.push(json!({"role": "user", "content": "atual"}));
-    let mut small = ContextManager::new(1_200, 0);
+    let mut small = ContextManager::new(1_800, 0);
     let model = fake(vec![text("ok")]);
     let report = run_turn(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover, &mut small, &Silent).unwrap();
     assert!(!report.trims.is_empty(), "deveria ter descartado turnos");
@@ -298,7 +298,7 @@ fn long_history_is_trimmed_before_calling_the_model() {
 fn oversized_current_turn_stops_with_error() {
     let r = root("oversized");
     let mut msgs = vec![json!({"role": "system", "content": "sistema"}), json!({"role": "user", "content": "z".repeat(10_000)})];
-    let mut small = ContextManager::new(1_200, 0);
+    let mut small = ContextManager::new(1_800, 0);
     let model = fake(vec![text("ok")]);
     let result = run_turn(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover, &mut small, &Silent);
     assert!(result.is_err());
@@ -513,6 +513,15 @@ fn cancelling_stops_the_turn_without_dangling_tool_calls() {
     assert_eq!(messages.len(), 1, "a resposta descartada não entra no histórico");
 }
 #[test]
+fn a_tool_output_written_by_the_model_is_flagged_when_no_tool_ran() {
+    let faked = TurnReport { text: "<｜tool▁output｜begin｜>\narquivo removido: a.md\n<｜tool｜output｜end｜>\nPronto.".into(), ..Default::default() };
+    let w = crate::toolkit::claims::warnings(&faked);
+    assert!(w.iter().any(|x| x.contains("saída de ferramenta escrita pelo modelo")), "{w:?}");
+    let plain = TurnReport { text: "Nada a fazer.".into(), ..Default::default() };
+    assert!(crate::toolkit::claims::warnings(&plain).is_empty());
+}
+
+#[test]
 fn offers_are_not_claims() {
     // Oferta com "remover" não é afirmação de remoção.
     let report = TurnReport { text: "Posso apenas criar, ler, editar ou remover arquivos. Deseja criar um?".into(), ..Default::default() };
@@ -520,4 +529,35 @@ fn offers_are_not_claims() {
     // Afirmação no passado sem a ação real continua sendo avisada.
     let claim = TurnReport { text: "Pronto, removi o arquivo.".into(), ..Default::default() };
     assert_eq!(crate::toolkit::claims::warnings(&claim), vec!["nenhuma alteração foi aplicada neste turno.", "o texto diz que algo foi removido, mas nenhum arquivo foi removido."]);
+}
+
+#[test]
+fn tool_usage_groups_calls_by_tool_heaviest_first() {
+    use super::report::{Action, TurnReport};
+    use crate::core::tool::Outcome;
+    let act = |name: &str, text: &str| Action {
+        name: name.into(),
+        args: serde_json::Value::Null,
+        outcome: Outcome::Done(text.into()),
+        mutates: false,
+    };
+    let report = TurnReport {
+        actions: vec![act("list_dir", "ab"), act("read_file", "12345"), act("read_file", "123")],
+        ..Default::default()
+    };
+    assert_eq!(report.tool_usage(), vec![("read_file".into(), 2, 8), ("list_dir".into(), 1, 2)]);
+    assert_eq!(report.tool_usage_line(), "[ferramentas] read_file 2× 8 car., list_dir 1× 2 car.");
+    assert_eq!(TurnReport::default().tool_usage_line(), "");
+}
+
+#[test]
+fn a_run_claimed_without_a_successful_run_is_flagged() {
+    use crate::core::tool::Outcome;
+    let failed = Action { name: "run_script".into(), args: Value::Null, outcome: Outcome::Error("saiu com código 2".into()), mutates: true };
+    let claim = TurnReport { text: "O script foi executado. A saída é 240.".into(), actions: vec![failed], ..Default::default() };
+    let w = crate::toolkit::claims::warnings(&claim);
+    assert!(w.iter().any(|x| x.contains("nenhuma execução deu certo")), "{w:?}");
+    let ok = Action { name: "run_script".into(), args: Value::Null, outcome: Outcome::Done("código de saída: 0\n2880".into()), mutates: true };
+    let real = TurnReport { text: "Executei o script: a saída é 2880.".into(), actions: vec![ok], ..Default::default() };
+    assert!(crate::toolkit::claims::warnings(&real).iter().all(|x| !x.contains("execução")));
 }
