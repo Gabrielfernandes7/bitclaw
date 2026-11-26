@@ -82,6 +82,9 @@ impl App {
         }
 
         // Painel de skills aberto: ele recebe todas as teclas, inclusive ↑/↓ (que, sem isso, iam para o histórico do editor).
+        if self.effort_panel.is_some() {
+            return self.effort_panel_key(key);
+        }
         if self.model_picker.is_some() {
             return self.model_picker_key(key);
         }
@@ -351,14 +354,13 @@ impl App {
         Ok(())
     }
 
-    // `/effort`: sem argumento mostra o nível atual e os níveis deste modelo; com um, valida e aplica.
+    // `/effort`: sem argumento abre o painel deslizante com os níveis deste modelo; com um, valida e aplica.
     pub(super) fn effort_command(&mut self, arg: &str) -> io::Result<()> {
         let model = self.active_model();
         if arg.is_empty() {
             let current = *locked(&self.settings.effort);
-            let levels: Vec<&str> = model.capabilities.supported_efforts().into_iter().map(Effort::as_str).collect();
-            let text = format!("esforço {} · níveis deste modelo: {}", current.as_str(), levels.join(", "));
-            return self.print(vec![note(&text), Line::default()]);
+            self.effort_panel = Some(EffortPanel::new(model.capabilities.supported_efforts(), current));
+            return Ok(());
         }
         let text = match model.capabilities.parse_for(arg) {
             Ok(effort) => {
@@ -368,6 +370,27 @@ impl App {
             Err(msg) => msg,
         };
         self.print(vec![note(&text), Line::default()])
+    }
+
+    // Teclas do painel de esforço. ←/→ mudam o nível, Enter aplica (pelo mesmo caminho do `/effort <nível>`) e Esc fecha.
+    pub(super) fn effort_panel_key(&mut self, key: KeyEvent) -> io::Result<bool> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(p) = self.effort_panel.as_mut() else { return Ok(false) };
+        let chosen = p.chosen();
+        match key.code {
+            KeyCode::Esc => self.effort_panel = None,
+            KeyCode::Char('c') if ctrl => self.effort_panel = None,
+            KeyCode::Left => p.step(false),
+            KeyCode::Right => p.step(true),
+            KeyCode::Enter => {
+                self.effort_panel = None;
+                if let Some(effort) = chosen {
+                    self.effort_command(effort.as_str())?;
+                }
+            }
+            _ => {}
+        }
+        Ok(false)
     }
 
     // `/context`: sem argumento mostra a janela e o que muda ao mexer nela; com um valor (ou `reset`), troca.

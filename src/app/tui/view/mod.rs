@@ -1,11 +1,13 @@
 //! O que a interface desenha: a área fixa embaixo e os painéis.
 
+mod effort_panel;
 mod info;
 mod model_picker;
 mod picker;
 mod status;
 mod status_panel;
 
+pub(in crate::app::tui) use self::effort_panel::*;
 pub(in crate::app::tui) use self::info::*;
 pub(in crate::app::tui) use self::model_picker::*;
 pub(in crate::app::tui) use self::picker::*;
@@ -52,6 +54,8 @@ pub(in crate::app::tui) struct View<'a> {
     pub(in crate::app::tui) menu_index: usize,
     pub(in crate::app::tui) picker: Option<&'a Picker>,
     pub(in crate::app::tui) model_picker: Option<&'a ModelPicker>,
+    // Painel `/effort`, se estiver aberto.
+    pub(in crate::app::tui) effort_panel: Option<&'a EffortPanel>,
     // Painel `/status`, se estiver aberto, e as estatísticas que ele mostra.
     pub(in crate::app::tui) status_panel: Option<&'a StatusPanel>,
     pub(in crate::app::tui) stats: &'a SessionStats,
@@ -84,6 +88,10 @@ pub(in crate::app::tui) fn mascot_rect(area: Rect) -> Option<Rect> {
 }
 
 pub(in crate::app::tui) fn draw(f: &mut Frame, v: &View) {
+    if let Some(panel) = v.effort_panel {
+        draw_effort_panel(f, panel);
+        return;
+    }
     if let Some(models) = v.model_picker {
         draw_model_picker(f, v.settings, models);
         return;

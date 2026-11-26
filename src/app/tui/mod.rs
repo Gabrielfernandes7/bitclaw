@@ -165,6 +165,8 @@ struct App {
     picker: Option<Picker>,
     // Painel de modelos aberto, se houver.
     model_picker: Option<ModelPicker>,
+    // Painel de esforço aberto, se houver.
+    effort_panel: Option<EffortPanel>,
     // Número do mascote em andamento e quantos cliques já houve (decide o próximo número).
     play: Option<(Instant, brand::Mood)>,
     clicks: usize,
@@ -222,7 +224,7 @@ where
         scroll_back: 0,
         history: History::default(),
         picker: None,
-        model_picker: None,
+        model_picker: None, effort_panel: None,
         // Ao abrir, o mascote faz um dos números, sorteado a cada abertura.
         play: Some((Instant::now(), brand::opening_mood())),
         clicks: 0,
@@ -257,7 +259,7 @@ impl App {
         loop {
             let menu = self.menu_matches();
             let mentions = self.mention_matches().map(|m| m.entries).unwrap_or_default();
-            let App { terminal, editor, work, usage, settings, menu_index, picker, model_picker, play, transcript, scroll_back, status_panel, stats, .. } = self;
+            let App { terminal, editor, work, usage, settings, menu_index, picker, model_picker, effort_panel, play, transcript, scroll_back, status_panel, stats, .. } = self;
             let mascot = mascot_for(*play);
             let view = View {
                 editor,
@@ -268,6 +270,7 @@ impl App {
                 menu_index: *menu_index,
                 picker: picker.as_ref(),
                 model_picker: model_picker.as_ref(),
+                effort_panel: effort_panel.as_ref(),
                 status_panel: status_panel.as_ref(),
                 stats,
                 mascot,
@@ -298,7 +301,7 @@ impl App {
     // uma única palavra começando por `/`.
     // Clique no mascote: dispara o próximo número. Ignora cliques com um painel aberto.
     fn on_mouse(&mut self, event: MouseEvent) {
-        if self.picker.is_some() || self.model_picker.is_some() || self.status_panel.is_some() {
+        if self.picker.is_some() || self.model_picker.is_some() || self.effort_panel.is_some() || self.status_panel.is_some() {
             return;
         }
         match event.kind {
@@ -478,7 +481,7 @@ mod tests {
         let height = viewport_height(editor.lines().len(), menu.len(), summary);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let settings = settings(auto_yes);
-        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0, picker: None, model_picker: None, status_panel: None, stats: &SessionStats::new(), mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
+        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0, picker: None, model_picker: None, effort_panel: None, status_panel: None, stats: &SessionStats::new(), mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
         terminal.draw(|f| draw(f, &view)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height)
@@ -580,7 +583,7 @@ mod tests {
         let cfg = settings(false);
         *cfg.effort.lock().unwrap() = Effort::Medium;
         let mut terminal = Terminal::new(TestBackend::new(100, viewport_height(1, 0, 0))).unwrap();
-        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, status_panel: None, stats: &SessionStats::new(), mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
+        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, effort_panel: None, status_panel: None, stats: &SessionStats::new(), mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
         terminal.draw(|f| draw(f, &view)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         let footer: String = (0..100).map(|x| buffer[(x, 9)].symbol().to_string()).collect();
@@ -692,7 +695,7 @@ mod tests {
             editor.insert_str(typed);
             let mut terminal = Terminal::new(TestBackend::new(60, viewport_height(1, 0, 0))).unwrap();
             let settings = settings(false);
-            let view = View { editor: &editor, work: None, usage: None, settings: &settings, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, status_panel: None, stats: &SessionStats::new(), mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
+            let view = View { editor: &editor, work: None, usage: None, settings: &settings, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, effort_panel: None, status_panel: None, stats: &SessionStats::new(), mascot: Mascot { mood: brand::Mood::Idle, ms: 0 }, transcript: &[], scroll_back: 0, mentions: Vec::new() };
             terminal.draw(|f| draw(f, &view)).unwrap();
             let buffer = terminal.backend().buffer().clone();
             // Linha do editor: folga (1) + cabeçalho (3) + conversa (2) + régua (1) → linha 7; o texto começa na coluna 2.
@@ -763,7 +766,7 @@ mod tests {
             menu: Vec::new(),
             menu_index: 0,
             picker: None,
-            model_picker: None,
+            model_picker: None, effort_panel: None,
             status_panel: None,
             stats: &SessionStats::new(),
             mascot: Mascot { mood: brand::Mood::Idle, ms: 0 },
@@ -829,7 +832,7 @@ mod tests {
             menu: Vec::new(),
             menu_index: 0,
             picker: None,
-            model_picker: None,
+            model_picker: None, effort_panel: None,
             status_panel: None,
             stats: &SessionStats::new(),
             mascot: Mascot { mood: brand::Mood::Idle, ms: 0 },
