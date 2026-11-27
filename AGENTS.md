@@ -13,9 +13,9 @@ cargo test
 cargo run
 ```
 
-Flags do binário: `--config`, `--model`, `--url`, `--dir`, `--yes`, `--no-color`, `--no-mouse`, `--think`, `--plan` (modo Plan: só ferramentas que declaram `read_only`) e `--fresh` (primeira abertura simulada, com estado global temporário que some ao sair).
+Flags do binário: `--config`, `--model`, `--url`, `--dir`, `--yes`, `--no-color`, `--no-mouse`, `--think`, `--plan` (modo Plan: só ferramentas que declaram `read_only`) `--openrouter` (usa o agente gerado por `bitclaw openrouter`) e `--fresh` (primeira abertura simulada, com estado global temporário que some ao sair).
 
-Subcomandos `bitclaw update`, `bitclaw uninstall [--yes] [--purge]` e `bitclaw soul`, e `--version`. Instalação por `install.sh` (releases do GitHub); o contrato dos arquivos do release está no topo de `src/app/update.rs`, e `install.sh` e `.github/workflows/release.yml` o seguem.
+Subcomandos `bitclaw openrouter [status|logout]`, `bitclaw update`, `bitclaw uninstall [--yes] [--purge]` e `bitclaw soul`, e `--version`. Instalação por `install.sh` (releases do GitHub); o contrato dos arquivos do release está no topo de `src/app/update.rs`, e `install.sh` e `.github/workflows/release.yml` o seguem.
 
 ## Estrutura
 
@@ -87,6 +87,7 @@ Subcomandos `bitclaw update`, `bitclaw uninstall [--yes] [--purge]` e `bitclaw s
   - `src/app/provider.rs`: o único lugar que sabe quais adaptadores existem.
   - `src/app/skill_install.rs`: `/skill install` (git, prévia, aprovação, lock com digest) e a carga das skills instaladas.
   - `src/app/soul.rs`: SOUL.md, as cinco perguntas da primeira abertura (`bitclaw soul` refaz) e o texto que entra no prompt do sistema (`Session::builder().persona`, teto de 1200 caracteres).
+  - `src/app/openrouter_setup.rs`: `bitclaw openrouter` (chave sem eco e conferida em `/auth/key`, escolha do modelo, grava `~/.config/bitclaw/openrouter.toml` a partir de `agents/openrouter.toml`; chave opcional em `openrouter.key`, 0600, e a variável vale mais). A chave nunca vai para o TOML.
   - `src/app/projects.rs`: o registro de projetos; `src/app/uninstall.rs`: o `uninstall` (binário, estado global, restos e, com `--purge`, as `.bitclaw/`).
   - `src/app/soul_art.rs`: a tela do SOUL, o BitClaw feliz segurando um coração que pulsa (meios-blocos, uma thread repinta só a arte enquanto você responde; sem terminal ou com janela pequena não aparece).
   - `src/app/receipts.rs`: `Recorded`, o aprovador que grava os recibos.

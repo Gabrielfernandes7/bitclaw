@@ -19,7 +19,7 @@ O BitClaw é honesto sobre o que protege e o que não protege. Esta página sepa
 
 **Skills com digest.** Skill instalada só carrega se o SHA-256 da pasta bate com o aprovado em `.bitclaw/skills.lock`.
 
-**Segredos fora do TOML.** A chave do OpenRouter vem de uma variável de ambiente; se `api_key_env` parecer uma chave, a configuração é recusada sem repetir o valor.
+**Segredos fora do TOML.** A chave do OpenRouter vem de uma variável de ambiente ou do arquivo `~/.config/bitclaw/openrouter.key` que `bitclaw openrouter` grava com permissão 600 (e que o BitClaw recusa se outras pessoas puderem lê-lo); se `api_key_env` parecer uma chave, a configuração é recusada sem repetir o valor. A digitação da chave não aparece na tela.
 
 ## Scripts: a confirmação é a única proteção
 
@@ -31,7 +31,7 @@ O BitClaw é honesto sobre o que protege e o que não protege. Esta página sepa
 - O processo tem limite de **60 s** (o grupo de processos inteiro é encerrado) e saída limitada a **6 KB** para o modelo.
 - O **ambiente é reduzido**: só `PATH`, `HOME`, `USER`, `LANG`, `LC_ALL` e `TMPDIR` passam, então chaves de API e tokens do seu ambiente não chegam ao script.
 
-> **Atenção.** O script roda com **as suas permissões e sem isolamento**: pode ler e apagar o que você pode, e usar a rede. Só a confirmação protege. Para um agente que não executa nada, tire `run_script` da lista `tools`.
+> **Atenção.** O script roda com **as suas permissões e sem isolamento**: pode ler e apagar o que você pode (inclusive a chave guardada em `~/.config/bitclaw/openrouter.key`, se você a guardou), e usar a rede. Só a confirmação protege. Para um agente que não executa nada, tire `run_script` da lista `tools`.
 
 ## Comandos
 

@@ -42,6 +42,31 @@ O core só conhece `[model]` e `[limits]`; `url` e `temperature` pertencem à se
 
 ## Usar o OpenRouter
 
+O caminho curto é um comando só:
+
+```sh
+bitclaw openrouter      # chave, modelo e agente, em três passos
+bitclaw --openrouter    # abre com o agente gerado
+```
+
+`bitclaw openrouter`:
+
+1. **Chave.** Lê a chave sem mostrá-la (um `*` por caractere) e a confere no OpenRouter: mostra o nome da chave e o crédito que resta. Se a variável `OPENROUTER_API_KEY` já existe, usa essa. Você escolhe se a chave fica guardada em `~/.config/bitclaw/openrouter.key` (permissão 600; o BitClaw recusa o arquivo se outras pessoas puderem lê-lo) ou só na variável de ambiente.
+2. **Modelo.** Lista os modelos que chamam ferramentas, gratuitos primeiro. Um número escolhe, um texto filtra, Enter fica com o sugerido.
+3. **Agente.** Grava `~/.config/bitclaw/openrouter.toml`, o mesmo agente de [`agents/openrouter.toml`](../../../agents/openrouter.toml) com o modelo e a janela trocados.
+
+Nada é gravado antes do fim, e a chave nunca vai para o TOML. Para conferir ou desfazer:
+
+```sh
+bitclaw openrouter status    # a chave vale? qual agente e modelo estão em vigor?
+bitclaw openrouter logout    # apaga a chave guardada e o agente gerado
+```
+
+`bitclaw uninstall` também apaga a chave guardada. A variável de ambiente sempre vale mais que o arquivo.
+
+### À mão
+
+
 O padrão é o Ollama local. Para usar modelos hospedados no [OpenRouter](https://openrouter.ai), escolha o provedor e exporte a chave no ambiente:
 
 ```toml

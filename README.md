@@ -55,9 +55,11 @@ Opções:
 | `--no-color` | desligado | Desliga as cores. Também é desligado com `NO_COLOR` e quando a saída não é um terminal. |
 | `--think` | desligado | Liga o raciocínio (thinking) do modelo. Gasta mais tokens e enche a janela de contexto mais rápido; nem todo modelo suporta. Também dá para ligar com `think = true` na configuração ou, durante a sessão, com `/think`. |
 | `--plan` | desligado | Modo Plan: só as ferramentas de leitura. Nada é editado, criado, removido nem executado. |
+| `--openrouter` | desligado | Abre com o agente gerado por `bitclaw openrouter` (`~/.config/bitclaw/openrouter.toml`), no lugar de `--config`. |
 | `--fresh` | desligado | Abre como na primeira vez (boas-vindas, perguntas do SOUL, sem aviso de versão em cache): o estado global é uma pasta temporária, apagada ao sair, e o seu `~/.config/bitclaw` não é lido nem tocado. Um `.bitclaw/SOUL.md` já existente no projeto ainda vale; use `--dir` numa pasta nova. Funciona também com `bitclaw --fresh soul`. |
 | `-V`, `--version` | | Mostra a versão. |
 | `update` | | `bitclaw update` troca o binário pelo do último release. |
+| `openrouter` | | `bitclaw openrouter` configura o OpenRouter (chave, modelo, agente); `status` confere; `logout` desfaz. |
 | `uninstall` | | `bitclaw uninstall` apaga o binário e o resíduo (`~/.config/bitclaw`, restos de instalação). `--purge` apaga também as pastas `.bitclaw/` dos projetos; `--yes` não pergunta. |
 | `soul` | | `bitclaw soul` refaz as cinco perguntas do SOUL.md: nome, idioma, tamanho das respostas, se explica antes de alterar e o que você faz. A primeira abertura já pergunta; `pular` dispensa. O arquivo fica em `~/.config/bitclaw/SOUL.md`, um `.bitclaw/SOUL.md` no projeto vale mais, e `/soul` mostra o que está em vigor. Entra no prompt cortado em 1200 caracteres e vale na próxima abertura. |
 | `-h`, `--help` | | Mostra a ajuda. |
@@ -96,6 +98,17 @@ Campos desconhecidos, ferramentas inexistentes ou repetidas e valores incoerente
 O core só conhece `[model]` e `[limits]`; `url` e `temperature` pertencem à seção do provedor (`[ollama]`). O formato antigo (`url`, `temperature` e `num_ctx` dentro de `[model]`) ainda é lido; `url` e `temperature` geram um aviso.
 
 ### Usar o OpenRouter
+
+O caminho curto é um comando só:
+
+```sh
+bitclaw openrouter          # chave, modelo e agente, em três passos
+bitclaw --openrouter        # abre com o agente gerado
+```
+
+`bitclaw openrouter` lê a chave **sem mostrá-la** (um `*` por caractere), confere no OpenRouter (mostra o nome da chave e o crédito que resta), lista os modelos que chamam ferramentas (gratuitos primeiro; um número escolhe, um texto filtra, Enter fica com o sugerido) e grava `~/.config/bitclaw/openrouter.toml`. A chave pode ser guardada em `~/.config/bitclaw/openrouter.key` (permissão 600; o BitClaw recusa o arquivo se outras pessoas puderem lê-lo) ou fica só na variável `OPENROUTER_API_KEY`, que sempre vale mais que o arquivo. Nada é gravado antes do fim, e a chave nunca vai para o TOML. `bitclaw openrouter status` confere o que está em vigor e `bitclaw openrouter logout` apaga a chave guardada e o agente gerado. `bitclaw uninstall` também os apaga.
+
+À mão, o mesmo se faz assim:
 
 O padrão é o Ollama local. Para usar modelos hospedados no [OpenRouter](https://openrouter.ai), escolha o provedor na configuração e exporte a chave no ambiente:
 
