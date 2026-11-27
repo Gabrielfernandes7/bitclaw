@@ -8,7 +8,7 @@ pub(super) struct Cmd {
     pub(super) desc: &'static str,
 }
 
-pub(super) const COMMANDS: [Cmd; 12] = [
+pub(super) const COMMANDS: [Cmd; 13] = [
     Cmd { name: "/help", aliases: &[], desc: "mostra os comandos e as teclas" },
     Cmd { name: "/model", aliases: &[], desc: "troca o modelo: load <nome>, show [nome] ou busca entre os instalados" },
     Cmd { name: "/effort", aliases: &[], desc: "esforço de raciocínio: só os níveis que o modelo aceita" },
@@ -18,6 +18,7 @@ pub(super) const COMMANDS: [Cmd; 12] = [
     Cmd { name: "/clear", aliases: &[], desc: "apaga o histórico e mantém o prompt do sistema" },
     Cmd { name: "/think", aliases: &[], desc: "liga ou desliga o raciocínio do modelo (gasta mais contexto)" },
     Cmd { name: "/skills", aliases: &[], desc: "abre as skills para ligar e desligar" },
+    Cmd { name: "/skill", aliases: &[], desc: "baixa uma skill de um repositório git: install <dono/repo> [--path pasta], depois yes ou no" },
     Cmd { name: "/status", aliases: &[], desc: "versão, modelo, contexto e estatísticas da sessão" },
     Cmd { name: "/restart-dev", aliases: &[], desc: "recompila e reabre o BitClaw com as alterações do código (desenvolvimento)" },
     Cmd { name: "/exit", aliases: &["/quit"], desc: "encerra o BitClaw" },
@@ -34,7 +35,7 @@ impl Cmd {
 }
 
 // Comandos que aceitam um argumento depois do nome (`/model <id>`, `/effort <nível>`).
-pub(super) const ARG_COMMANDS: &[&str] = &["/model", "/effort", "/context", "/temp"];
+pub(super) const ARG_COMMANDS: &[&str] = &["/model", "/effort", "/context", "/temp", "/skill"];
 
 // O que um comando de ajuste (`/context`, `/temp`) pede: mostrar o valor, voltar ao padrão ou trocar.
 #[derive(Debug, PartialEq)]

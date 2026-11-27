@@ -36,6 +36,7 @@ use bitclaw::context::Usage;
 use bitclaw::session::Session;
 use bitclaw::skills::{Disabled, Skill};
 use bitclaw::tools::Approver;
+use crate::app::skill_install::{self, Staged};
 use self::transcript::{Point, Selection, Transcript};
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyEvent,
@@ -197,6 +198,9 @@ struct App {
     group: Option<steps::Group>,
     // `/restart-dev` compilou com sucesso: ao sair, reabre o binário novo no lugar deste.
     restart: bool,
+    // `/skill install`: o download em andamento (numa thread) e a skill baixada que espera `yes` ou `no`.
+    skill_job: Option<Receiver<Result<Staged, String>>>,
+    skill_pending: Option<Staged>,
 }
 
 // Roda a interface até o usuário sair. `make_session` roda na thread do agente.
@@ -256,6 +260,8 @@ where
         stats: SessionStats::new(),
         group: None,
         restart: false,
+        skill_job: None,
+        skill_pending: None,
     };
     let result = app.event_loop();
 
@@ -293,6 +299,7 @@ impl App {
         loop {
             self.animate_greeting().map_err(|e| e.to_string())?;
             self.refresh_banner().map_err(|e| e.to_string())?;
+            self.poll_skill_job().map_err(|e| e.to_string())?;
             if self.flash.as_ref().is_some_and(|(at, _)| at.elapsed() >= FLASH) {
                 self.flash = None;
             }
@@ -684,9 +691,10 @@ mod tests {
         assert!(lines[8].starts_with("  /init"), "{lines:?}");
         assert!(lines[9].starts_with("  /clear") && lines[10].starts_with("  /think"), "{lines:?}");
         assert!(lines[11].starts_with("  /skills"), "{lines:?}");
-        assert!(lines[12].starts_with("  /status"), "{lines:?}");
-        assert!(lines[13].starts_with("  /restart-dev"), "{lines:?}");
-        assert!(lines[14].starts_with("  /exit"), "{lines:?}");
+        assert!(lines[12].starts_with("  /skill ") && lines[12].contains("baixa uma skill"), "{lines:?}");
+        assert!(lines[13].starts_with("  /status"), "{lines:?}");
+        assert!(lines[14].starts_with("  /restart-dev"), "{lines:?}");
+        assert!(lines[15].starts_with("  /exit"), "{lines:?}");
         assert!(lines.last().unwrap().contains("tab completa · enter executa"));
     }
 
