@@ -87,6 +87,7 @@ Subcomandos `bitclaw update`, `bitclaw uninstall` e `bitclaw soul`, e `--version
   - `src/app/provider.rs`: o único lugar que sabe quais adaptadores existem.
   - `src/app/skill_install.rs`: `/skill install` (git, prévia, aprovação, lock com digest) e a carga das skills instaladas.
   - `src/app/soul.rs`: SOUL.md, as cinco perguntas da primeira abertura (`bitclaw soul` refaz) e o texto que entra no prompt do sistema (`Session::builder().persona`, teto de 1200 caracteres).
+  - `src/app/soul_art.rs`: a tela do SOUL, o BitClaw feliz segurando um coração que pulsa (meios-blocos, uma thread repinta só a arte enquanto você responde; sem terminal ou com janela pequena não aparece).
   - `src/app/receipts.rs`: `Recorded`, o aprovador que grava os recibos.
   - `src/app/init.rs`: `/init`, que cria o `AGENTS.md` com fatos do próprio repositório.
   - `src/app/header.rs`: texto do cabeçalho.
@@ -104,6 +105,7 @@ Subcomandos `bitclaw update`, `bitclaw uninstall` e `bitclaw soul`, e `--version
 - `README.md`: seções Pré-requisitos, Como rodar, Configuração do agente, Usar como biblioteca, Uso no prompt, Ferramentas, Contexto, Avaliação com modelos reais, Testes, Segurança, Limites conhecidos, Estrutura
 - `docs/ARCHITECTURE.md`: arquitetura alvo do `src/` e o plano de refatoração
 - `docs/CHOICE.md`: escolha: política para o histórico que excede o contexto
+- `docs/AVALIACAO.md`: os sete critérios de avaliação (escolha e argumentos de ferramenta, chamadas desnecessárias, não chamar, sequência, latência e memória, português) e o que o `eval.sh` cobre
 - `docs/MODELOS.md`: modelos para testar e diagnósticos
 - `docs/MASCOTE.md`: mascote do BitClaw: versões e variações
 - `docs/PROJETO.md`: BitClaw — documento de projeto

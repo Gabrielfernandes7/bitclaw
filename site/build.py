@@ -59,6 +59,7 @@ NAV = [
         ("projeto/documento", "Documento de projeto", "docs/PROJETO.md"),
         ("projeto/arquitetura-alvo", "Arquitetura alvo", "docs/ARCHITECTURE.md"),
         ("projeto/escolha-contexto", "Escolha: histórico", "docs/CHOICE.md"),
+        ("projeto/avaliacao", "Avaliação", "docs/AVALIACAO.md"),
         ("projeto/modelos", "Modelos e diagnósticos", "docs/MODELOS.md"),
         ("projeto/testes", "Pilares do teste", "docs/TEST.md"),
     ]),
