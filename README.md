@@ -208,7 +208,8 @@ Os testes não dependem de rede nem de modelo: usam um modelo falso com resposta
 
 ## Limites conhecidos
 
-- Modelos pequenos às vezes escrevem a chamada de ferramenta como texto JSON. Há um fallback que reconhece esse formato (`calls_from_text` em `src/agent.rs`).
+- Modelos pequenos às vezes escrevem a chamada de ferramenta como texto. Há um fallback que reconhece três formatos (`calls_from_text` em `src/core/agent/text_calls.rs`): JSON (`{"name": ..., "arguments": ...}`), tokens especiais (`read_file{path:<|"|>a.txt<|"|>}`, inclusive várias coladas na linha) e estilo Python (`create_file(path="a.py", content="...")`). A chamada é regravada no histórico como `tool_calls`, para o resultado responder a uma chamada do modelo.
+- Leituras idênticas (`list_dir`, `read_file`, `grep_files`) não rodam duas vezes no mesmo turno: o modelo recebe um aviso e, se insistir, uma última rodada sem ferramentas para responder. Resposta totalmente vazia é pedida de novo, até duas vezes por turno.
 - O modelo pode afirmar que concluiu uma tarefa sem ter aplicado todas as edições. Confira o arquivo. O programa avisa nos casos mais óbvios, mas não é garantia.
 - Ferramentas ainda são só as embutidas: não há carregamento de ferramentas externas nem de skills.
 - A biblioteca ainda não tem um segundo agente que a use de fora do repositório. Essa é a prova da Fase 6 de `docs/PROJETO.md`.
