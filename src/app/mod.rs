@@ -6,6 +6,7 @@ pub mod plain;
 pub mod receipts;
 pub mod provider;
 pub mod skill_install;
+pub mod soul;
 pub mod tui;
 pub mod uninstall;
 pub mod update;

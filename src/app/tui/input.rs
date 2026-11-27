@@ -305,6 +305,15 @@ impl App {
             _ if command.is_some_and(|c| c.name == "/temp") => self.temperature_command(arg)?,
             _ if command.is_some_and(|c| c.name == "/effort") => self.effort_command(arg)?,
             _ if command.is_some_and(|c| c.name == "/init") => self.init_command()?,
+            _ if command.is_some_and(|c| c.name == "/soul") => {
+                let mut lines = match crate::app::soul::load(&self.settings.root) {
+                    Some(text) => text.lines().map(|l| note(l)).collect(),
+                    None => vec![note("sem SOUL.md. Rode `bitclaw soul` num terminal para responder às perguntas.")],
+                };
+                lines.push(note("mudanças no arquivo valem na próxima abertura do BitClaw."));
+                lines.push(Line::default());
+                self.print(lines)?;
+            }
             _ if command.is_some_and(|c| c.name == "/skill") => self.skill_command(arg)?,
             _ if command.is_some_and(|c| c.name == "/skills") => {
                 if self.settings.skills.is_empty() {

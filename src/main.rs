@@ -32,6 +32,8 @@ struct Args {
     update: bool,
     // `bitclaw uninstall`: apaga o binário e o estado global.
     uninstall: bool,
+    // `bitclaw soul`: refaz as perguntas do SOUL.md e sai.
+    soul: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -47,6 +49,7 @@ fn parse_args() -> Result<Args, String> {
         plan: false,
         update: false,
         uninstall: false,
+        soul: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -66,6 +69,7 @@ fn parse_args() -> Result<Args, String> {
             "--plan" => args.plan = true,
             "update" => args.update = true,
             "uninstall" => args.uninstall = true,
+            "soul" => args.soul = true,
             "-V" | "--version" => {
                 println!("bitclaw {}", app::update::VERSION);
                 std::process::exit(0);
@@ -74,6 +78,7 @@ fn parse_args() -> Result<Args, String> {
                 println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color] [--no-mouse] [--think] [--plan]");
                 println!("     bitclaw update     troca o binário pelo do último release");
                 println!("     bitclaw uninstall  apaga o binário e ~/.config/bitclaw (--yes não pergunta)");
+                println!("     bitclaw soul       refaz as perguntas do SOUL.md (quem o agente é para você)");
                 println!("     bitclaw --version");
                 std::process::exit(0);
             }
@@ -98,6 +103,10 @@ fn run() -> Result<(), String> {
     }
     if args.update {
         println!("{}", app::update::run()?);
+        return Ok(());
+    }
+    if args.soul {
+        println!("{}", app::soul::run(&mut io::stdin().lock(), &mut io::stdout())?);
         return Ok(());
     }
     let color = !args.no_color && std::env::var_os("NO_COLOR").is_none();
@@ -202,6 +211,10 @@ fn run() -> Result<(), String> {
                 return Ok(());
             }
         }
+        // Primeira abertura sem SOUL.md: as perguntas vêm depois da boas-vindas e antes da conversa.
+        if app::soul::should_ask(&root) {
+            println!("{}", app::soul::run(&mut io::stdin().lock(), &mut io::stdout())?);
+        }
         let settings = app::tui::Settings {
             title: cfg.name.clone(),
             info,
@@ -223,18 +236,19 @@ fn run() -> Result<(), String> {
         };
         // A sessão é montada na thread do agente, que recebe o aprovador pronto.
         let session_effort = Arc::clone(&effort);
+        let persona = app::soul::load(&root);
         app::tui::run(
             settings,
             move |approver| {
                 let client = provider.client(&default_info, &session_effort)?;
-                Ok(build_session(&cfg, client, approver, &root, args.plan, args.auto_yes)?.with_skills(skills, skills_off))
+                Ok(build_session(&cfg, client, approver, &root, args.plan, args.auto_yes, persona.as_deref())?.with_skills(skills, skills_off))
             },
             Box::new(make_model),
         )
     } else {
         let approver: Box<dyn Approver> = Box::new(app::plain::StdinApprover { auto_edits: args.auto_yes });
         let client = provider.client(&default_info, &effort)?;
-        let mut session = build_session(&cfg, client, approver, &root, args.plan, args.auto_yes)?.with_skills(skills, skills::new_disabled());
+        let mut session = build_session(&cfg, client, approver, &root, args.plan, args.auto_yes, app::soul::load(&root).as_deref())?.with_skills(skills, skills::new_disabled());
         let mut header = vec![cfg.name.clone()];
         header.extend(info);
         header.extend(skill_info);
@@ -297,12 +311,13 @@ mod tests {
 }
 
 // Monta a sessão: as ferramentas vêm do toolkit, pelos nomes do TOML.
-fn build_session(cfg: &AgentConfig, client: Box<dyn ChatModel>, approver: Box<dyn Approver>, root: &std::path::Path, plan: bool, auto_yes: bool) -> Result<Session, String> {
+fn build_session(cfg: &AgentConfig, client: Box<dyn ChatModel>, approver: Box<dyn Approver>, root: &std::path::Path, plan: bool, auto_yes: bool, persona: Option<&str>) -> Result<Session, String> {
     let tools = toolkit::registry_from_names(&cfg.tools).map_err(|e| format!("configuração: {e}"))?;
     let tools = if plan { tools.read_only() } else { tools };
     // Cada decisão sobre alteração ou script fica registrada em `.bitclaw/approvals.jsonl`.
     let approver: Box<dyn Approver> = Box::new(app::receipts::Recorded::new(approver, root, auto_yes));
     let builder = Session::builder(cfg).model(client).approver(approver).tools(tools).hook(Box::new(toolkit::claims::FileClaims)).retriever(Box::new(toolkit::fs::SymbolIndex::default())).root(root);
+    let builder = builder.persona(persona.unwrap_or(""));
     let builder = if cfg.limits.verify { builder.verifier(Box::new(toolkit::verify::ProjectCheck)) } else { builder };
     builder.build()
 }

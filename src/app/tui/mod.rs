@@ -713,13 +713,14 @@ mod tests {
         assert!(lines[4].starts_with("  /model") && lines[5].starts_with("  /effort"), "{lines:?}");
         assert!(lines[6].starts_with("  /context") && lines[7].starts_with("  /temp"), "{lines:?}");
         assert!(lines[8].starts_with("  /init"), "{lines:?}");
-        assert!(lines[9].starts_with("  /clear") && lines[10].starts_with("  /think"), "{lines:?}");
-        assert!(lines[11].starts_with("  /skills"), "{lines:?}");
-        assert!(lines[12].starts_with("  /skill ") && lines[12].contains("baixa uma skill"), "{lines:?}");
-        assert!(lines[13].starts_with("  /status"), "{lines:?}");
-        assert!(lines[14].starts_with("  /undo"), "{lines:?}");
-        assert!(lines[15].starts_with("  /restart-dev"), "{lines:?}");
-        assert!(lines[16].starts_with("  /exit"), "{lines:?}");
+        assert!(lines[9].starts_with("  /soul"), "{lines:?}");
+        assert!(lines[10].starts_with("  /clear") && lines[11].starts_with("  /think"), "{lines:?}");
+        assert!(lines[12].starts_with("  /skills"), "{lines:?}");
+        assert!(lines[13].starts_with("  /skill ") && lines[13].contains("baixa uma skill"), "{lines:?}");
+        assert!(lines[14].starts_with("  /status"), "{lines:?}");
+        assert!(lines[15].starts_with("  /undo"), "{lines:?}");
+        assert!(lines[16].starts_with("  /restart-dev"), "{lines:?}");
+        assert!(lines[17].starts_with("  /exit"), "{lines:?}");
         assert!(lines.last().unwrap().contains("tab completa · enter executa"));
     }
 
