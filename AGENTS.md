@@ -57,6 +57,8 @@ Subcomandos `bitclaw update`, `bitclaw uninstall` e `bitclaw soul`, e `--version
 - **Arte de terminal** segue `docs/identidade/ARTE-TERMINAL.md`: uma cor por desenho, olho como buraco, só caracteres de largura 1, a grade num SVG em `assets/`.
 - **Mascote.** A arte vem de `assets/bitclaw-crab.svg`, a fonte única. Em terminais gráficos (como iTerm2 no macOS), o SVG é rasterizado diretamente em RGBA e exibido via protocolo gráfico nativo; em terminais sem suporte a imagens (como Terminal.app) ou em modo texto, há fallback com meios-blocos.
 
+- **Licença: PolyForm Noncommercial 1.0.0** (`LICENSE`). Uso comercial só com licença à parte do autor. Não adicione dependência ou copie código com licença incompatível, e não troque a licença sem o autor pedir.
+
 ## Stack
 
 - Rust, edição 2024

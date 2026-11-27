@@ -286,3 +286,7 @@ O `curl` do `install.sh` e a consulta do `bitclaw update` não usam credenciais:
 | `scripts/eval.sh` | Avaliação com modelos reais. |
 | `docs/PROJETO.md` | Propósito, decisões e plano. |
 | `docs/MODELOS.md` | Modelos em uso e candidatos a testar, com diagnósticos. |
+
+## Licença
+
+BitClaw é distribuído sob a [PolyForm Noncommercial License 1.0.0](LICENSE). Em resumo: você pode **usar, estudar, modificar e compartilhar** o código para fins não comerciais (pessoal, pesquisa, educação, hobby, organizações sem fins lucrativos). **Uso comercial exige uma licença à parte**, concedida pelo autor: abra uma [issue](https://github.com/Gabrielfernandes7/bitclaw/issues) para conversar. É código com fonte disponível, não software livre no sentido da OSI. O texto em [`LICENSE`](LICENSE) é o que vale; este resumo não o substitui.

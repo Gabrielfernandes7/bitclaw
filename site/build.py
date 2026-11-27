@@ -335,7 +335,7 @@ class Builder:
   <div class="foot-in">
     <div>{crab_svg("foot-crab", animated=False)}<span class="wordmark">bit<b>claw</b></span></div>
     <p>Um agente de IA local e enxuto, montado peça por peça. Feito em Rust.</p>
-    <p class="muted"><a href="{REPO_URL}" rel="noopener">GitHub</a> · <a href="{REPO_URL}/releases" rel="noopener">Releases</a> · <a href="{REPO_URL}/issues" rel="noopener">Issues</a></p>
+    <p class="muted"><a href="{REPO_URL}" rel="noopener">GitHub</a> · <a href="{REPO_URL}/releases" rel="noopener">Releases</a> · <a href="{REPO_URL}/issues" rel="noopener">Issues</a> · <a href="{BLOB}LICENSE" rel="noopener">Licença (PolyForm Noncommercial)</a></p>
   </div>
 </footer>
 <script src="{prefix}js/site.js" defer></script>"""
