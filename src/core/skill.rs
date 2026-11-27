@@ -42,24 +42,49 @@ pub struct Skill {
     pub builtin: bool,
 }
 
+// Uma skill que acompanha o BitClaw: o SKILL.md e os arquivos de referência, embutidos no binário.
+// Assim funcionam num binário instalado, longe do repositório.
+struct Bundled {
+    text: &'static str,
+    // (caminho relativo à pasta da skill, conteúdo)
+    files: &'static [(&'static str, &'static str)],
+}
+
 // Skills que acompanham o BitClaw. Entram no catálogo quando o projeto não tem skill de mesmo nome.
-const BUILTIN: &[(&str, &str)] = &[("create-skill", include_str!("../../skills/create-skill/SKILL.md"))];
+// Só entram as que servem a qualquer projeto; `small-model-optimization` é pesquisa deste repositório.
+const BUILTIN: &[Bundled] = &[
+    Bundled { text: include_str!("../../skills/create-skill/SKILL.md"), files: &[] },
+    Bundled {
+        text: include_str!("../../skills/markdown/SKILL.md"),
+        files: &[("references/microsoft-learn.md", include_str!("../../skills/markdown/references/microsoft-learn.md"))],
+    },
+];
 
 pub fn builtins() -> Vec<Skill> {
     BUILTIN
         .iter()
-        .filter_map(|(_name, text)| {
-            let parsed = parse(text).ok()?;
+        .filter_map(|b| {
+            let parsed = parse(b.text).ok()?;
             Some(Skill {
                 name: parsed.name,
                 description: parsed.description,
                 dir: PathBuf::new(),
                 body: parsed.body,
-                files: Vec::new(),
+                files: b.files.iter().map(|(rel, _)| rel.to_string()).collect(),
                 builtin: true,
             })
         })
         .collect()
+}
+
+// Conteúdo de um arquivo de referência de uma skill embutida.
+fn bundled_file(skill: &str, file: &str) -> Option<&'static str> {
+    BUILTIN
+        .iter()
+        .filter(|b| parse(b.text).is_ok_and(|p| p.name == skill))
+        .flat_map(|b| b.files.iter())
+        .find(|(rel, _)| *rel == file)
+        .map(|(_, text)| *text)
 }
 
 // Junta skills do projeto com as embutidas. Uma skill do projeto com o mesmo nome prevalece.
@@ -316,6 +341,12 @@ impl LoadSkill {
         if rel.is_absolute() || rel.components().any(|c| matches!(c, Component::ParentDir | Component::RootDir)) {
             return Err("caminho de arquivo inválido na skill".into());
         }
+        // Skill embutida não tem pasta: o arquivo vem do binário.
+        if skill.builtin {
+            let text = bundled_file(&skill.name, file.trim())
+                .ok_or_else(|| format!("arquivo '{file}' não existe na skill {}; os dela são: {}", skill.name, skill.files.join(", ")))?;
+            return page(text, offset);
+        }
         let path = skill.dir.join(rel);
         // Confere também links simbólicos: o arquivo final precisa continuar dentro da pasta da skill.
         let real = path.canonicalize().map_err(|e| format!("arquivo '{file}': {e}"))?;
@@ -480,6 +511,24 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert!(!found[0].builtin);
         assert_eq!(found[0].description, "versão do projeto");
+    }
+
+    // Num binário instalado não há `skills/` por perto: a skill e a referência vêm do binário.
+    #[test]
+    fn builtin_markdown_skill_serves_its_reference_without_a_folder() {
+        let skills = builtins();
+        let md = skills.iter().find(|s| s.name == "markdown").expect("markdown embutida");
+        assert!(md.builtin && md.dir.as_os_str().is_empty());
+        assert_eq!(md.files, vec!["references/microsoft-learn.md".to_string()]);
+        let empty = tempdir("builtin-ref");
+        let tool = LoadSkill::new(skills.clone(), new_disabled());
+        let ctx = ToolContext::new(&empty, &AutoApprover);
+        assert!(tool.run(&ctx, &json!({"name": "markdown"})).text().contains("references/microsoft-learn.md"));
+        let Outcome::Done(text) = tool.run(&ctx, &json!({"name": "markdown", "file": "references/microsoft-learn.md"})) else { panic!() };
+        assert!(text.contains(":::"), "conteúdo do arquivo de referência: {text}");
+        let Outcome::Error(e) = tool.run(&ctx, &json!({"name": "markdown", "file": "references/nada.md"})) else { panic!() };
+        assert!(e.contains("microsoft-learn.md"), "o erro diz quais arquivos existem: {e}");
+        assert!(matches!(tool.run(&ctx, &json!({"name": "markdown", "file": "../x"})), Outcome::Error(_)));
     }
 
     #[test]
