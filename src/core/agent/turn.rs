@@ -18,7 +18,7 @@ const MAX_EMPTY_RETRIES: usize = 2;
 const EMPTY_REPLY_NUDGE: &str = "Sua resposta anterior veio vazia. Se o pedido exige uma alteração ou leitura, chame a ferramenta agora, \
                                  com todos os argumentos preenchidos; se não, responda em texto.";
 // Quantas leituras seguidas do mesmo arquivo valem num turno; da próxima em diante, o modelo é mandado responder.
-const MAX_SAME_PATH_READS: usize = 4;
+const MAX_SAME_PATH_READS: usize = 3;
 const REPEATED_CALL: &str = "o modelo repetiu a mesma chamada; interrompendo";
 // Quantas falhas seguidas da mesma ferramenta encerram o turno.
 pub const MAX_CONSECUTIVE_FAILURES: usize = 2;

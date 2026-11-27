@@ -46,7 +46,7 @@ fn clean(text: &str) -> String {
 pub fn render(a: &Answers) -> String {
     let mut out = String::from("# SOUL\n\nQuem você ajuda e como falar. Edite à vontade.\n\n");
     if !a.name.is_empty() {
-        out.push_str(&format!("- Chame a pessoa de {}.\n", a.name));
+        out.push_str(&format!("- O nome da pessoa é {}. Chame-a assim.\n", a.name));
     }
     out.push_str(&format!("- Responda em {}.\n", if a.language.is_empty() { "português" } else { &a.language }));
     out.push_str(if a.detailed {
@@ -188,7 +188,7 @@ mod tests {
     fn answers_shape_the_file() {
         let a = answered("Ana\ninglês\n2\n2\nengenheira de dados\n").unwrap();
         let text = render(&a);
-        assert!(text.contains("Chame a pessoa de Ana."));
+        assert!(text.contains("O nome da pessoa é Ana."));
         assert!(text.contains("Responda em inglês."));
         assert!(text.contains("Respostas detalhadas"));
         assert!(text.contains("Vá direto à alteração"));

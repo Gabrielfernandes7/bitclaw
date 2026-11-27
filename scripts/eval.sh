@@ -14,7 +14,7 @@ if [ ${#MODELS[@]} -eq 0 ]; then
 fi
 REPEATS="${REPEATS:-3}"
 # TASKS="navegar_cor achar_arquivo" scripts/eval.sh roda só essas.
-read -ra TASKS <<< "${TASKS:-criar_txt criar_py editar ler_responder responder_fiel nao_alterar navegar_cor achar_arquivo achar_funcao corrigir_py renomear navegar_real}"
+read -ra TASKS <<< "${TASKS:-criar_txt criar_py editar ler_responder responder_fiel nao_alterar navegar_cor achar_arquivo achar_funcao corrigir_py renomear navegar_real perguntar_nome}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/bitclaw-eval.XXXXXX")"
 
 (cd "$ROOT" && cargo build --quiet) || { echo "build falhou"; exit 1; }
@@ -47,6 +47,8 @@ seed() {
     ler_responder) printf 'A capital do Brasil é Brasília.\n' > notas.txt ;;
     responder_fiel) printf 'O codigo secreto e 4817.\n' > notas.txt ;;
     nao_alterar) printf 'x\n' > a.txt ;;
+    # A persona (SOUL.md) já está no prompt: a resposta vem dela, sem ferramenta.
+    perguntar_nome) mkdir -p .bitclaw && printf '# SOUL\n\n- O nome da pessoa é Ba. Chame-a assim.\n' > .bitclaw/SOUL.md ;;
   esac
 }
 prompt() {
@@ -62,6 +64,7 @@ prompt() {
     achar_funcao) echo "qual função desenha o título no widget header?" ;;
     corrigir_py) echo "dobro.py tem um erro de sintaxe; corrija-o" ;;
     renomear) echo "renomeie a constante MUTED para SECONDARY no arquivo src/ui/theme.rs" ;;
+    perguntar_nome) echo "qual é o meu nome?" ;;
     navegar_real) echo "troque a cor amarela do terminal TUI para vermelho" ;;
   esac
 }
@@ -78,6 +81,7 @@ check() {  # $1 = tarefa, $2 = log; executado dentro do projeto
     # Só a definição muda: o resto do projeto (usos, assets, build) fica como estava.
     navegar_cor) grep -q "ACCENT: Color = Color::Red" src/ui/theme.rs && ! grep -q "Color::Yellow" src/ui/theme.rs \
       && grep -q yellow assets/logo.svg && grep -q Yellow target/debug/theme.rs ;;
+    perguntar_nome) answer "$2" | grep -q "Ba" ;;
     achar_arquivo) answer "$2" | grep -q "src/ui/widgets/status.rs" ;;
     achar_funcao) answer "$2" | grep -q "title" ;;
     corrigir_py) python3 -m py_compile dobro.py 2>/dev/null ;;
@@ -98,7 +102,7 @@ for model in "${MODELS[@]}"; do
       (cd "$dir" && seed "$task")
       log="$dir.log"
       start=$(date +%s)
-      printf '%s\n/exit\n' "$(prompt "$task")" | "$BIN" ${CONFIG:+--config "$CONFIG"} --dir "$dir" --model "$model" --yes >"$log" 2>&1
+      printf '%s\n/exit\n' "$(prompt "$task")" | XDG_CONFIG_HOME="$WORK/config" "$BIN" ${CONFIG:+--config "$CONFIG"} --dir "$dir" --model "$model" --yes >"$log" 2>&1
       secs=$(( $(date +%s) - start ))
       result=FAIL
       (cd "$dir" && check "$task" "$log") && result=PASS

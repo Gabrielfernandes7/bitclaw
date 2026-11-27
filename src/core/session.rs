@@ -58,6 +58,9 @@ pub struct SessionBuilder<'a> {
 // Teto, em caracteres, da persona (SOUL.md) que entra no prompt do sistema. Num modelo pequeno, cada
 // token do prompt tira espaço da conversa; o que passa disto é cortado.
 pub const MAX_PERSONA_CHARS: usize = 1_200;
+// Título da persona no prompt. Diz que ela já está aqui: sem isso, o modelo pequeno procura o SOUL.md
+// no projeto com as ferramentas (ele fica fora da pasta do projeto) e não responde sobre a pessoa.
+const PERSONA_HEADER: &str = "SOBRE A PESSOA E O SOUL.md (já está aqui, não use ferramenta para consultar; responda perguntas sobre a pessoa com isto):";
 
 impl<'a> SessionBuilder<'a> {
     // Quem o agente é e como fala (o conteúdo do SOUL.md). Vai depois do prompt da configuração,
@@ -123,7 +126,7 @@ impl<'a> SessionBuilder<'a> {
         };
         let ctx = ContextManager::new(cfg.model.context_window as usize, cfg.limits.reserve_output_tokens);
         let base_system = match &self.persona {
-            Some(persona) => format!("{}\n\n{persona}", cfg.system_prompt),
+            Some(persona) => format!("{}\n\n{PERSONA_HEADER}\n{persona}", cfg.system_prompt),
             None => cfg.system_prompt.clone(),
         };
         let messages = vec![json!({"role": "system", "content": base_system})];
@@ -376,8 +379,9 @@ url = "http://unused"
             .build()
             .unwrap();
         let system = s.messages()[0]["content"].as_str().unwrap();
-        assert!(system.starts_with("sistema de teste\n\nChame de Ana."));
-        assert!(system.chars().count() <= "sistema de teste\n\n".len() + MAX_PERSONA_CHARS);
+        assert!(system.starts_with("sistema de teste\n\nSOBRE A PESSOA"));
+        assert!(system.contains("\nChame de Ana."));
+        assert!(system.chars().count() <= "sistema de teste\n\n".len() + PERSONA_HEADER.chars().count() + 1 + MAX_PERSONA_CHARS);
         // Texto vazio não muda o prompt.
         let tools = crate::toolkit::registry_from_names(&cfg.tools).unwrap();
         let s = Session::builder(&cfg).model(scripted(vec![])).approver(Box::new(AutoApprover)).tools(tools).root(&dir).persona("  ").build().unwrap();
