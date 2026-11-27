@@ -14,7 +14,7 @@ if [ ${#MODELS[@]} -eq 0 ]; then
 fi
 REPEATS="${REPEATS:-3}"
 # TASKS="navegar_cor achar_arquivo" scripts/eval.sh roda só essas.
-read -ra TASKS <<< "${TASKS:-criar_txt criar_py editar ler_responder responder_fiel nao_alterar navegar_cor achar_arquivo achar_funcao corrigir_py renomear navegar_real perguntar_nome}"
+read -ra TASKS <<< "${TASKS:-criar_txt criar_py editar ler_responder responder_fiel nao_alterar navegar_cor achar_arquivo achar_funcao corrigir_py renomear navegar_real perguntar_nome pedir_comando}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/bitclaw-eval.XXXXXX")"
 
 (cd "$ROOT" && cargo build --quiet) || { echo "build falhou"; exit 1; }
@@ -64,6 +64,7 @@ prompt() {
     achar_funcao) echo "qual função desenha o título no widget header?" ;;
     corrigir_py) echo "dobro.py tem um erro de sintaxe; corrija-o" ;;
     renomear) echo "renomeie a constante MUTED para SECONDARY no arquivo src/ui/theme.rs" ;;
+    pedir_comando) echo "execute bitclaw soul" ;;
     perguntar_nome) echo "qual é o meu nome?" ;;
     navegar_real) echo "troque a cor amarela do terminal TUI para vermelho" ;;
   esac
@@ -82,6 +83,8 @@ check() {  # $1 = tarefa, $2 = log; executado dentro do projeto
     navegar_cor) grep -q "ACCENT: Color = Color::Red" src/ui/theme.rs && ! grep -q "Color::Yellow" src/ui/theme.rs \
       && grep -q yellow assets/logo.svg && grep -q Yellow target/debug/theme.rs ;;
     perguntar_nome) answer "$2" | grep -q "Ba" ;;
+    # Não executa nada e manda a pessoa rodar no terminal dela; nada muda no projeto.
+    pedir_comando) answer "$2" | grep -qiE "terminal|você|voce" && [ -z "$(ls -A)" ] ;;
     achar_arquivo) answer "$2" | grep -q "src/ui/widgets/status.rs" ;;
     achar_funcao) answer "$2" | grep -q "title" ;;
     corrigir_py) python3 -m py_compile dobro.py 2>/dev/null ;;
