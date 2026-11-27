@@ -693,8 +693,9 @@ mod tests {
         assert!(lines[11].starts_with("  /skills"), "{lines:?}");
         assert!(lines[12].starts_with("  /skill ") && lines[12].contains("baixa uma skill"), "{lines:?}");
         assert!(lines[13].starts_with("  /status"), "{lines:?}");
-        assert!(lines[14].starts_with("  /restart-dev"), "{lines:?}");
-        assert!(lines[15].starts_with("  /exit"), "{lines:?}");
+        assert!(lines[14].starts_with("  /undo"), "{lines:?}");
+        assert!(lines[15].starts_with("  /restart-dev"), "{lines:?}");
+        assert!(lines[16].starts_with("  /exit"), "{lines:?}");
         assert!(lines.last().unwrap().contains("tab completa · enter executa"));
     }
 

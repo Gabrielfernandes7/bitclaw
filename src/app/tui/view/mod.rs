@@ -262,6 +262,7 @@ fn draw_composer(f: &mut Frame, v: &View, area: Rect) {
             Line::from(vec![
                 Span::styled(mark, name),
                 Span::styled(format!("{:<8} ", c.name), name),
+                Span::styled(if c.usage.is_empty() { String::new() } else { format!("{} ", c.usage) }, fg(KEYWORD)),
                 Span::styled(c.desc, fg(GRAY)),
             ])
         })

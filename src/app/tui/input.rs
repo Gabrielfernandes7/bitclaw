@@ -296,6 +296,9 @@ impl App {
                 let _ = self.commands.send(Command::Clear);
                 self.clear_screen()?;
             }
+            _ if command.is_some_and(|c| c.name == "/undo") => {
+                let _ = self.commands.send(Command::Undo);
+            }
             _ if command.is_some_and(|c| c.name == "/think") => self.think_command()?,
             _ if command.is_some_and(|c| c.name == "/model") => self.model_command(arg)?,
             _ if command.is_some_and(|c| c.name == "/context") => self.context_command(arg)?,
