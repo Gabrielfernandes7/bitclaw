@@ -81,6 +81,7 @@ pub struct Settings {
     pub default_options: Options,
     pub auto_yes: bool,
     pub color: bool,
+    pub graphics: bool,
     // Captura o mouse: a roda rola a conversa e arrastar seleciona e copia. Sem ela (`--no-mouse`), o
     // terminal seleciona sozinho e a conversa rola só pelo teclado.
     pub mouse: bool,
@@ -201,6 +202,9 @@ struct App {
     // `/skill install`: o download em andamento (numa thread) e a skill baixada que espera `yes` ou `no`.
     skill_job: Option<Receiver<Result<Staged, String>>>,
     skill_pending: Option<Staged>,
+    // Protocolo gráfico do terminal para o mascote (iTerm2, Kitty, Sixel). None = fallback textual.
+    graphics: Option<brand::Graphics>,
+    mascot_proto: Option<ratatui_image::protocol::Protocol>,
 }
 
 // Roda a interface até o usuário sair. `make_session` roda na thread do agente.
@@ -235,6 +239,13 @@ where
         let _ = execute!(io::stdout(), PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES));
     }
 
+    let graphics = if settings.graphics { brand::Graphics::detect() } else { None };
+    let initial_mood = brand::opening_mood();
+    let initial_proto = graphics.as_ref().and_then(|g| {
+        let img = brand::frame_image(initial_mood, 0);
+        g.new_protocol(img, ratatui::layout::Size::new(brand::WIDTH, view::MASCOT_ROWS)).ok()
+    });
+
     let mut app = App {
         terminal,
         editor: new_editor(),
@@ -254,7 +265,7 @@ where
         picker: None,
         model_picker: None, effort_panel: None,
         // Ao abrir, o mascote faz um dos números, sorteado a cada abertura.
-        play: Some((Instant::now(), brand::opening_mood())),
+        play: Some((Instant::now(), initial_mood)),
         mention_off: false,
         status_panel: None,
         stats: SessionStats::new(),
@@ -262,6 +273,8 @@ where
         restart: false,
         skill_job: None,
         skill_pending: None,
+        graphics,
+        mascot_proto: initial_proto,
     };
     let result = app.event_loop();
 
@@ -309,7 +322,7 @@ impl App {
             let mentions = self.mention_matches().map(|m| m.entries).unwrap_or_default();
             // O que o modelo gera ao vivo fica embaixo, junto do editor, em até um terço da tela.
             let live_rows = view::live_lines(self.work.as_ref(), size.width).len().min(usize::from(size.height / 3));
-            let App { terminal, editor, work, usage, settings, menu_index, picker, model_picker, effort_panel, status_panel, stats, transcript, flash, chat_area, .. } = self;
+            let App { terminal, editor, work, usage, settings, menu_index, picker, model_picker, effort_panel, status_panel, stats, transcript, flash, chat_area, mascot_proto, .. } = self;
             let view = View {
                 editor,
                 work: work.as_ref(),
@@ -326,6 +339,7 @@ impl App {
                 flash: flash.as_ref().map(|(_, t)| t.as_str()),
                 live_rows,
                 mentions,
+                mascot_image: mascot_proto.as_ref(),
             };
             terminal.draw(|f| *chat_area = draw(f, &view)).map_err(|e| e.to_string())?;
             self.transcript.clamp(usize::from(self.chat_area.height));
@@ -411,7 +425,12 @@ impl App {
             return self.finish_greeting();
         }
         let width = self.terminal.size()?.width;
-        let (banner, _) = view::banner_lines(&self.settings, &self.stats, mascot_for(self.play), width);
+        let mascot = mascot_for(self.play);
+        if let Some(g) = &self.graphics {
+            let img = brand::frame_image(mascot.mood, mascot.ms);
+            self.mascot_proto = g.new_protocol(img, ratatui::layout::Size::new(brand::WIDTH, view::MASCOT_ROWS)).ok();
+        }
+        let (banner, _) = view::banner_lines(&self.settings, &self.stats, mascot, width);
         self.transcript.replace_head(banner.into_iter().map(|l| print::clip_line(l, usize::from(width))).collect());
         Ok(())
     }
@@ -442,6 +461,9 @@ impl App {
         }
         self.greeting = false;
         self.play = None;
+        if let Some(g) = &self.graphics {
+            self.mascot_proto = g.new_protocol(brand::resting_image().clone(), ratatui::layout::Size::new(brand::WIDTH, view::MASCOT_ROWS)).ok();
+        }
         let width = self.terminal.size()?.width;
         let (banner, _) = view::banner_lines(&self.settings, &self.stats, mascot_for(None), width);
         self.transcript.replace_head(banner.into_iter().map(|l| print::clip_line(l, usize::from(width))).collect());
@@ -533,7 +555,7 @@ impl App {
                 }
                 UiEvent::Approval { preview, reply, runs } => {
                     self.print_preview(&preview, runs).map_err(|e| e.to_string())?;
-                    let batchable = !runs && !preview.is_removal();
+                    let batchable = !runs && preview.kind == bitclaw::tools::PreviewKind::Change;
                     match &mut self.work {
                         // `a` já foi dito neste turno: a edição passa, e a prévia acima mostra o que foi aplicado.
                         Some(w) if w.approve_all && batchable => {
@@ -605,6 +627,7 @@ mod tests {
             default_options: Options::default(),
             auto_yes,
             color: false,
+            graphics: false,
             mouse: true,
             root: std::env::temp_dir(),
         }
@@ -622,7 +645,7 @@ mod tests {
         let height = viewport_height(editor.lines().len(), menu.len(), summary, 0);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let settings = settings(auto_yes);
-        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0, picker: None, model_picker: None, effort_panel: None, status_panel: None, stats: &SessionStats::new(), transcript: &Transcript::default(), flash: None, live_rows: 0, mentions: Vec::new() };
+        let view = View { editor: &editor, work, usage, settings: &settings, menu, menu_index: 0, picker: None, model_picker: None, effort_panel: None, status_panel: None, stats: &SessionStats::new(), transcript: &Transcript::default(), flash: None, live_rows: 0, mentions: Vec::new(), mascot_image: None };
         terminal.draw(|f| { draw(f, &view); }).unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height)
@@ -725,7 +748,7 @@ mod tests {
         let cfg = settings(false);
         *cfg.effort.lock().unwrap() = Effort::Medium;
         let mut terminal = Terminal::new(TestBackend::new(100, viewport_height(1, 0, 0, 0))).unwrap();
-        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, effort_panel: None, status_panel: None, stats: &SessionStats::new(), transcript: &Transcript::default(), flash: None, live_rows: 0, mentions: Vec::new() };
+        let view = View { editor: &editor, work: None, usage: None, settings: &cfg, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, effort_panel: None, status_panel: None, stats: &SessionStats::new(), transcript: &Transcript::default(), flash: None, live_rows: 0, mentions: Vec::new(), mascot_image: None };
         terminal.draw(|f| { draw(f, &view); }).unwrap();
         let buffer = terminal.backend().buffer().clone();
         let footer: String = (0..100).map(|x| buffer[(x, 3)].symbol().to_string()).collect();
@@ -863,7 +886,7 @@ mod tests {
             editor.insert_str(typed);
             let mut terminal = Terminal::new(TestBackend::new(60, viewport_height(1, 0, 0, 0))).unwrap();
             let settings = settings(false);
-            let view = View { editor: &editor, work: None, usage: None, settings: &settings, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, effort_panel: None, status_panel: None, stats: &SessionStats::new(), transcript: &Transcript::default(), flash: None, live_rows: 0, mentions: Vec::new() };
+            let view = View { editor: &editor, work: None, usage: None, settings: &settings, menu: Vec::new(), menu_index: 0, picker: None, model_picker: None, effort_panel: None, status_panel: None, stats: &SessionStats::new(), transcript: &Transcript::default(), flash: None, live_rows: 0, mentions: Vec::new(), mascot_image: None };
             terminal.draw(|f| { draw(f, &view); }).unwrap();
             let buffer = terminal.backend().buffer().clone();
             // Linha do editor: logo depois da régua de cima → linha 1; o texto começa na coluna 2.
@@ -931,6 +954,7 @@ mod tests {
             flash: None,
             live_rows: if live.is_empty() { 0 } else { 3 },
             mentions: Vec::new(),
+            mascot_image: None,
         };
         let mut terminal = Terminal::new(TestBackend::new(60, height)).unwrap();
         terminal.draw(|f| { draw(f, &view); }).unwrap();
@@ -974,6 +998,7 @@ mod tests {
             flash: None,
             live_rows: 0,
             mentions: Vec::new(),
+            mascot_image: None,
         };
         let mut terminal = Terminal::new(TestBackend::new(60, height)).unwrap();
         let mut chat = Rect::default();
@@ -1029,6 +1054,7 @@ mod tests {
             flash: None,
             live_rows: 0,
             mentions: Vec::new(),
+            mascot_image: None,
         };
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
         terminal.draw(|f| {
@@ -1086,6 +1112,7 @@ mod tests {
             flash: None,
             live_rows: 0,
             mentions,
+            mascot_image: None,
         };
         let mut terminal = Terminal::new(TestBackend::new(80, 14)).unwrap();
         terminal.draw(|f| { draw(f, &view); }).unwrap();
@@ -1122,5 +1149,95 @@ mod tests {
 
         locked(&s.options).num_ctx = 32768;
         assert!(banner_text(&s).contains("janela 32768 tok"));
+    }
+    // O mascote sai inteiro (3 linhas × 10 colunas) em vários tamanhos de terminal, com o texto começando
+    // depois dele; abaixo de 24 colunas ele some e o texto fica. Desenha a tela toda, como no programa.
+    #[test]
+    fn the_mascot_is_drawn_whole_at_every_terminal_size() {
+        let mut settings = settings(false);
+        settings.info = vec!["Projeto (ClawBit) /Users/alguem/Documents/Pessoal/ClawBit".into()];
+        settings.details = "4.0B · nvfp4".into();
+        let crab = brand::crab();
+        for (w, h) in [(80u16, 24u16), (100, 30), (120, 40), (40, 12), (30, 10), (24, 8), (23, 8)] {
+            let mut t = Transcript::default();
+            let (banner, drawn) = banner_lines(&settings, &SessionStats::new(), mascot_for(None), w);
+            t.push(banner.into_iter().map(|l| print::clip_line(l, usize::from(w))).collect());
+            t.layout(w);
+            let editor = new_editor();
+            let view = View { editor: &editor, work: None, usage: None, settings: &settings, menu: vec![], menu_index: 0, picker: None, model_picker: None, effort_panel: None, status_panel: None, stats: &SessionStats::new(), transcript: &t, flash: None, live_rows: 0, mentions: Vec::new(), mascot_image: None };
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal.draw(|f| { draw(f, &view); }).unwrap();
+            let b = terminal.backend().buffer().clone();
+            let row = |y: u16| (0..w).map(|x| b[(x, y)].symbol().to_string()).collect::<String>();
+            if w < brand::WIDTH + 2 + 12 {
+                assert!(!drawn && !(0..h).any(|y| row(y).contains('█')), "{w}x{h}: sem espaço, sem mascote");
+                continue;
+            }
+            assert!(drawn, "{w}x{h}");
+            for (i, art) in crab.iter().enumerate() {
+                let line = row(TOP_GAP + i as u16);
+                let (glyph, rest): (String, String) = (line.chars().take(10).collect(), line.chars().skip(10).collect());
+                assert_eq!(&glyph, art, "{w}x{h}, linha {i} do mascote: {line:?}");
+                assert!(rest.trim().is_empty() || (rest.starts_with("  ") && !rest[2..].starts_with(' ')), "{w}x{h}: texto logo depois do mascote: {line:?}");
+            }
+            assert!(row(TOP_GAP).contains("BitClaw") && row(TOP_GAP + 2).contains("m:1b"), "{w}x{h}");
+        }
+    }
+
+    #[test]
+    fn graphical_banner_uses_spacer_and_preserves_text_alignment() {
+        let mut settings = settings(false);
+        settings.graphics = true;
+        settings.info = vec!["Projeto (p) /p".into()];
+        let (lines, drawn) = banner_lines(&settings, &SessionStats::new(), mascot_for(None), 80);
+        assert!(drawn);
+        assert_eq!(lines.len(), BANNER_ROWS);
+        for i in 0..MASCOT_ROWS as usize {
+            let row = &lines[TOP_GAP as usize + i];
+            assert_eq!(row.spans[0].content, "          ", "10 espaços reservados para a imagem do mascote");
+            assert_eq!(row.spans[1].content, "  ", "2 espaços de margem entre mascote e texto");
+        }
+        let full = lines[TOP_GAP as usize].spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+        assert!(full.contains("BitClaw"));
+    }
+
+    #[test]
+    fn graphical_mascot_renders_image_widget_when_active() {
+        let mut settings = settings(false);
+        settings.graphics = true;
+        let mut t = Transcript::default();
+        let (banner, _) = banner_lines(&settings, &SessionStats::new(), mascot_for(None), 80);
+        t.push(banner.into_iter().map(|l| print::clip_line(l, 80)).collect());
+        t.layout(80);
+
+        let g = brand::Graphics::with_protocol(ratatui_image::picker::ProtocolType::Iterm2);
+        let proto = g.new_protocol(brand::resting_image().clone(), ratatui::layout::Size::new(brand::WIDTH, MASCOT_ROWS)).unwrap();
+
+        let editor = new_editor();
+        let view = View {
+            editor: &editor,
+            work: None,
+            usage: None,
+            settings: &settings,
+            menu: vec![],
+            menu_index: 0,
+            picker: None,
+            model_picker: None,
+            effort_panel: None,
+            status_panel: None,
+            stats: &SessionStats::new(),
+            transcript: &t,
+            flash: None,
+            live_rows: 0,
+            mentions: Vec::new(),
+            mascot_image: Some(&proto),
+        };
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| { draw(f, &view); }).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        // A célula do canto superior do mascote (coluna 0, linha TOP_GAP) recebe o símbolo do protocolo iTerm2 (escape OSC 1337)
+        let top_left = &buffer[(0, TOP_GAP)];
+        assert!(top_left.symbol().contains("1337;File=inline=1"), "contém a sequência iTerm2: {:?}", top_left.symbol());
     }
 }

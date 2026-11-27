@@ -187,6 +187,7 @@ fn run() -> Result<(), String> {
             catalog: Arc::clone(&catalog),
             auto_yes: args.auto_yes,
             color,
+            graphics: color && app::tui::brand::Graphics::is_supported(),
             mouse: !args.no_mouse,
             root: root.clone(),
         };

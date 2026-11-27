@@ -35,13 +35,14 @@ impl EffortPanel {
     }
 }
 
-// Cor de cada nível: quanto mais raciocínio, mais quente. `off` e `on` ficam cinza.
+// Cor de cada nível: quanto mais raciocínio, mais quente. `off` fica cinza; `on` (modelos sem níveis)
+// fica verde, para o controle de dois pontos também mostrar que acendeu.
 pub(in crate::app::tui) fn effort_color(effort: Effort) -> Color {
     match effort {
-        Effort::Low => GREEN,
+        Effort::Low | Effort::On => GREEN,
         Effort::Medium => YELLOW,
         Effort::High => RED,
-        Effort::Off | Effort::On => GRAY,
+        Effort::Off => GRAY,
     }
 }
 
@@ -56,11 +57,58 @@ pub(in crate::app::tui) fn effort_help(effort: Effort) -> &'static str {
     }
 }
 
-// Título, folga, controle, nível, ajuda e dica: o painel não pede mais que isso.
-pub(in crate::app::tui) const EFFORT_PANEL_ROWS: u16 = 6;
+// Título, folga, controle, nomes, nível, ajuda e dica: o painel não pede mais que isso.
+pub(in crate::app::tui) const EFFORT_PANEL_ROWS: u16 = 7;
+
+// Traços entre dois pontos do controle; os nomes dos níveis cabem nesse espaço.
+const SEGMENT: usize = 6;
+
+// ◂ ●━━━━━━●━━━━━━◉──────○ ▸ : até o cursor, a reta é cheia e cada trecho tem a cor do nível a que chega,
+// então ela esquenta conforme o esforço sobe (cinza, verde, amarelo, vermelho). Depois do cursor, fica fina
+// e cinza. As setas apagam na ponta em que não dá mais para andar. Sem cores, cheia e fina ainda se distinguem.
+fn slider_line(panel: &EffortPanel) -> Line<'static> {
+    let here = panel.chosen().map_or(GRAY, effort_color);
+    let arrow = |can: bool| if can { fg(here) } else { fg(DIM) };
+    let mut spans = vec![Span::styled("◂ ", arrow(panel.index > 0))];
+    for (i, &level) in panel.levels.iter().enumerate() {
+        let color = effort_color(level);
+        if i > 0 {
+            let span = if i <= panel.index {
+                Span::styled("━".repeat(SEGMENT), fg(color))
+            } else {
+                Span::styled("─".repeat(SEGMENT), fg(DIM))
+            };
+            spans.push(span);
+        }
+        spans.push(match i.cmp(&panel.index) {
+            std::cmp::Ordering::Less => Span::styled("●", fg(color)),
+            std::cmp::Ordering::Equal => Span::styled("◉", bold(color)),
+            std::cmp::Ordering::Greater => Span::styled("○", fg(GRAY)),
+        });
+    }
+    spans.push(Span::styled(" ▸", arrow(panel.index + 1 < panel.levels.len())));
+    Line::from(spans)
+}
+
+// Nome de cada nível centrado sob o seu ponto, na cor do nível; o do cursor em negrito.
+fn names_line(panel: &EffortPanel) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut col = 0;
+    for (i, &level) in panel.levels.iter().enumerate() {
+        let name = level.as_str();
+        let dot = 2 + i * (SEGMENT + 1);
+        let start = dot.saturating_sub(name.len() / 2).max(col);
+        spans.push(Span::raw(" ".repeat(start - col)));
+        let style = if i == panel.index { bold(effort_color(level)) } else { fg(effort_color(level)) };
+        spans.push(Span::styled(name, style));
+        col = start + name.len();
+    }
+    Line::from(spans)
+}
 
 pub(in crate::app::tui) fn draw_effort_panel(f: &mut Frame, area: Rect, panel: &EffortPanel) {
-    let [title, _gap, slider, label, help, _rest, hint] = Layout::vertical([
+    let [title, _gap, slider, names, label, help, _rest, hint] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -72,22 +120,8 @@ pub(in crate::app::tui) fn draw_effort_panel(f: &mut Frame, area: Rect, panel: &
     .areas(area);
 
     f.render_widget(Paragraph::new(Line::from(Span::styled("Esforço de raciocínio", bold(YELLOW)))), title);
-
-    // ◂ ◉──────○──────○ ▸ : um ponto por nível, ligados por traços. O ponto cheio é o cursor.
-    let mut spans = vec![Span::styled("◂ ", fg(GRAY))];
-    for (i, &level) in panel.levels.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled("──────", fg(GRAY)));
-        }
-        let span = if i == panel.index {
-            Span::styled("◉", bold(effort_color(level)))
-        } else {
-            Span::styled("○", fg(GRAY))
-        };
-        spans.push(span);
-    }
-    spans.push(Span::styled(" ▸", fg(GRAY)));
-    f.render_widget(Paragraph::new(Line::from(spans)), slider);
+    f.render_widget(Paragraph::new(slider_line(panel)), slider);
+    f.render_widget(Paragraph::new(names_line(panel)), names);
 
     if let Some(level) = panel.chosen() {
         let mut label_spans = vec![Span::styled(level.as_str(), bold(effort_color(level)))];
@@ -119,6 +153,39 @@ mod tests {
             panel.step(false);
         }
         assert_eq!(panel.chosen(), Some(Effort::Off), "para na outra ponta");
+    }
+
+    fn text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn the_track_is_filled_and_colored_up_to_the_cursor() {
+        let levels = vec![Effort::Off, Effort::Low, Effort::Medium, Effort::High];
+        let line = slider_line(&EffortPanel::new(levels, Effort::Medium));
+        assert_eq!(text(&line), "◂ ●━━━━━━●━━━━━━◉──────○ ▸");
+        let color = |s: &str| line.spans.iter().find(|x| x.content == s).and_then(|x| x.style.fg);
+        assert_eq!(color("◉"), Some(YELLOW), "cursor na cor do nível");
+        let filled: Vec<_> = line.spans.iter().filter(|s| s.content.starts_with('━')).map(|s| s.style.fg).collect();
+        assert_eq!(filled, vec![Some(GREEN), Some(YELLOW)], "cada trecho na cor do nível a que chega");
+        assert_eq!(color("──────"), Some(DIM));
+        assert_eq!(color(" ▸"), Some(YELLOW), "ainda dá para subir");
+    }
+
+    #[test]
+    fn arrows_dim_at_the_ends_and_names_sit_under_their_dots() {
+        let levels = vec![Effort::Off, Effort::Low, Effort::Medium, Effort::High];
+        let panel = EffortPanel::new(levels, Effort::Off);
+        let line = slider_line(&panel);
+        assert_eq!(line.spans[0].style.fg, Some(DIM), "na ponta esquerda não dá para descer");
+        let track = text(&line);
+        let names = text(&names_line(&panel));
+        for name in ["off", "low", "medium", "high"] {
+            let at = names.find(name).unwrap();
+            let center = names[..at].chars().count() + name.len() / 2;
+            let under: char = track.chars().nth(center).unwrap();
+            assert!("●◉○".contains(under), "{name} sob um ponto: {track:?} / {names:?}");
+        }
     }
 
     #[test]
