@@ -119,7 +119,7 @@ fn run() -> Result<(), String> {
     };
     // Skills baixadas com `/skill install` ficam em `.bitclaw/skills`, dentro do projeto. A do projeto
     // prevalece se o nome se repete.
-    let (installed, installed_ignored) = skills::load_with_ignored(&root.join(app::skill_install::INSTALL_DIR))?;
+    let (installed, installed_ignored) = app::skill_install::load_installed(&root)?;
     ignored.extend(installed_ignored);
     for skill in installed {
         if project_skills.iter().any(|s| s.name == skill.name) {
