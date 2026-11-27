@@ -45,7 +45,7 @@ impl Tool for RunScript {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "run_script",
-            "Executa um script que JÁ EXISTE no projeto: aplica chmod u+x e o roda com a pasta do projeto como diretório atual. Crie o script antes com create_file, começando por um shebang como #!/bin/bash. O usuário vê o script inteiro e confirma antes de executar. Devolve o código de saída e a saída real (stdout e stderr); o tempo máximo é de 60 s.",
+            "Executa um script que JÁ EXISTE no projeto: aplica chmod u+x e o roda com a pasta do projeto como diretório atual. Crie o script antes com create_file, começando por um shebang como #!/bin/bash. O usuário vê o script inteiro e confirma antes de executar. Devolve o código de saída e a saída real (stdout e stderr); o tempo máximo é de 60 s. Chamada exata, com estes nomes: {\"path\": \"scripts/contar.sh\", \"args\": [\".\"]}. Sem argumentos, omita args.",
             json!({
                 "type": "object",
                 "properties": {

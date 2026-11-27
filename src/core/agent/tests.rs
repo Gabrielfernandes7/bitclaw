@@ -253,10 +253,10 @@ fn failures_of_different_tools_do_not_count_together() {
 
 #[test]
 fn step_limit_stops_the_turn() {
-    // Chamadas bem-sucedidas e distintas (o argumento extra muda a chave): só o limite de passos para o turno.
+    // Chamadas bem-sucedidas e distintas (o padrão muda a chave): só o limite de passos para o turno.
     let r = root("steps");
     let replies: Vec<Value> = (0..MAX_STEPS + 2)
-        .map(|i| call("list_dir", json!({"path": ".", "n": i})))
+        .map(|i| call("grep_files", json!({"pattern": format!("trecho{i}")})))
         .collect();
     let model = fake(replies);
     let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
@@ -267,7 +267,7 @@ fn step_limit_stops_the_turn() {
 #[test]
 fn step_limit_asks_for_a_final_answer_without_tools() {
     let r = root("steps-final");
-    let mut replies: Vec<Value> = (0..MAX_STEPS).map(|i| call("list_dir", json!({"path": ".", "n": i}))).collect();
+    let mut replies: Vec<Value> = (0..MAX_STEPS).map(|i| call("grep_files", json!({"pattern": format!("trecho{i}")}))).collect();
     replies.push(text("resposta final"));
     let model = fake(replies);
     let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
@@ -317,7 +317,12 @@ fn long_history_is_trimmed_before_calling_the_model() {
         msgs.push(json!({"role": "assistant", "content": "y".repeat(2_000)}));
     }
     msgs.push(json!({"role": "user", "content": "atual"}));
-    let mut small = ContextManager::new(1_800, 0);
+    // A janela é calculada a partir do schema real das ferramentas (3 caracteres por token, o padrão): sobram
+    // cerca de mil tokens para o histórico, pequenos para as seis rodadas antigas.
+    let tools = crate::core::tool::specs_value(&crate::toolkit::default_registry().specs());
+    let tool_tokens = crate::core::context::value_size(&tools) / 3 + 1;
+    let mut small = ContextManager::new(tool_tokens + 1_000, 0);
+    assert!(small.budget_chars(&tools) > 0, "a janela precisa sobrar além das ferramentas");
     let model = fake(vec![text("ok")]);
     let report = run_turn(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover, &mut small, &Silent).unwrap();
     assert!(!report.trims.is_empty(), "deveria ter descartado turnos");
@@ -986,4 +991,14 @@ fn saying_something_else_is_missing_is_not_flagged() {
     let read = act("read_file", json!({"path": ".gitignore"}), Outcome::Done("target/".into()), false);
     let report = TurnReport { text: "Não encontrei o Dockerfile.".into(), actions: vec![read], ..Default::default() };
     assert!(crate::toolkit::claims::warnings(&report).is_empty());
+}
+
+#[test]
+fn an_invented_parameter_is_refused_before_the_tool_runs() {
+    let r = root("args-check");
+    let registry = crate::toolkit::default_registry();
+    let out = registry.execute(&ToolContext::new(&r, &AutoApprover), "run_script", &json!({"arquivo": "x.sh"}));
+    let Outcome::Error(msg) = out else { panic!("deveria recusar: {out:?}") };
+    assert!(msg.contains("faltam path") && msg.contains("arquivo"), "{msg}");
+    assert!(!r.join("x.sh").exists());
 }

@@ -113,7 +113,11 @@ impl Registry {
             Some(tool) if self.plan && !tool.call_annotations(args).read_only => Outcome::Error(format!(
                 "modo Plan: esta chamada de {name} altera o projeto e está desligada. Use só leitura"
             )),
-            Some(tool) => tool.run(ctx, args),
+            // Antes de rodar: argumento errado vira um erro que diz o formato certo, e nada é executado.
+            Some(tool) => match super::args::check(&tool.spec().parameters, args) {
+                Ok(()) => tool.run(ctx, args),
+                Err(problem) => Outcome::Error(format!("{name}: {problem}")),
+            },
             None => Outcome::Error(format!(
                 "ferramenta desconhecida: {name}. Use uma destas: {}",
                 self.names().join(", ")

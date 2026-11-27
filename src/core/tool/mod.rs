@@ -1,6 +1,7 @@
 //! Contrato das ferramentas do agente: `Tool`, `Outcome`, o `Registry` e a aprovação das alterações.
 
 mod approval;
+mod args;
 mod registry;
 
 pub use approval::{Approver, AutoApprover, Preview, PreviewKind, PreviewLine};

@@ -18,7 +18,7 @@ impl Tool for CreateFile {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "create_file",
-            "Cria um arquivo NOVO no projeto com o conteúdo dado. Cria também as pastas que faltam no caminho (ex.: skills/guia.md cria a pasta skills). Falha se o arquivo já existir (use edit_file nesse caso). O usuário confirma antes da criação.",
+            "Cria um arquivo NOVO no projeto com o conteúdo dado. Cria também as pastas que faltam no caminho (ex.: skills/guia.md cria a pasta skills). Falha se o arquivo já existir (use edit_file nesse caso). O usuário confirma antes da criação. Chamada exata, com estes nomes: {\"path\": \"fib.py\", \"content\": \"...conteúdo completo...\"}.",
             json!({
                 "type": "object",
                 "properties": {
