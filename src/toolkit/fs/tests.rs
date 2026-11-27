@@ -316,6 +316,29 @@ fn find_files_matches_names_and_paths() {
 }
 
 #[test]
+fn find_files_by_extension_says_the_total_before_the_list() {
+    let r = color_project("find-ext");
+    let Outcome::Done(text) = run(&r, "find_files", json!({"ext": "rs"})) else { panic!() };
+    let mut lines = text.lines();
+    let header = lines.next().unwrap();
+    let listed: Vec<&str> = lines.collect();
+    assert!(header.starts_with(&format!("{} arquivos .rs", listed.len())), "{text}");
+    assert!(listed.iter().all(|l| l.ends_with(".rs")), "só arquivos .rs, sem pastas: {text}");
+    let Outcome::Done(dotted) = run(&r, "find_files", json!({"ext": ".rs"})) else { panic!() };
+    assert_eq!(dotted, text, "com ou sem ponto na extensão");
+    let Outcome::Done(with_name) = run(&r, "find_files", json!({"ext": "rs", "pattern": "status"})) else { panic!() };
+    assert_eq!(with_name, "1 arquivo .rs\nsrc/ui/widgets/status.rs", "extensão e nome juntos");
+    let Outcome::Done(none) = run(&r, "find_files", json!({"ext": "xyz"})) else { panic!() };
+    assert!(none.starts_with("nenhum arquivo .xyz"), "{none}");
+}
+
+#[test]
+fn find_files_needs_a_name_or_an_extension() {
+    let r = color_project("find-none");
+    assert!(matches!(run(&r, "find_files", json!({})), Outcome::Error(e) if e.contains("'ext'")));
+}
+
+#[test]
 fn read_file_outline_stops_at_the_test_module() {
     let r = root("outline-tests");
     fs::write(r.join("a.rs"), "pub fn real() {}\n\n#[cfg(test)]\nmod tests {\n    fn um_teste() {}\n}\n").unwrap();

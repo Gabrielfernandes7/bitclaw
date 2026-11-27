@@ -5,7 +5,7 @@
 use super::query::{self, broaden, find_any, normalize};
 use super::walk::{relative, walk};
 use crate::core::sandbox::resolve;
-use crate::core::tool::{Outcome, Tool, ToolContext, ToolSpec, str_arg, wrap};
+use crate::core::tool::{Outcome, Tool, ToolContext, ToolSpec, wrap};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -23,15 +23,16 @@ impl Tool for FindFiles {
         ToolSpec::new(
             "find_files",
             "Acha arquivos e pastas pelo NOME ou caminho (não lê o conteúdo), em todas as subpastas. \
-             Ignora maiúsculas e acentos; separe alternativas com | (ex.: \"theme|color\", \".rs\", \"widgets/status\"). \
+             Ignora maiúsculas e acentos; separe alternativas com | (ex.: \"theme|color\", \"widgets/status\"). \
+             Para listar ou contar arquivos de um tipo, use ext (ex.: {\"ext\": \"rs\"}): a resposta diz o total. \
              Use quando souber parte do nome; para texto dentro dos arquivos use grep_files.",
             json!({
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string", "description": "Parte do nome ou do caminho; alternativas separadas por |"},
+                    "ext": {"type": "string", "description": "Extensão do arquivo, sem o ponto (ex.: rs, md)"},
                     "path": {"type": "string", "description": "Pasta onde procurar; padrão \".\" (o projeto todo)"}
-                },
-                "required": ["pattern"]
+                }
             }),
         )
     }
@@ -46,13 +47,22 @@ impl Tool for FindFiles {
 }
 
 fn find(root: &Path, args: &Value) -> Result<String, String> {
-    let pattern = str_arg(args, "pattern")?;
+    let pattern = args.get("pattern").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty());
+    let ext = args.get("ext").and_then(Value::as_str).map(|e| e.trim().trim_start_matches('.').to_lowercase()).filter(|e| !e.is_empty());
+    if pattern.is_none() && ext.is_none() {
+        return Err("informe 'pattern' (parte do nome) ou 'ext' (extensão, ex.: rs)".into());
+    }
+    let start = resolve(root, args.get("path").and_then(Value::as_str).unwrap_or("."))?;
+    let walked = walk(root, &start, true);
+    if let Some(ext) = ext {
+        let terms = pattern.map(query::terms).unwrap_or_default();
+        return Ok(by_extension(root, &walked.entries, &ext, &terms, walked.skipped));
+    }
+    let pattern = pattern.unwrap_or_default();
     let terms = query::terms(pattern);
     if terms.is_empty() {
         return Err("'pattern' vazio".into());
     }
-    let start = resolve(root, args.get("path").and_then(Value::as_str).unwrap_or("."))?;
-    let walked = walk(root, &start, true);
 
     let found = matching(root, &walked.entries, &terms);
     if !found.is_empty() {
@@ -93,7 +103,33 @@ fn render(mut found: Vec<String>) -> String {
     let total = found.len();
     found.truncate(MAX_RESULTS);
     if total > MAX_RESULTS {
-        found.push(format!("[+{} caminhos omitidos; refine o nome ou a pasta]", total - MAX_RESULTS));
+        found.push(format!("[mostrando {MAX_RESULTS} de {total} caminhos; refine o nome ou a pasta]"));
     }
     found.join("\n")
+}
+
+// Arquivos com a extensão dada (e, se houver, que casam com o padrão). Responde com o total antes da lista,
+// para contar não depender de o modelo somar linhas.
+fn by_extension(root: &Path, entries: &[PathBuf], ext: &str, terms: &[String], skipped: usize) -> String {
+    let found: Vec<String> = entries
+        .iter()
+        .filter(|p| !p.is_dir() && p.extension().is_some_and(|e| e.to_string_lossy().to_lowercase() == ext))
+        .map(|p| relative(root, p))
+        .filter(|rel| terms.is_empty() || find_any(&normalize(rel), terms).is_some())
+        .collect();
+    if found.is_empty() {
+        let mut msg = format!("nenhum arquivo .{ext} encontrado.");
+        if skipped > 0 {
+            msg.push_str(&format!(" {skipped} itens ocultos ou ignorados (.gitignore, target) ficaram de fora."));
+        }
+        return msg;
+    }
+    let total = found.len();
+    let word = if total == 1 { "arquivo" } else { "arquivos" };
+    let mut out = vec![format!("{total} {word} .{ext}")];
+    out.extend(found.into_iter().take(MAX_RESULTS));
+    if total > MAX_RESULTS {
+        out.push(format!("[mostrando {MAX_RESULTS} de {total}; refine a pasta ou o padrão]"));
+    }
+    out.join("\n")
 }
