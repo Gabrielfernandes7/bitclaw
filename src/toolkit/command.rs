@@ -288,7 +288,9 @@ mod tests {
         let r = project("read");
         fs::write(r.join("a.txt"), "1\n2\n3\n").unwrap();
         // `No` recusa qualquer execução: a leitura não passa pelo aprovador.
-        assert_eq!(run(&r, "wc", &["-l", "a.txt"], &No), Outcome::Done(format!("código de saída: 0\n{}", "       3 a.txt")));
+        // O `wc` do macOS alinha a contagem com espaços à esquerda e o do Linux não: compara sem eles.
+        let Outcome::Done(text) = run(&r, "wc", &["-l", "a.txt"], &No) else { panic!("não rodou") };
+        assert_eq!(text.split_whitespace().collect::<Vec<_>>().join(" "), "código de saída: 0 3 a.txt");
     }
 
     #[test]
