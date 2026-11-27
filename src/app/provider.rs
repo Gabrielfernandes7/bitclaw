@@ -1,7 +1,7 @@
 //! Escolha do provedor: o único lugar do projeto que sabe quais adaptadores existem.
 //! Lê `[model] provider` e monta catálogo, opções e a fábrica de clientes do adaptador certo.
 
-use bitclaw::adapters::openrouter::{self, ApiKey, OpenRouterCatalog, OpenRouterSettings};
+use bitclaw::adapters::openrouter::{self, OpenRouterCatalog, OpenRouterSettings};
 use bitclaw::agent::ChatModel;
 use bitclaw::config::AgentConfig;
 use bitclaw::models::{ModelCatalog, ModelInfo, SharedEffort};
@@ -71,8 +71,8 @@ impl Provider {
         if let Some(url) = url {
             settings.base_url = url;
         }
-        // A chave é conferida já na partida: o erro diz qual variável falta.
-        let key = ApiKey::from_env(&settings.api_key_env)?;
+        // A chave é conferida já na partida: a variável ou a chave guardada por `bitclaw openrouter`.
+        let key = super::openrouter_setup::api_key(&settings.api_key_env)?;
         let default_options = settings.options(cfg.model.context_window);
         Ok(Self {
             catalog: Arc::new(OpenRouterCatalog::new(settings.base_url.clone(), Some(key))),
@@ -103,7 +103,7 @@ impl Provider {
             Kind::Ollama(_) => Ok(Box::new(self.ollama_client(info, effort)?)),
             Kind::OpenRouter(settings) => Ok(Box::new(openrouter::Client::new(
                 settings.base_url.clone(),
-                ApiKey::from_env(&settings.api_key_env)?,
+                super::openrouter_setup::api_key(&settings.api_key_env)?,
                 settings.api_key_env.clone(),
                 info.id.clone(),
                 Arc::clone(&self.options),

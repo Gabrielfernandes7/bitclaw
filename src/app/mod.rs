@@ -2,6 +2,7 @@
 
 pub mod header;
 pub mod init;
+pub mod openrouter_setup;
 pub mod plain;
 pub mod projects;
 pub mod receipts;

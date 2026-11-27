@@ -34,6 +34,11 @@ struct Args {
     uninstall: bool,
     // `bitclaw soul`: refaz as perguntas do SOUL.md e sai.
     soul: bool,
+    // `bitclaw openrouter [status|logout]`: configura o OpenRouter (chave, modelo, agente).
+    openrouter_cmd: bool,
+    openrouter_sub: Option<String>,
+    // `--openrouter`: abre com o agente que `bitclaw openrouter` gerou.
+    openrouter: bool,
     // `--fresh`: estado global novo e temporário, para testar a primeira abertura sem tocar no seu.
     fresh: bool,
     // `bitclaw uninstall --purge`: apaga também as pastas `.bitclaw/` dos projetos.
@@ -54,6 +59,9 @@ fn parse_args() -> Result<Args, String> {
         update: false,
         uninstall: false,
         soul: false,
+        openrouter_cmd: false,
+        openrouter_sub: None,
+        openrouter: false,
         fresh: false,
         purge: false,
     };
@@ -74,6 +82,9 @@ fn parse_args() -> Result<Args, String> {
             // Modo Plan: só ferramentas que declaram somente leitura. Nada é alterado nem executado.
             "--plan" => args.plan = true,
             "--fresh" => args.fresh = true,
+            "--openrouter" => args.openrouter = true,
+            "openrouter" => args.openrouter_cmd = true,
+            "status" | "logout" if args.openrouter_cmd => args.openrouter_sub = Some(a.clone()),
             "--purge" => args.purge = true,
             "update" => args.update = true,
             "uninstall" => args.uninstall = true,
@@ -83,10 +94,12 @@ fn parse_args() -> Result<Args, String> {
                 std::process::exit(0);
             }
             "-h" | "--help" => {
-                println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color] [--no-mouse] [--think] [--plan] [--fresh]");
+                println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color] [--no-mouse] [--think] [--plan] [--fresh] [--openrouter]");
                 println!("     bitclaw update     troca o binário pelo do último release");
                 println!("     bitclaw uninstall  apaga o binário e o resíduo (~/.config/bitclaw, restos de instalação); --yes não pergunta,");
                 println!("                        --purge apaga também as pastas .bitclaw/ dos projetos");
+                println!("     bitclaw openrouter configura o OpenRouter (chave, modelo); depois: bitclaw --openrouter");
+                println!("                        bitclaw openrouter status | logout");
                 println!("     bitclaw --fresh    abre como na primeira vez (estado global temporário; o seu não é tocado)");
                 println!("     bitclaw soul       refaz as perguntas do SOUL.md (quem o agente é para você)");
                 println!("     bitclaw --version");
@@ -106,7 +119,7 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let args = parse_args()?;
+    let mut args = parse_args()?;
     // `--fresh` vale até o fim do programa: ao sair, a pasta temporária é apagada.
     let _fresh = if args.fresh && !args.uninstall && !args.update {
         let f = app::update::start_fresh()?;
@@ -115,6 +128,15 @@ fn run() -> Result<(), String> {
     } else {
         None
     };
+    if args.openrouter_cmd {
+        let msg = match args.openrouter_sub.as_deref() {
+            Some("status") => app::openrouter_setup::status()?,
+            Some("logout") => app::openrouter_setup::logout()?,
+            _ => app::openrouter_setup::run()?,
+        };
+        println!("{msg}");
+        return Ok(());
+    }
     if args.uninstall {
         println!("{}", app::uninstall::run(args.auto_yes, args.purge)?);
         return Ok(());
@@ -129,6 +151,15 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     let color = !args.no_color && std::env::var_os("NO_COLOR").is_none();
+
+    // `--openrouter`: o agente que `bitclaw openrouter` gerou, no lugar de `--config`.
+    if args.openrouter {
+        if args.config.is_some() {
+            return Err("--openrouter e --config juntos: escolha um (--openrouter já usa o agente gerado)".into());
+        }
+        let path = app::openrouter_setup::config_path().filter(|p| p.is_file());
+        args.config = Some(path.ok_or("ainda não há agente do OpenRouter: rode `bitclaw openrouter` primeiro")?);
+    }
 
     let mut cfg = match &args.config {
         Some(path) => {
