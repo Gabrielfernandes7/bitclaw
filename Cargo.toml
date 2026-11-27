@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Agente de código local para modelos pequenos, no terminal"
 repository = "https://github.com/Gabrielfernandes7/bitclaw"
+license-file = "LICENSE"
 
 [dependencies]
 crossterm = "0.29.0"
