@@ -186,6 +186,8 @@ mod tests {
         Settings {
             title: "BitClaw".into(),
             info: vec![],
+            provider: "Ollama".into(),
+            details: String::new(),
             skills: vec![],
             skills_off: skills::new_disabled(),
             model: Arc::new(Mutex::new(bitclaw::models::ModelInfo::unknown("m:1b"))),

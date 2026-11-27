@@ -36,6 +36,7 @@ use bitclaw::context::Usage;
 use bitclaw::session::Session;
 use bitclaw::skills::{Disabled, Skill};
 use bitclaw::tools::Approver;
+use crate::app::skill_install::{self, Staged};
 use self::transcript::{Point, Selection, Transcript};
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyEvent,
@@ -62,6 +63,9 @@ pub struct Settings {
     pub title: String,
     // Linhas ao lado do mascote, abaixo do nome.
     pub info: Vec<String>,
+    // Provedor e dados do modelo do início (ex.: "9.0B · nvfp4"), para a linha do modelo no cabeçalho.
+    pub provider: String,
+    pub details: String,
     // Skills carregadas, para o painel `/skills`.
     pub skills: Vec<Skill>,
     // Nomes das skills desligadas no painel. Compartilhado com a sessão do agente.
@@ -194,6 +198,9 @@ struct App {
     group: Option<steps::Group>,
     // `/restart-dev` compilou com sucesso: ao sair, reabre o binário novo no lugar deste.
     restart: bool,
+    // `/skill install`: o download em andamento (numa thread) e a skill baixada que espera `yes` ou `no`.
+    skill_job: Option<Receiver<Result<Staged, String>>>,
+    skill_pending: Option<Staged>,
 }
 
 // Roda a interface até o usuário sair. `make_session` roda na thread do agente.
@@ -253,6 +260,8 @@ where
         stats: SessionStats::new(),
         group: None,
         restart: false,
+        skill_job: None,
+        skill_pending: None,
     };
     let result = app.event_loop();
 
@@ -289,6 +298,8 @@ impl App {
         self.print_header().map_err(|e| e.to_string())?;
         loop {
             self.animate_greeting().map_err(|e| e.to_string())?;
+            self.refresh_banner().map_err(|e| e.to_string())?;
+            self.poll_skill_job().map_err(|e| e.to_string())?;
             if self.flash.as_ref().is_some_and(|(at, _)| at.elapsed() >= FLASH) {
                 self.flash = None;
             }
@@ -401,6 +412,18 @@ impl App {
         }
         let width = self.terminal.size()?.width;
         let (banner, _) = view::banner_lines(&self.settings, &self.stats, mascot_for(self.play), width);
+        self.transcript.replace_head(banner.into_iter().map(|l| print::clip_line(l, usize::from(width))).collect());
+        Ok(())
+    }
+
+    // O cabeçalho acompanha o que muda na sessão (modelo, esforço, janela, tokens). Só reescreve se o
+    // texto mudou. Durante a saudação, quem o redesenha é `animate_greeting`.
+    fn refresh_banner(&mut self) -> io::Result<()> {
+        if self.greeting {
+            return Ok(());
+        }
+        let width = self.terminal.size()?.width;
+        let (banner, _) = view::banner_lines(&self.settings, &self.stats, mascot_for(None), width);
         self.transcript.replace_head(banner.into_iter().map(|l| print::clip_line(l, usize::from(width))).collect());
         Ok(())
     }
@@ -570,6 +593,8 @@ mod tests {
         Settings {
             title: "BitClaw".into(),
             info: vec![],
+            provider: "Ollama".into(),
+            details: String::new(),
             skills: vec![],
             skills_off: skills::new_disabled(),
             model: Arc::new(Mutex::new(ModelInfo::unknown("m:1b"))),
@@ -666,9 +691,10 @@ mod tests {
         assert!(lines[8].starts_with("  /init"), "{lines:?}");
         assert!(lines[9].starts_with("  /clear") && lines[10].starts_with("  /think"), "{lines:?}");
         assert!(lines[11].starts_with("  /skills"), "{lines:?}");
-        assert!(lines[12].starts_with("  /status"), "{lines:?}");
-        assert!(lines[13].starts_with("  /restart-dev"), "{lines:?}");
-        assert!(lines[14].starts_with("  /exit"), "{lines:?}");
+        assert!(lines[12].starts_with("  /skill ") && lines[12].contains("baixa uma skill"), "{lines:?}");
+        assert!(lines[13].starts_with("  /status"), "{lines:?}");
+        assert!(lines[14].starts_with("  /restart-dev"), "{lines:?}");
+        assert!(lines[15].starts_with("  /exit"), "{lines:?}");
         assert!(lines.last().unwrap().contains("tab completa · enter executa"));
     }
 
@@ -1069,5 +1095,31 @@ mod tests {
         let at = rows.iter().position(|r| r.starts_with("› @docs/")).unwrap_or_else(|| panic!("{rows:?}"));
         assert_eq!(rows[at + 1], "  @README.md", "{rows:?}");
         assert!(rows.iter().any(|r| r.contains("tab ou enter completa")), "{rows:?}");
+    }
+
+    fn banner_text(settings: &Settings) -> String {
+        let (lines, _) = view::banner_lines(settings, &SessionStats::new(), Mascot { mood: brand::Mood::Idle, ms: 0 }, 120);
+        lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn the_header_follows_the_effort_the_model_and_the_window() {
+        let mut s = settings(false);
+        s.info = vec!["Projeto (p) /p".into()];
+        s.details = "9.0B · nvfp4".into();
+        let text = banner_text(&s);
+        assert!(text.contains("Projeto (p) /p"), "{text}");
+        assert!(text.contains("m:1b thinking off · Ollama · 9.0B · nvfp4 · janela 16384 tok"), "{text}");
+
+        *locked(&s.effort) = Effort::High;
+        assert!(banner_text(&s).contains("m:1b with high effort · Ollama"), "o esforço novo aparece sem reabrir");
+
+        locked(&s.model).id = "outro:3b".into();
+        let text = banner_text(&s);
+        assert!(text.contains("outro:3b with high effort · Ollama · janela"), "{text}");
+        assert!(!text.contains("nvfp4"), "os dados do modelo antigo não ficam: {text}");
+
+        locked(&s.options).num_ctx = 32768;
+        assert!(banner_text(&s).contains("janela 32768 tok"));
     }
 }

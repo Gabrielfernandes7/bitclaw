@@ -52,6 +52,8 @@ pub(super) struct Transcript {
     // Linhas roladas para cima a partir do fim.
     pub(super) scroll_back: usize,
     pub(super) selection: Option<Selection>,
+    // A abertura já saiu do histórico (passou de `MAX_LINES`): não há mais cabeçalho para atualizar.
+    head_lost: bool,
 }
 
 impl Transcript {
@@ -69,6 +71,7 @@ impl Transcript {
         if self.lines.len() > MAX_LINES {
             let extra = self.lines.len() - MAX_LINES;
             self.lines.drain(..extra);
+            self.head_lost = true;
             self.width = 0;
             self.selection = None;
         }
@@ -76,6 +79,9 @@ impl Transcript {
 
     // Troca as primeiras linhas (a abertura, enquanto o mascote anima) sem mexer no resto.
     pub(super) fn replace_head(&mut self, head: Vec<Line<'static>>) {
+        if self.head_lost {
+            return;
+        }
         let n = head.len().min(self.lines.len());
         if self.lines[..n] == head[..n] {
             return;
@@ -258,5 +264,13 @@ mod tests {
         t.layout(40);
         assert_eq!(text(&t.visible(3)[0]), "cabeçalho");
         assert_eq!(text(&t.visible(3)[1]), "linha 1");
+    }
+
+    #[test]
+    fn a_head_that_left_the_history_is_not_replaced() {
+        let mut t = filled(MAX_LINES + 5);
+        t.replace_head(vec![Line::from("cabeçalho")]);
+        t.layout(40);
+        assert!(t.visible(3).iter().all(|l| text(l) != "cabeçalho"), "linhas de outro conteúdo não viram cabeçalho");
     }
 }

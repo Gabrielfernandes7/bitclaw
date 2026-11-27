@@ -101,12 +101,16 @@ pub(in crate::app::tui) fn viewport_height(editor_rows: usize, menu_rows: usize,
     (editor_rows.clamp(1, MAX_EDITOR_ROWS) + 2 + menu_rows + 1 + summary_rows + extra_rows) as u16
 }
 
-// Nome, projeto e modelo, com os tokens gastos na sessão na linha do modelo.
+// Nome, projeto e modelo, com os tokens gastos na sessão na linha do modelo. A linha do modelo é
+// montada a cada quadro: o modelo, o esforço e a janela de agora, não os do início.
 fn header_lines(settings: &Settings, stats: &SessionStats) -> Vec<Line<'static>> {
     let active = locked(&settings.model).id.clone();
+    let effort = *locked(&settings.effort);
     let window = locked(&settings.options).num_ctx;
-    let info = with_window(&settings.info, settings.default_options.num_ctx, window);
-    let mut lines = info_lines(&settings.title, &info, &active, &settings.default_model);
+    // Os dados do provedor (tamanho, quantização) são do modelo do início; trocado o modelo, não valem.
+    let details = if active == settings.default_model { settings.details.as_str() } else { "" };
+    let model = crate::app::header::model_line(&active, effort, &settings.provider, details, window);
+    let mut lines = info_lines(&settings.title, &settings.info, model);
     let full = lines.len() == INFO_ROWS;
     if stats.tokens > 0
         && full
