@@ -926,3 +926,38 @@ fn a_failed_verification_goes_back_to_the_model_once() {
     assert_eq!(report.text, "Corrigido.");
     assert!(msgs.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains("verificação automática"))));
 }
+
+// ---- Avisos que não podem ser falsos positivos ----
+
+fn act(name: &str, args: Value, outcome: Outcome, mutates: bool) -> Action {
+    Action { name: name.into(), args, outcome, mutates }
+}
+
+#[test]
+fn a_refusal_does_not_also_warn_that_nothing_changed() {
+    let report = TurnReport {
+        actions: vec![act("create_file", json!({"path": "a"}), Outcome::Refused("recusado".into()), true)],
+        ..Default::default()
+    };
+    assert!(crate::toolkit::claims::warnings(&report).is_empty());
+    let failed = TurnReport {
+        actions: vec![act("create_file", json!({"path": "a"}), Outcome::Error("x".into()), true)],
+        ..Default::default()
+    };
+    assert!(!crate::toolkit::claims::warnings(&failed).is_empty(), "erro sem recusa continua avisando");
+}
+
+#[test]
+fn saying_a_file_is_missing_after_reading_it_is_flagged() {
+    let read = act("read_file", json!({"path": ".gitignore"}), Outcome::Done("target/".into()), false);
+    let report = TurnReport { text: "Não encontrei o arquivo .gitignore no projeto.".into(), actions: vec![read], ..Default::default() };
+    let w = crate::toolkit::claims::warnings(&report);
+    assert!(w.iter().any(|x| x.contains(".gitignore") && x.contains("leu com sucesso")), "{w:?}");
+}
+
+#[test]
+fn saying_something_else_is_missing_is_not_flagged() {
+    let read = act("read_file", json!({"path": ".gitignore"}), Outcome::Done("target/".into()), false);
+    let report = TurnReport { text: "Não encontrei o Dockerfile.".into(), actions: vec![read], ..Default::default() };
+    assert!(crate::toolkit::claims::warnings(&report).is_empty());
+}
