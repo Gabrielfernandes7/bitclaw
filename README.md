@@ -1,6 +1,6 @@
 # BitClaw
 
-<p align="center"><img src="docs/identidade/cena-noturna.svg" alt="O mascote do BitClaw numa praia à noite" width="560"></p>
+<p align="center"><img src="assets/bitclaw-bricks.svg" alt="O mascote do BitClaw encaixando peças coloridas" width="560"></p>
 
 Núcleo experimental de agente de IA, local e enxuto, escrito em Rust. Hoje ele funciona como um agente de linha de comando que lê e edita arquivos de um projeto, usando um modelo servido pelo [Ollama](https://ollama.com).
 
@@ -21,6 +21,8 @@ Com Rust instalado, também dá para compilar direto do repositório:
 ```sh
 cargo install --git https://github.com/Gabrielfernandes7/bitclaw
 ```
+
+Para desinstalar, `bitclaw uninstall` apaga o binário e `~/.config/bitclaw` (pergunta antes; `--yes` não pergunta). Sem o binário à mão: `curl -fsSL https://raw.githubusercontent.com/Gabrielfernandes7/bitclaw/main/install.sh | sh -s -- --uninstall`. As pastas `.bitclaw/` dos projetos ficam.
 
 Para atualizar, `bitclaw update` troca o binário pelo do último release, depois de conferir a soma. Quando sai uma versão nova, o BitClaw avisa na abertura; a consulta ao GitHub é feita em segundo plano, no máximo uma vez por dia, e fica em `~/.config/bitclaw/`. `BITCLAW_NO_UPDATE_CHECK=1` desliga a consulta.
 
@@ -55,6 +57,7 @@ Opções:
 | `--plan` | desligado | Modo Plan: só as ferramentas de leitura. Nada é editado, criado, removido nem executado. |
 | `-V`, `--version` | | Mostra a versão. |
 | `update` | | `bitclaw update` troca o binário pelo do último release. |
+| `uninstall` | | `bitclaw uninstall` apaga o binário e `~/.config/bitclaw`. |
 | `-h`, `--help` | | Mostra a ajuda. |
 
 Ao iniciar, o programa mostra o modelo em uso e a janela de contexto. Se o modelo não estiver instalado no Ollama, ele avisa antes de começar.

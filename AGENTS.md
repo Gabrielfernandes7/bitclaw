@@ -15,7 +15,7 @@ cargo run
 
 Flags do binário: `--config`, `--model`, `--url`, `--dir`, `--yes`, `--no-color`, `--no-mouse`, `--think` e `--plan` (modo Plan: só ferramentas que declaram `read_only`).
 
-Subcomando `bitclaw update` e `--version`. Instalação por `install.sh` (releases do GitHub); o contrato dos arquivos do release está no topo de `src/app/update.rs`, e `install.sh` e `.github/workflows/release.yml` o seguem.
+Subcomandos `bitclaw update` e `bitclaw uninstall`, e `--version`. Instalação por `install.sh` (releases do GitHub); o contrato dos arquivos do release está no topo de `src/app/update.rs`, e `install.sh` e `.github/workflows/release.yml` o seguem.
 
 ## Estrutura
 

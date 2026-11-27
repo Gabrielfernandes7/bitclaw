@@ -16,6 +16,14 @@ use std::time::{Duration, Instant};
 const MARKER: &str = "welcomed";
 const MOON: Color = Color::Rgb(230, 226, 211);
 const SEA: Color = Color::Rgb(47, 79, 120);
+// As peças de `assets/bitclaw-bricks.svg`, com as mesmas cores: (pinos, cor, e coluna e linha relativas
+// ao mascote na escala 2 e na escala 1). A vermelha está junto da pinça, sendo encaixada.
+const BRICKS: [(&str, Color, (isize, isize), (isize, isize)); 4] = [
+    (".#..#.", Color::Rgb(240, 68, 56), (21, 2), (12, 1)),
+    (".#..#.", Color::Rgb(57, 133, 245), (30, -2), (20, -2)),
+    ("..#...", Color::Rgb(54, 179, 126), (40, 1), (29, 0)),
+    (".#..#.", Color::Rgb(164, 122, 224), (30, 4), (20, 2)),
+];
 // Largura máxima da cena: acima disso ela fica centralizada, sem esticar.
 const SCENE_MAX: usize = 72;
 // Cada uma cabe em 40 colunas, com a margem.
@@ -81,9 +89,9 @@ pub fn show(checks: &[Check], color: bool) -> Result<bool, String> {
 
 // Escala do mascote para o tamanho do terminal: 2 com espaço de sobra, 1 no comum, 0 = sem cena.
 fn scale_for(width: usize, height: usize) -> usize {
-    if width >= 64 && height >= 36 {
+    if width >= 64 && height >= 30 {
         2
-    } else if width >= 40 && height >= 24 {
+    } else if width >= 40 && height >= 22 {
         1
     } else {
         0
@@ -105,16 +113,16 @@ fn put(cv: &mut Canvas, x: usize, y: usize, art: &[String], color: Color) {
     }
 }
 
-// Céu com estrelas, lua crescente, mar ao fundo, o mascote e o chão pontilhado. O mar é desenhado antes
-// do mascote: passa por trás dele e aparece entre as patas.
+// Céu com estrelas, lua crescente, mar ao fundo, o mascote com as peças coloridas e o chão pontilhado.
+// O mar é desenhado antes do mascote: passa por trás dele e aparece entre as patas.
 fn scene(width: usize, scale: usize, ms: u128) -> Vec<Line<'static>> {
     let w = width.min(SCENE_MAX);
-    let crab = brand::big_crab(scale, !blinking(ms));
-    let sky = if scale == 2 { 6 } else { 4 };
+    let crab = brand::crab_scaled(scale, !blinking(ms));
+    let sky = if scale == 2 { 5 } else { 4 };
     let h = sky + crab.len() + 1;
     let mut cv: Canvas = vec![vec![(' ', GRAY); w]; h];
     // Estrelas em posições fixas (fração da largura), algumas piscando.
-    const STARS: [(usize, usize); 11] = [(4, 1), (17, 3), (30, 0), (42, 2), (56, 1), (69, 4), (94, 2), (11, 5), (52, 4), (89, 6), (37, 6)];
+    const STARS: [(usize, usize); 9] = [(4, 1), (17, 3), (30, 0), (42, 2), (56, 1), (69, 4), (94, 2), (11, 4), (52, 4)];
     for (i, (fx, y)) in STARS.iter().enumerate() {
         // No mesmo ciclo de 4 s da piscada: a cena inteira se repete.
         let twinkle = i % 4 == 0 && ((ms % 4000) / 1000 + i as u128) % 3 == 0;
@@ -123,12 +131,22 @@ fn scene(width: usize, scale: usize, ms: u128) -> Vec<Line<'static>> {
             *cell = (star, GRAY);
         }
     }
-    put(&mut cv, w.saturating_sub(14), 1, &brand::moon(), MOON);
+    put(&mut cv, w.saturating_sub(14), 0, &brand::moon(), MOON);
     let sea_row = sky + crab.len() / 2;
     for x in (0..w).step_by(2) {
         cv[sea_row][x] = ('~', SEA);
     }
-    put(&mut cv, w / 8, sky, &crab, YELLOW);
+    let (cx, cy) = (w / 10, sky);
+    put(&mut cv, cx, cy, &crab, YELLOW);
+    // Na escala 1 as peças encolhem junto: corpo de um pixel.
+    let body = if scale == 2 { 3 } else { 1 };
+    for (studs, color, big, small) in BRICKS {
+        let (dx, dy) = if scale == 2 { big } else { small };
+        let (x, y) = (cx as isize + dx, cy as isize + dy);
+        if x >= 0 && y >= 0 && x as usize + studs.len() <= w {
+            put(&mut cv, x as usize, y as usize, &brand::brick(studs, body), color);
+        }
+    }
     for cell in cv[h - 1].iter_mut() {
         *cell = ('.', DIM);
     }
@@ -197,6 +215,7 @@ mod tests {
     #[test]
     fn the_scene_grows_with_the_terminal_and_disappears_when_it_does_not_fit() {
         assert_eq!(scale_for(120, 40), 2);
+        assert_eq!(scale_for(100, 30), 2);
         assert_eq!(scale_for(80, 24), 1);
         assert_eq!(scale_for(39, 30), 0, "estreito demais");
         assert_eq!(scale_for(80, 20), 0, "baixo demais");
@@ -220,12 +239,14 @@ mod tests {
     #[test]
     fn the_scene_has_the_mascot_the_moon_the_sea_and_the_ground() {
         let rows = plain(&scene(80, 1, 0));
-        assert_eq!(rows.len(), 4 + 6 + 1);
+        assert_eq!(rows.len(), 4 + 3 + 1);
         let all = rows.join("\n");
         assert!(all.contains('~') && all.contains('*'));
         assert!(rows.last().unwrap().trim_start().chars().all(|c| c == '.'), "chão pontilhado");
-        let crab = brand::big_crab(1, true);
+        let crab = brand::crab_scaled(1, true);
         assert!(rows[4].contains(crab[0].trim()), "o mascote começa logo abaixo do céu");
+        let big = plain(&scene(100, 2, 0)).join("\n");
+        assert!(big.contains("▄█▄▄█▄") && big.contains("██████"), "as peças coloridas aparecem: {big}");
     }
 
     #[test]

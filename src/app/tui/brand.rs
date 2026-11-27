@@ -60,11 +60,9 @@ pub const WIDTH: u16 = GRID.0 as u16;
 // Mesmas regras do mascote pequeno, decididas em `docs/identidade/ARTE-TERMINAL.md`: a grade mora num
 // SVG de retângulos de `PIXEL`, uma cor por desenho, olho como buraco e só caracteres de largura 1.
 
-// O mestre da identidade (`docs/identidade/gerar-bricks.py`) com os dois pinos e os olhos.
-pub const CRAB_BIG_SVG: &str = include_str!("../../../assets/bitclaw-crab-grande.svg");
 pub const MOON_SVG: &str = include_str!("../../../assets/lua.svg");
-// Olhos do mascote grande (coluna, linha): buracos que a piscada fecha.
-const BIG_EYES: [(usize, usize); 2] = [(5, 6), (9, 6)];
+// Olhos do mascote (coluna, linha no mapa 10×6): buracos que a piscada fecha.
+const EYES: [(usize, usize); 2] = [(2, 2), (7, 2)];
 
 // Grade de pixels de um SVG de retângulos: `true` = aceso. O tamanho vem de `width` e `height` do SVG.
 pub fn svg_grid(svg: &str) -> Vec<Vec<bool>> {
@@ -95,16 +93,24 @@ pub fn halfblocks(grid: &[Vec<bool>], scale: usize) -> Vec<String> {
     rows.chunks(2).map(|pair| pair[0].iter().zip(&pair[1]).map(|(&t, &b)| cell(on(t), on(b))).collect()).collect()
 }
 
-// O mascote grande. De olhos fechados, os buracos dos olhos se fecham: a piscada.
-pub fn big_crab(scale: usize, eyes_open: bool) -> Vec<String> {
+// O mascote do cabeçalho (`bitclaw-crab.svg`) ampliado. De olhos fechados, os buracos se fecham.
+pub fn crab_scaled(scale: usize, eyes_open: bool) -> Vec<String> {
     static GRID: OnceLock<Vec<Vec<bool>>> = OnceLock::new();
-    let mut grid = GRID.get_or_init(|| svg_grid(CRAB_BIG_SVG)).clone();
+    let mut grid = GRID.get_or_init(|| svg_grid(CRAB_SVG)).clone();
     if !eyes_open {
-        for (x, y) in BIG_EYES {
+        for (x, y) in EYES {
             grid[y][x] = true;
         }
     }
     halfblocks(&grid, scale)
+}
+
+// Uma peça de montar das de `assets/bitclaw-bricks.svg`: os pinos numa linha de pixel e o corpo embaixo.
+// `studs` marca as colunas dos pinos (`#`); `body` é a altura do corpo em pixels.
+pub fn brick(studs: &str, body: usize) -> Vec<String> {
+    let mut grid = vec![studs.chars().map(|c| c == '#').collect::<Vec<_>>()];
+    grid.extend(std::iter::repeat_n(vec![true; studs.chars().count()], body));
+    halfblocks(&grid, 1)
 }
 
 pub fn moon() -> Vec<String> {
@@ -498,36 +504,19 @@ mod tests {
     }
 
     #[test]
-    fn the_big_crab_is_read_from_its_svg_with_studs_and_eye_holes() {
-        let grid = svg_grid(CRAB_BIG_SVG);
-        assert_eq!((grid[0].len(), grid.len()), (15, 11));
-        let row = |y: usize| grid[y].iter().map(|&p| if p { '#' } else { '.' }).collect::<String>();
-        assert_eq!(row(4), "..###.#.#.###..", "os dois pinos no topo do corpo");
-        assert_eq!(row(6), "...##.###.##...", "os olhos são buracos");
-        for (x, y) in BIG_EYES {
-            assert!(!grid[y][x], "olho em ({x}, {y})");
-        }
-    }
-
-    // A mesma arte de `docs/MASCOTE.md`, seção 3.2.
-    #[test]
-    fn the_big_crab_at_scale_one_is_the_documented_one() {
-        let rows: Vec<String> = big_crab(1, true).iter().map(|r| r.trim_end().to_string()).collect();
-        assert_eq!(rows, ["██ ▄▄     ▄▄ ██", "▀███▀     ▀███▀", "  ▀██▄█▄█▄██▀", "   ██▄███▄██", "  ▄▄▀█▀▀▀█▀▄▄", " ▀▀  ▀   ▀  ▀▀"]);
-    }
-
-    #[test]
-    fn the_big_crab_scales_and_blinks_without_changing_size() {
-        let one = big_crab(1, true);
-        assert_eq!(one.len(), 6, "11 pixels de altura viram 6 linhas");
-        assert!(one.iter().all(|l| l.chars().count() == 15));
-        let two = big_crab(2, true);
-        assert_eq!(two.len(), 11, "na escala 2, um pixel por linha");
-        assert!(two.iter().all(|l| l.chars().count() == 30));
+    fn the_scaled_crab_is_the_header_crab_and_blinks() {
+        assert_eq!(crab_scaled(1, true), crab(), "na escala 1 é o mesmo do cabeçalho");
+        let two = crab_scaled(2, true);
+        assert_eq!(two.len(), 6, "6 pixels de altura, um por linha");
+        assert!(two.iter().all(|l| l.chars().count() == 20));
         assert!(two.iter().all(|l| l.chars().all(|c| c == ' ' || c == '█')), "só blocos inteiros: {two:?}");
-        let closed = big_crab(1, false);
-        assert_eq!(closed.len(), one.len());
-        assert_ne!(closed, one, "a piscada fecha os olhos");
+        assert_ne!(crab_scaled(2, false), two, "a piscada fecha os olhos");
+    }
+
+    #[test]
+    fn a_brick_has_studs_on_top_of_its_body() {
+        assert_eq!(brick(".#..#.", 3), vec!["▄█▄▄█▄".to_string(), "██████".to_string()]);
+        assert_eq!(brick(".#..#.", 1), vec!["▄█▄▄█▄".to_string()]);
     }
 
     #[test]

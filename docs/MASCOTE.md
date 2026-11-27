@@ -69,44 +69,17 @@ o que deixa metade da última linha vazia e dá a impressão de que o mascote fo
 
 Mapa: igual ao atual, com a linha 5 `..YYYYYY..` no lugar de `.YYYYYYYY.`.
 
-### 3.2 Grande (no código, tela de boas-vindas)
+### 3.2 Boas-vindas: o mesmo mascote, ampliado, com as peças
 
-Saiu do mestre da identidade (`docs/identidade/gerar-bricks.py`, 15 × 11), com os dois pinos no topo do
-corpo e os olhos como buracos. A grade fica em `assets/bitclaw-crab-grande.svg` e o código a lê
-(`brand::big_crab`). O porquê de cada escolha está em `docs/identidade/ARTE-TERMINAL.md`.
+A tela de boas-vindas usa o mascote do cabeçalho na escala 2 (20 colunas × 6 linhas,
+`brand::crab_scaled`), cercado pelas peças coloridas de `assets/bitclaw-bricks.svg`, com as mesmas cores.
+A vermelha fica junto da pinça, sendo encaixada, como na referência. Num terminal comum (escala 1) é o
+mascote do cabeçalho com peças de uma linha.
 
-Escala 1, 15 colunas × 6 linhas:
+Uma versão anterior usava um mascote grande feito do mestre da identidade (15 × 11, pinças erguidas). Saiu
+porque ficava "monstruosa" ao lado do mascote do cabeçalho: era outro bicho, não o mesmo maior.
 
-```text
-██ ▄▄     ▄▄ ██
-▀███▀     ▀███▀
-  ▀██▄█▄█▄██▀
-   ██▄███▄██
-  ▄▄▀█▀▀▀█▀▄▄
- ▀▀  ▀   ▀  ▀▀
-```
-
-```text
-##...........##
-##.##.....##.##
-#####.....#####
-.###.......###.
-..###.#.#.###..
-...#########...
-...##.###.##...
-...#########...
-....#######....
-..##.#...#.##..
-.##..#...#..##.
-```
-
-Na escala 2 (30 × 11), cada pixel ocupa uma célula inteira de altura. Em terminais com espaçamento de linha
-maior que 1, os vãos caem só entre pixels e o mascote vira tijolos empilhados.
-
-Variações geradas por `docs/identidade/gerar-terminal.py`, a partir das grades de `assets/`:
-
-- `docs/identidade/bitclaw-grande-ambar.svg`: âmbar `#D9A400`, para fundos claros.
-- `docs/identidade/cena-noturna.svg`: a cena da boas-vindas, para o README.
+Para fundos claros: `docs/identidade/bitclaw-ambar.svg`, o mesmo mapa em âmbar `#D9A400`.
 
 ### 3.3 Compacto
 

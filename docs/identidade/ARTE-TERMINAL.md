@@ -1,6 +1,6 @@
 # Arte para o terminal: estudo e decisões
 
-Estudo feito antes de desenhar o mascote grande e a tela de boas-vindas. As imagens vêm de uma
+Estudo feito antes de desenhar a tela de boas-vindas. As imagens vêm de uma
 pré-visualização que imita um terminal: HTML com Menlo (a fonte padrão do Terminal do macOS), célula 1:2,
 renderizado pelo WebKit com `qlmanage -t`. Isso mostra o que os caracteres viram na fonte, mas não
 substitui ver no terminal de verdade.
@@ -53,3 +53,10 @@ linha do mar.
   com `bitclaw-crab.svg`.
 - Abaixo do tamanho que cabe, a arte some inteira; nunca aparece cortada.
 - `--no-color` e `NO_COLOR` desligam as cores, e a arte continua legível pela forma.
+
+## 5. Revisão: o mascote grande saiu
+
+O primeiro mascote da boas-vindas vinha do mestre da identidade (15 × 11, pinças erguidas). No uso, ficou
+"monstruoso" ao lado do mascote do cabeçalho: parecia outro personagem. A boas-vindas passou a usar o
+mascote do cabeçalho ampliado, com as peças coloridas de `assets/bitclaw-bricks.svg`. Regra que fica:
+**o mascote é um só; telas maiores o ampliam, não o redesenham.**
