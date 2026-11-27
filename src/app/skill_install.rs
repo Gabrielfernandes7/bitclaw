@@ -53,6 +53,15 @@ pub fn parse_args(arg: &str) -> Result<Spec, String> {
         }
     }
     let source = source.ok_or(USAGE)?;
+    // Um link da página do GitHub (`…/tree/ref/pasta`, `…/blob/ref/pasta/SKILL.md`) traz repositório, ref e pasta.
+    // Os que vêm escritos na linha (`--path`, `--ref`) valem mais que os do link.
+    let link = github_link(source);
+    let url = match &link {
+        Some(l) => expand_source(&format!("{}/{}", l.owner, l.repo))?,
+        None => expand_source(source)?,
+    };
+    let path = path.or_else(|| link.as_ref().and_then(|l| l.path.clone()));
+    let git_ref = git_ref.or_else(|| link.as_ref().and_then(|l| l.git_ref.clone()));
     if let Some(p) = &path {
         check_relative(p)?;
     }
@@ -61,7 +70,38 @@ pub fn parse_args(arg: &str) -> Result<Spec, String> {
     {
         return Err(format!("--ref inválido: {r}"));
     }
-    Ok(Spec { url: expand_source(source)?, path, git_ref })
+    Ok(Spec { url, path, git_ref })
+}
+
+// O que um link de página do GitHub diz: repositório, referência (a primeira parte depois de `tree/` ou `blob/`) e pasta.
+#[derive(Debug, PartialEq)]
+struct Link {
+    owner: String,
+    repo: String,
+    git_ref: Option<String>,
+    path: Option<String>,
+}
+
+// `https://github.com/dono/repo/tree/ref/pasta` → repositório, ref e pasta. Um link de arquivo `…/SKILL.md` vira a
+// pasta que o contém. Link que não é de tree/blob (inclusive o de repositório puro) fica com `expand_source`.
+fn github_link(source: &str) -> Option<Link> {
+    let rest = source.strip_prefix("https://github.com/")?.trim_end_matches('/');
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts.len() < 4 || !matches!(parts[2], "tree" | "blob") {
+        return None;
+    }
+    let repo = parts[1].trim_end_matches(".git");
+    let git_ref = parts[3].to_string();
+    let mut path: Vec<&str> = parts[4..].to_vec();
+    if path.last() == Some(&"SKILL.md") {
+        path.pop();
+    }
+    Some(Link {
+        owner: parts[0].to_string(),
+        repo: repo.to_string(),
+        git_ref: Some(git_ref),
+        path: (!path.is_empty()).then(|| path.join("/")),
+    })
 }
 
 pub const USAGE: &str = "uso: /skill install <dono/repo | https://…> [--path pasta] [--ref tag]";
@@ -450,6 +490,35 @@ mod tests {
 
     fn spec(path: Option<&str>) -> Spec {
         Spec { url: "https://github.com/o/r".into(), path: path.map(Into::into), git_ref: None }
+    }
+
+    #[test]
+    fn a_github_folder_link_gives_repo_ref_and_path() {
+        let s = parse_args("https://github.com/cathrynlavery/diagram-design/tree/main/skills/diagram-design/").unwrap();
+        assert_eq!(s.url, "https://github.com/cathrynlavery/diagram-design");
+        assert_eq!(s.git_ref.as_deref(), Some("main"));
+        assert_eq!(s.path.as_deref(), Some("skills/diagram-design"));
+    }
+
+    #[test]
+    fn a_link_to_skill_md_points_at_its_folder() {
+        let s = parse_args("https://github.com/o/r/blob/v2/skills/pdf/SKILL.md").unwrap();
+        assert_eq!(s.url, "https://github.com/o/r");
+        assert_eq!(s.git_ref.as_deref(), Some("v2"));
+        assert_eq!(s.path.as_deref(), Some("skills/pdf"));
+    }
+
+    #[test]
+    fn flags_written_on_the_line_win_over_the_link() {
+        let s = parse_args("https://github.com/o/r/tree/main/a --path b --ref dev").unwrap();
+        assert_eq!(s.path.as_deref(), Some("b"));
+        assert_eq!(s.git_ref.as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn a_plain_repo_link_still_works_without_a_path() {
+        let s = parse_args("https://github.com/o/r").unwrap();
+        assert_eq!((s.url.as_str(), s.path, s.git_ref), ("https://github.com/o/r", None, None));
     }
 
     #[test]
