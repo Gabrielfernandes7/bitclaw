@@ -101,7 +101,8 @@ pub(in crate::app::tui) fn rows(tab: usize, s: &Snapshot) -> Vec<(&'static str, 
         2 => match s.usage {
             Some(u) => vec![
                 ("Contexto", format!("{} {:.0}%", bar(u.percent), u.percent)),
-                ("Tokens", format!("{} de {}", u.tokens, u.window)),
+                ("Tokens (estimativa)", format!("{} de {}", u.tokens, u.window)),
+                ("Último envio (real)", u.real.map_or("ainda não respondeu".to_string(), |t| format!("{t} tokens de entrada"))),
             ],
             None => vec![("Contexto", "ainda não há uso: envie uma tarefa".to_string())],
         },
@@ -250,7 +251,7 @@ mod tests {
     fn the_panel_draws_its_title_and_tabs_without_a_second_mascot() {
         let st = settings();
         let stats = SessionStats::new();
-        let usage = Usage { tokens: 861, window: 16384, percent: 5.0 };
+        let usage = Usage { tokens: 861, window: 16384, percent: 5.0, real: None };
         let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
         let panel = StatusPanel { tab: 2 };
         terminal.draw(|f| draw_status_panel(f, f.area(), &snapshot(&st, &stats, Some(usage), "m:1b"), &panel)).unwrap();

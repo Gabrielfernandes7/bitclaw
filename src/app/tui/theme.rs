@@ -31,6 +31,10 @@ pub(super) fn palette() -> Palette {
         code: fg(CODE),
         heading: bold(YELLOW),
         bullet: fg(YELLOW),
+        keyword: fg(KEYWORD),
+        string: fg(GREEN),
+        comment: fg(GRAY),
+        number: fg(ORANGE),
     }
 }
 

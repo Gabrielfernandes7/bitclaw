@@ -10,7 +10,7 @@ pub(super) struct Cmd {
     pub(super) usage: &'static str,
 }
 
-pub(super) const COMMANDS: [Cmd; 16] = [
+pub(super) const COMMANDS: [Cmd; 18] = [
     Cmd { name: "/help", aliases: &[], desc: "mostra os comandos e as teclas", usage: "" },
     Cmd { name: "/model", aliases: &[], desc: "troca o modelo: load <nome>, show [nome] ou busca entre os instalados", usage: "<load|show> [nome]" },
     Cmd { name: "/effort", aliases: &[], desc: "esforço de raciocínio: só os níveis que o modelo aceita", usage: "<off|low|medium|high>" },
@@ -23,9 +23,11 @@ pub(super) const COMMANDS: [Cmd; 16] = [
     Cmd { name: "/think", aliases: &[], desc: "liga ou desliga o raciocínio do modelo (gasta mais contexto)", usage: "" },
     Cmd { name: "/skills", aliases: &[], desc: "abre as skills para ligar e desligar", usage: "" },
     Cmd { name: "/skill", aliases: &[], desc: "baixa uma skill de um repositório git: install <dono/repo> [--path pasta], depois yes ou no", usage: "<install|yes|no> [dono/repo]" },
+    Cmd { name: "/openrouter", aliases: &[], desc: "configura o OpenRouter (chave, modelo, agente) como em `bitclaw openrouter` e reabre com ele", usage: "" },
     Cmd { name: "/status", aliases: &[], desc: "versão, modelo, contexto e estatísticas da sessão", usage: "" },
     Cmd { name: "/undo", aliases: &[], desc: "desfaz as alterações do último turno (arquivos criados, editados ou removidos)", usage: "" },
     Cmd { name: "/restart-dev", aliases: &[], desc: "recompila e reabre o BitClaw com as alterações do código (desenvolvimento)", usage: "" },
+    Cmd { name: "/welcome-dev", aliases: &[], desc: "reabre o BitClaw como na primeira vez, com a tela de boas-vindas (não apaga nada)", usage: "" },
     Cmd { name: "/exit", aliases: &["/quit"], desc: "encerra o BitClaw", usage: "" },
 ];
 

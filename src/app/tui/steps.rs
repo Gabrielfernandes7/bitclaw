@@ -101,9 +101,59 @@ fn group_header(name: &str, n: usize) -> String {
     format!("{verb} {n} {}", if n == 1 { one } else { many })
 }
 
-// Uma chamada de ferramenta do grupo: o alvo (ou o nome, sem alvo), com a marca do resultado.
+// O comando equivalente de uma chamada, como se fosse digitado no shell: `find . -name HINT.md`. Ferramentas
+// sem equivalente direto usam o nome honesto (`outline`, `edit`), para ninguém achar que rodou outra coisa.
+pub(super) fn command(name: &str, args: &Value) -> String {
+    let text = |key: &str| {
+        args.get(key).map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())).map(|t| t.trim().to_string()).filter(|t| !t.is_empty() && t != "null")
+    };
+    let path = text("path").map(|p| quote(&p)).unwrap_or_else(|| ".".into());
+    match name {
+        "find_files" => format!("find {path} -name {}", quote(&text("pattern").unwrap_or_else(|| "*".into()))),
+        "grep_files" => {
+            let mut cmd = format!("grep -rn {} {path}", quote(&text("pattern").unwrap_or_default()));
+            if let Some(ext) = text("ext") {
+                cmd.push_str(&format!(" --include={}", quote(&format!("*.{}", ext.trim_start_matches('.')))));
+            }
+            cmd
+        }
+        "read_file" if text("mode").as_deref() == Some("outline") => format!("outline {path}"),
+        "read_file" => match (text("start_line"), text("end_line")) {
+            (Some(start), Some(end)) => format!("sed -n '{start},{end}p' {path}"),
+            (Some(start), None) => format!("sed -n '{start},$p' {path}"),
+            _ => format!("cat {path}"),
+        },
+        "list_dir" => format!("ls {path}"),
+        "create_file" => format!("tee {path}"),
+        "edit_file" => format!("edit {path}"),
+        "create_dir" => format!("mkdir -p {path}"),
+        "delete_file" => format!("rm {path}"),
+        "run_script" => {
+            let script = text("path").map(|p| if p.starts_with('/') || p.starts_with("./") { p } else { format!("./{p}") }).unwrap_or_default();
+            let args: Vec<String> = args.get("args").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(quote).collect()).unwrap_or_default();
+            [vec![quote(&script)], args].concat().join(" ")
+        }
+        "run_command" => {
+            let program = text("program").unwrap_or_default();
+            let args: Vec<String> = args.get("args").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(quote).collect()).unwrap_or_default();
+            [vec![quote(&program)], args].concat().join(" ")
+        }
+        other => match text("path") {
+            Some(p) => format!("{other} {}", quote(&p)),
+            None => other.to_string(),
+        },
+    }
+}
+
+// Cita um argumento para o shell só quando precisa: texto simples passa cru, o resto vai entre aspas simples.
+fn quote(text: &str) -> String {
+    let plain = !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || "._/-+=:,@%".contains(c));
+    if plain { text.to_string() } else { format!("'{}'", text.replace('\'', "'\\''")) }
+}
+
+// Uma chamada de ferramenta do grupo: o comando equivalente, com a marca do resultado.
 fn item(name: &str, args: &Value, result: &StepResult) -> Line<'static> {
-    let target = args.get("path").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).unwrap_or(name).to_string();
+    let target = format!("Ran {}", command(name, args));
     let (mark, color, tail) = match result {
         StepResult::Done | StepResult::Ran { ok: true, .. } => ("✓ ", GREEN, String::new()),
         StepResult::Refused(_) => ("⊘ ", YELLOW, " · recusado".to_string()),
@@ -203,7 +253,7 @@ mod tests {
         g.push(json!({"path": "AGENTS.md"}), StepResult::Done);
         g.push(json!({"path": "README.md"}), StepResult::Refused(String::new()));
         let shown: Vec<String> = g.lines(80).iter().map(text).collect();
-        assert_eq!(shown, vec!["  ● Leu 2 arquivos", "    ⎿ ✓ AGENTS.md", "    ⎿ ⊘ README.md · recusado"]);
+        assert_eq!(shown, vec!["  ● Leu 2 arquivos", "    ⎿ ✓ Ran cat AGENTS.md", "    ⎿ ⊘ Ran cat README.md · recusado"]);
         let mut one = Group::new("list_dir");
         one.push(json!({"path": "docs/"}), StepResult::Done);
         assert_eq!(one.lines(80)[0].spans.last().unwrap().content, "Listou 1 pasta");
@@ -211,10 +261,23 @@ mod tests {
     }
 
     #[test]
+    fn each_call_shows_the_shell_command_it_is_equivalent_to() {
+        assert_eq!(command("find_files", &json!({"path": ".", "pattern": "HINT.md"})), "find . -name HINT.md");
+        assert_eq!(command("grep_files", &json!({"pattern": "tokens|janela", "path": "src", "ext": "rs"})), "grep -rn 'tokens|janela' src --include='*.rs'");
+        assert_eq!(command("read_file", &json!({"path": "a.txt", "start_line": "4", "end_line": 9})), "sed -n '4,9p' a.txt");
+        assert_eq!(command("read_file", &json!({"path": "a.txt", "start_line": 4})), "sed -n '4,$p' a.txt");
+        assert_eq!(command("read_file", &json!({"path": "a.txt", "mode": "outline"})), "outline a.txt");
+        assert_eq!(command("list_dir", &json!({})), "ls .");
+        assert_eq!(command("run_script", &json!({"path": "scripts/x.sh", "args": ["meu arquivo", "."]})), "./scripts/x.sh 'meu arquivo' .");
+        assert_eq!(command("run_command", &json!({"program": "git", "args": ["status", "--short"]})), "git status --short");
+        assert_eq!(command("delete_file", &json!({"path": "it's.txt"})), "rm 'it'\\''s.txt'");
+    }
+
+    #[test]
     fn a_failed_call_says_why() {
         let mut g = Group::new("read_file");
         g.push(json!({"path": "AGENTS.md"}), StepResult::Error("No such file".into()));
-        assert_eq!(text(&g.lines(80)[1]), "    ⎿ ✗ AGENTS.md · No such file");
+        assert_eq!(text(&g.lines(80)[1]), "    ⎿ ✗ Ran cat AGENTS.md · No such file");
     }
 
     #[test]
@@ -224,12 +287,12 @@ mod tests {
         let mut g = Group::new("run_script");
         g.push(args.clone(), ok.clone());
         let shown: Vec<String> = g.lines(80).iter().map(text).collect();
-        assert_eq!(shown, vec!["  ● Executou 1 script", "    ⎿ ✓ ola.sh", "    │ Olá, mundo!", "    │ linha 2"]);
+        assert_eq!(shown, vec!["  ● Executou 1 script", "    ⎿ ✓ Ran ./ola.sh", "    │ Olá, mundo!", "    │ linha 2"]);
 
         let bad = StepResult::from_tool("run_script", &Outcome::Error("saiu com código 3\nantes".into()));
         let mut g = Group::new("run_script");
         g.push(args.clone(), bad.clone());
-        assert_eq!(text(&g.lines(80)[1]), "    ⎿ ✗ ola.sh · saiu com código 3");
+        assert_eq!(text(&g.lines(80)[1]), "    ⎿ ✗ Ran ./ola.sh · saiu com código 3");
         assert_eq!(output_lines(&bad, 80).len(), 1, "a saída da falha também aparece");
 
         let missing = StepResult::from_tool("run_script", &Outcome::Error("ola.sh não existe: crie o script antes com create_file".into()));

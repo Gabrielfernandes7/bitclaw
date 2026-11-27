@@ -179,6 +179,14 @@ pub(super) fn worker<F>(
                 let notice = match make_model(&model) {
                     Ok(client) => {
                         session.set_model(client);
+                        // A janela do modelo novo vale para o orçamento e para as opções enviadas; sem janela conhecida, fica a atual.
+                        let mut window_note = String::new();
+                        if let Some(window) = model.capabilities.context_window {
+                            match session.set_context_window(window) {
+                                Ok(()) => locked(&options).num_ctx = window as u32,
+                                Err(e) => window_note = format!(" · janela não trocada: {e}"),
+                            }
+                        }
                         // O esforço que não existe no modelo novo vai para o nível mais próximo que existe.
                         let before = *locked(&effort);
                         let after = model.capabilities.fit(before);
@@ -190,6 +198,7 @@ pub(super) fn worker<F>(
                         if after != before {
                             text.push_str(&format!(" · esforço ajustado para {}", after.as_str()));
                         }
+                        text.push_str(&window_note);
                         *locked(&active) = model;
                         text
                     }

@@ -17,6 +17,7 @@ mod input;
 mod print;
 mod restart;
 pub mod welcome;
+pub mod soul_screen;
 mod transcript;
 mod markdown;
 mod steps;
@@ -200,8 +201,8 @@ struct App {
     stats: SessionStats,
     // Chamadas seguidas da mesma ferramenta, ainda sem ir para a conversa (viram um bloco só).
     group: Option<steps::Group>,
-    // `/restart-dev` compilou com sucesso: ao sair, reabre o binário novo no lugar deste.
-    restart: bool,
+    // O que fazer ao sair da interface (`/restart-dev`, `/welcome-dev`, `/openrouter`); ver `Next`.
+    next: Next,
     // `/skill install`: o download em andamento (numa thread) e a skill baixada que espera `yes` ou `no`.
     skill_job: Option<Receiver<Result<Staged, String>>>,
     skill_pending: Option<Staged>,
@@ -273,7 +274,7 @@ where
         status_panel: None,
         stats: SessionStats::new(),
         group: None,
-        restart: false,
+        next: Next::Quit,
         skill_job: None,
         skill_pending: None,
         graphics,
@@ -289,10 +290,33 @@ where
         let _ = execute!(io::stdout(), DisableMouseCapture);
     }
     ratatui::restore();
-    if result.is_ok() && app.restart {
-        return Err(restart::exec_self());
+    if result.is_ok() {
+        match app.next {
+            Next::Quit => {}
+            Next::Restart => return Err(restart::exec_self(&[], restart::own_args())),
+            Next::Welcome => return Err(restart::exec_self(&[("BITCLAW_WELCOME", "1")], restart::own_args())),
+            Next::OpenRouter => match crate::app::openrouter_setup::run() {
+                Ok(msg) => {
+                    println!("{msg}");
+                    return Err(restart::exec_self(&[], restart::openrouter_args()));
+                }
+                Err(e) => println!("OpenRouter não configurado: {e}\nRode `bitclaw --openrouter` depois de `bitclaw openrouter`."),
+            },
+        }
     }
     result
+}
+
+// O que a interface faz ao sair. Fora `Quit`, o `run` faz a ação depois de devolver o terminal ao modo normal.
+#[derive(Clone, Copy, PartialEq)]
+enum Next {
+    Quit,
+    // `/restart-dev`: o binário recompilado reabre no lugar deste.
+    Restart,
+    // `/welcome-dev`: reabre com a tela de boas-vindas.
+    Welcome,
+    // `/openrouter`: roda o fluxo de `bitclaw openrouter` no terminal e reabre com o agente gerado.
+    OpenRouter,
 }
 
 // Quanto tempo um aviso curto fica no rodapé.
@@ -670,7 +694,7 @@ mod tests {
 
     #[test]
     fn idle_screen_is_compact_with_one_editor_row() {
-        let usage = Usage { tokens: 861, window: 16384, percent: 5.0 };
+        let usage = Usage { tokens: 861, window: 16384, percent: 5.0, real: None };
         let lines = screen(None, Some(usage), false);
         assert_eq!(lines.len(), 4, "régua, 1 linha de editor, régua e rodapé: {lines:?}");
         assert!(lines.iter().all(|l| !l.contains("pensando") && !l.contains("executando")), "sem status quando ocioso");
@@ -720,10 +744,12 @@ mod tests {
         assert!(lines[11].starts_with("  /clear") && lines[12].starts_with("  /think"), "{lines:?}");
         assert!(lines[13].starts_with("  /skills"), "{lines:?}");
         assert!(lines[14].starts_with("  /skill ") && lines[14].contains("baixa uma skill"), "{lines:?}");
-        assert!(lines[15].starts_with("  /status"), "{lines:?}");
-        assert!(lines[16].starts_with("  /undo"), "{lines:?}");
-        assert!(lines[17].starts_with("  /restart-dev"), "{lines:?}");
-        assert!(lines[18].starts_with("  /exit"), "{lines:?}");
+        assert!(lines[15].starts_with("  /openrouter"), "{lines:?}");
+        assert!(lines[16].starts_with("  /status"), "{lines:?}");
+        assert!(lines[17].starts_with("  /undo"), "{lines:?}");
+        assert!(lines[18].starts_with("  /restart-dev"), "{lines:?}");
+        assert!(lines[19].starts_with("  /welcome-dev"), "{lines:?}");
+        assert!(lines[20].starts_with("  /exit"), "{lines:?}");
         assert!(lines.last().unwrap().contains("tab completa · enter executa"));
     }
 

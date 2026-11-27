@@ -11,6 +11,11 @@ pub struct Palette {
     pub code: Style,
     pub heading: Style,
     pub bullet: Style,
+    // Classes de token dos blocos de código com linguagem conhecida (bash, python).
+    pub keyword: Style,
+    pub string: Style,
+    pub comment: Style,
+    pub number: Style,
 }
 
 // Recuo de toda a resposta, para alinhar com o texto do mascote e das ferramentas.
@@ -122,16 +127,20 @@ pub fn render(text: &str, width: usize, p: &Palette) -> Vec<Line<'static>> {
     let width = width.max(20);
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut in_code = false;
+    let mut code_lang: Option<Lang> = None;
     for raw in text.lines() {
         let trimmed = raw.trim_start();
         let extra = raw.chars().count() - trimmed.chars().count();
-        if trimmed.starts_with("```") {
+        if let Some(info) = trimmed.strip_prefix("```") {
             in_code = !in_code;
+            code_lang = if in_code { Lang::of(info) } else { None };
             continue;
         }
         if in_code {
             let line: String = raw.replace('\t', "    ").chars().take(width.saturating_sub(INDENT)).collect();
-            out.push(Line::from(vec![Span::raw(" ".repeat(INDENT)), Span::styled(line, p.code)]));
+            let mut spans = vec![Span::raw(" ".repeat(INDENT))];
+            spans.extend(highlight(&line, code_lang, p));
+            out.push(Line::from(spans));
             continue;
         }
         if trimmed.is_empty() {
@@ -160,6 +169,107 @@ pub fn render(text: &str, width: usize, p: &Palette) -> Vec<Line<'static>> {
     out
 }
 
+// Linguagens com realce: a que vem depois das crases de abertura (```bash). As outras ficam no estilo de código.
+#[derive(Clone, Copy, PartialEq)]
+enum Lang {
+    Bash,
+    Python,
+}
+
+impl Lang {
+    fn of(info: &str) -> Option<Lang> {
+        match info.split_whitespace().next()?.to_lowercase().as_str() {
+            "bash" | "sh" | "zsh" | "shell" => Some(Lang::Bash),
+            "python" | "python3" | "py" => Some(Lang::Python),
+            _ => None,
+        }
+    }
+
+    fn keywords(self) -> &'static [&'static str] {
+        match self {
+            Lang::Bash => &[
+                "if", "then", "else", "elif", "fi", "for", "in", "while", "until", "do", "done", "case", "esac", "function", "select",
+                "return", "exit", "local", "export", "readonly", "set", "unset", "shift", "break", "continue",
+            ],
+            Lang::Python => &[
+                "def", "class", "return", "import", "from", "as", "if", "elif", "else", "for", "while", "in", "not", "and", "or", "is",
+                "None", "True", "False", "try", "except", "finally", "with", "lambda", "pass", "break", "continue", "raise", "yield",
+                "async", "await", "global", "nonlocal", "del", "assert",
+            ],
+        }
+    }
+}
+
+// Quebra uma linha de código em trechos com estilo. Sem linguagem conhecida, a linha inteira fica no estilo de código.
+fn highlight(line: &str, lang: Option<Lang>, p: &Palette) -> Vec<Span<'static>> {
+    let Some(lang) = lang else {
+        return vec![Span::styled(line.to_string(), p.code)];
+    };
+    let chars: Vec<char> = line.chars().collect();
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut plain = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        // `#` começa comentário, exceto `$#` (número de argumentos do bash).
+        if c == '#' && !(lang == Lang::Bash && i > 0 && chars[i - 1] == '$') {
+            flush_plain(&mut out, &mut plain, p);
+            out.push(Span::styled(chars[i..].iter().collect::<String>(), p.comment));
+            break;
+        }
+        if c == '"' || c == '\'' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != c {
+                if c == '"' && chars[j] == '\\' {
+                    j += 1;
+                }
+                j += 1;
+            }
+            let end = (j + 1).min(chars.len());
+            flush_plain(&mut out, &mut plain, p);
+            out.push(Span::styled(chars[i..end].iter().collect::<String>(), p.string));
+            i = end;
+            continue;
+        }
+        if c.is_ascii_alphabetic() || c == '_' {
+            let mut j = i;
+            while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
+                j += 1;
+            }
+            let word: String = chars[i..j].iter().collect();
+            if lang.keywords().contains(&word.as_str()) {
+                flush_plain(&mut out, &mut plain, p);
+                out.push(Span::styled(word, p.keyword));
+            } else {
+                plain.push_str(&word);
+            }
+            i = j;
+            continue;
+        }
+        if c.is_ascii_digit() {
+            let mut j = i;
+            while j < chars.len() && chars[j].is_ascii_alphanumeric() {
+                j += 1;
+            }
+            flush_plain(&mut out, &mut plain, p);
+            out.push(Span::styled(chars[i..j].iter().collect::<String>(), p.number));
+            i = j;
+            continue;
+        }
+        plain.push(c);
+        i += 1;
+    }
+    flush_plain(&mut out, &mut plain, p);
+    out
+}
+
+// Põe o texto simples acumulado como um trecho no estilo de código.
+fn flush_plain(out: &mut Vec<Span<'static>>, plain: &mut String, p: &Palette) {
+    if !plain.is_empty() {
+        out.push(Span::styled(std::mem::take(plain), p.code));
+    }
+}
+
 // "12. texto" → ("12.", "texto").
 fn numbered(line: &str) -> Option<(&str, &str)> {
     let digits = line.chars().take_while(char::is_ascii_digit).count();
@@ -182,7 +292,35 @@ mod tests {
             code: Style::default().fg(Color::Gray),
             heading: Style::default().add_modifier(Modifier::BOLD),
             bullet: Style::default(),
+            keyword: Style::default().add_modifier(Modifier::BOLD),
+            string: Style::default().fg(Color::Green),
+            comment: Style::default().fg(Color::DarkGray),
+            number: Style::default().fg(Color::Yellow),
         }
+    }
+
+    #[test]
+    fn bash_and_python_blocks_get_colored_tokens() {
+        let p = palette();
+        let bash = render("```bash\nif [ -d \"$1\" ]; then echo ok # teste\nfi\n```", 60, &p);
+        let spans: Vec<(String, Style)> = bash[0].spans.iter().map(|s| (s.content.to_string(), s.style)).collect();
+        assert!(spans.iter().any(|(t, s)| t == "if" && *s == p.keyword), "{spans:?}");
+        assert!(spans.iter().any(|(t, s)| t == "\"$1\"" && *s == p.string), "{spans:?}");
+        assert!(spans.iter().any(|(t, s)| t.starts_with('#') && *s == p.comment), "{spans:?}");
+        let py = render("```python\ndef f(x):\n    return 2 * x  # dobro\n```", 60, &p);
+        let spans: Vec<(String, Style)> = py[1].spans.iter().map(|s| (s.content.to_string(), s.style)).collect();
+        assert!(spans.iter().any(|(t, s)| t == "return" && *s == p.keyword), "{spans:?}");
+        assert!(spans.iter().any(|(t, s)| t == "2" && *s == p.number), "{spans:?}");
+        let text: String = py[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "      return 2 * x  # dobro", "o realce não muda o texto");
+    }
+
+    #[test]
+    fn other_languages_keep_the_plain_code_style() {
+        let p = palette();
+        let lines = render("```rust\nlet x = 1;\n```", 40, &p);
+        assert_eq!(lines[0].spans[1].style, p.code);
+        assert_eq!(lines[0].spans[1].content, "let x = 1;");
     }
 
     fn text_of(lines: &[Line]) -> Vec<String> {

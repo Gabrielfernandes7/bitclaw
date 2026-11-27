@@ -292,6 +292,8 @@ impl App {
         match text {
             _ if command.is_some_and(|c| c.name == "/exit") => return Ok(true),
             _ if command.is_some_and(|c| c.name == "/restart-dev") => return self.restart_dev_command(),
+            _ if command.is_some_and(|c| c.name == "/welcome-dev") => return self.leave_for(Next::Welcome),
+            _ if command.is_some_and(|c| c.name == "/openrouter") => return self.leave_for(Next::OpenRouter),
             _ if command.is_some_and(|c| c.name == "/clear") => {
                 let _ = self.commands.send(Command::Clear);
                 self.clear_screen()?;
@@ -476,6 +478,16 @@ impl App {
         self.print(lines)
     }
 
+    // Sai da interface para `next`; o `run` faz a ação depois. Não sai com uma tarefa em andamento.
+    pub(super) fn leave_for(&mut self, next: Next) -> io::Result<bool> {
+        if self.work.is_some() {
+            self.print(vec![note("espere a tarefa terminar para sair."), Line::default()])?;
+            return Ok(false);
+        }
+        self.next = next;
+        Ok(true)
+    }
+
     // `/restart-dev`: recompila e, se deu certo, sai para o `run` reabrir o binário novo. Se a compilação
     // falhar, mostra o fim da saída do compilador e continua na sessão atual. Devolve `true` para sair.
     pub(super) fn restart_dev_command(&mut self) -> io::Result<bool> {
@@ -486,7 +498,7 @@ impl App {
         self.print(vec![note("recompilando…")])?;
         match super::restart::build() {
             Ok(()) => {
-                self.restart = true;
+                self.next = Next::Restart;
                 Ok(true)
             }
             Err(msg) => {

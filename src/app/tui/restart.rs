@@ -1,6 +1,7 @@
 //! `/restart-dev`: recompila o BitClaw e o reabre no lugar, para ver alterações do código sem sair
 //! do terminal. Só faz sentido em desenvolvimento, com o código-fonte ainda no lugar onde foi compilado.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -45,21 +46,54 @@ fn tail(text: &str, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
-// Troca este processo pelo binário recém-compilado, com os mesmos argumentos. Só volta se falhar.
+// Os argumentos com que este processo foi aberto.
+pub(super) fn own_args() -> Vec<OsString> {
+    std::env::args_os().skip(1).collect()
+}
+
+// Os argumentos para reabrir com o agente do OpenRouter: sem `--config` (que conflita com `--openrouter`),
+// sem `--fresh` (o estado temporário some com este processo) e com `--openrouter`.
+pub(super) fn openrouter_args() -> Vec<OsString> {
+    without_for_openrouter(own_args())
+}
+
+fn without_for_openrouter(args: Vec<OsString>) -> Vec<OsString> {
+    let mut out = Vec::new();
+    let mut skip_value = false;
+    for arg in args {
+        if std::mem::take(&mut skip_value) {
+            continue;
+        }
+        match arg.to_str() {
+            Some("--config") => skip_value = true,
+            Some("--openrouter" | "--fresh") => {}
+            _ => out.push(arg),
+        }
+    }
+    out.push("--openrouter".into());
+    out
+}
+
+// Troca este processo pelo binário atual, com `args` e as variáveis `env`. Só volta se falhar.
 #[cfg(unix)]
-pub(super) fn exec_self() -> String {
+pub(super) fn exec_self(env: &[(&str, &str)], args: Vec<OsString>) -> String {
     use std::os::unix::process::CommandExt;
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
         Err(e) => return format!("não achei o próprio binário: {e}"),
     };
-    let err = Command::new(exe).args(std::env::args_os().skip(1)).exec();
+    let mut cmd = Command::new(exe);
+    cmd.args(args);
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let err = cmd.exec();
     format!("não consegui reabrir o BitClaw: {err}")
 }
 
 #[cfg(not(unix))]
-pub(super) fn exec_self() -> String {
-    "/restart-dev só funciona em sistemas Unix; rode o cargo run de novo.".into()
+pub(super) fn exec_self(_env: &[(&str, &str)], _args: Vec<OsString>) -> String {
+    "reabrir pelo comando só funciona em sistemas Unix; feche e abra o BitClaw de novo.".into()
 }
 
 #[cfg(test)]
@@ -71,6 +105,13 @@ mod tests {
         assert_eq!(tail("a\n\nb\nc\n\nd\n", 2), "c\nd");
         assert_eq!(tail("só uma", 5), "só uma");
         assert_eq!(tail("", 3), "");
+    }
+
+    #[test]
+    fn reopening_with_openrouter_drops_config_fresh_and_the_old_flag() {
+        let args: Vec<OsString> = ["--config", "a.toml", "--dir", "/x", "--fresh", "--yes"].iter().map(OsString::from).collect();
+        let out: Vec<String> = without_for_openrouter(args).into_iter().map(|a| a.into_string().unwrap()).collect();
+        assert_eq!(out, vec!["--dir", "/x", "--yes", "--openrouter"]);
     }
 
     #[test]

@@ -42,21 +42,25 @@ impl Trim {
 // Ocupação atual da janela de contexto.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Usage {
+    // Estimativa pelo tamanho em caracteres.
     pub tokens: usize,
     pub window: usize,
     pub percent: f64,
+    // Tokens de entrada que o provedor contou no último envio ao modelo, se ele já respondeu.
+    pub real: Option<usize>,
 }
 
 pub struct ContextManager {
     num_ctx: usize,
     reserve_output_tokens: usize,
     chars_per_token: f64,
+    last_prompt: Option<usize>,
 }
 
 impl ContextManager {
     // `num_ctx` é a janela total em tokens. `reserve_output_tokens` fica livre para a resposta do modelo.
     pub fn new(num_ctx: usize, reserve_output_tokens: usize) -> Self {
-        Self { num_ctx, reserve_output_tokens, chars_per_token: DEFAULT_CHARS_PER_TOKEN }
+        Self { num_ctx, reserve_output_tokens, chars_per_token: DEFAULT_CHARS_PER_TOKEN, last_prompt: None }
     }
 
     // Troca a janela total. Precisa sobrar espaço além do que fica reservado para a resposta.
@@ -87,15 +91,16 @@ impl ContextManager {
     pub fn usage(&self, messages: &[Value], tools: &Value) -> Usage {
         let chars = size(messages) + value_size(tools);
         let tokens = (chars as f64 / self.chars_per_token).ceil() as usize;
-        Usage { tokens, window: self.num_ctx, percent: tokens as f64 * 100.0 / self.num_ctx as f64 }
+        Usage { tokens, window: self.num_ctx, percent: tokens as f64 * 100.0 / self.num_ctx as f64, real: self.last_prompt }
     }
 
-    // Ajusta a estimativa com o número real de tokens de entrada devolvido pelo Ollama.
+    // Ajusta a estimativa com o número real de tokens de entrada devolvido pelo provedor (Ollama e OpenRouter).
     // `sent_chars` deve ser o tamanho medido pela mesma função `size` sobre o que foi enviado.
     pub fn calibrate(&mut self, sent_chars: usize, prompt_tokens: u64) {
         if prompt_tokens == 0 {
             return;
         }
+        self.last_prompt = Some(prompt_tokens as usize);
         let ratio = sent_chars as f64 / prompt_tokens as f64;
         self.chars_per_token = ratio.clamp(MIN_CHARS_PER_TOKEN, MAX_CHARS_PER_TOKEN);
     }
@@ -395,6 +400,14 @@ mod tests {
         let cm = manager_with_budget(5);
         assert!(cm.fit(&mut m, &no_tools()).is_err());
         assert_eq!(m.len(), 2);
+    }
+
+    #[test]
+    fn the_real_prompt_size_is_reported_after_the_first_reply() {
+        let mut cm = ContextManager::new(8192, 1024);
+        assert_eq!(cm.usage(&[], &json!({})).real, None);
+        cm.calibrate(4_000, 1_234);
+        assert_eq!(cm.usage(&[], &json!({})).real, Some(1_234));
     }
 
     #[test]

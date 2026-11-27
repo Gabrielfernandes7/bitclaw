@@ -15,7 +15,15 @@ const FILE: &str = "SOUL.md";
 // Marca de "a pessoa preferiu não responder": sem ela, a pergunta voltaria toda vez.
 const SKIPPED: &str = "soul-skipped";
 // Palavra que, no lugar de uma resposta, dispensa as perguntas.
-const SKIP_WORD: &str = "pular";
+pub const SKIP_WORD: &str = "pular";
+// As cinco perguntas, na ordem. A tela cheia e o fluxo por linhas usam o mesmo texto.
+pub const PROMPTS: [&str; 5] = [
+    "1/5 Como devo te chamar? (opcional)",
+    "2/5 Em que idioma respondo? [português]",
+    "3/5 Respostas: 1 curtas, 2 detalhadas [1]",
+    "4/5 Antes de alterar arquivos: 1 explico em uma frase, 2 vou direto [1]",
+    "5/5 O que você faz, em uma linha? (opcional)",
+];
 // Tamanho máximo de cada resposta livre, em caracteres.
 const MAX_ANSWER: usize = 120;
 
@@ -65,6 +73,21 @@ pub fn render(a: &Answers) -> String {
     out
 }
 
+impl Answers {
+    // As respostas brutas das cinco perguntas, na ordem de `PROMPTS`, para o mesmo resultado nas duas telas.
+    pub fn from_raw(raw: &[String]) -> Answers {
+        let mut a = Answers::default();
+        a.name = clean(&raw[0]);
+        if !clean(&raw[1]).is_empty() {
+            a.language = clean(&raw[1]);
+        }
+        a.detailed = raw[2] == "2";
+        a.plan_first = raw[3] != "2";
+        a.about = clean(&raw[4]);
+        a
+    }
+}
+
 fn read_line(input: &mut dyn BufRead) -> io::Result<Option<String>> {
     let mut line = String::new();
     // Fim da entrada (Ctrl-D): trata como dispensa.
@@ -91,30 +114,16 @@ fn question(input: &mut dyn BufRead, out: &mut dyn Write, line: &mut dyn FnMut(u
 // Como `ask`, e avisa por `line` quantos caracteres tem cada linha que a tela ganha: a arte do alto da
 // tela precisa saber quantas linhas há abaixo dela (contando as que quebram) para se repintar.
 fn ask_with(input: &mut dyn BufRead, out: &mut dyn Write, line: &mut dyn FnMut(usize)) -> io::Result<Option<Answers>> {
-    let mut a = Answers::default();
     let intro = format!("Cinco perguntas para eu falar do seu jeito. Enter aceita o padrão; \"{SKIP_WORD}\" dispensa.");
     writeln!(out, "{intro}")?;
     line(intro.chars().count());
 
-    let Some(r) = question(input, out, line, "1/5 Como devo te chamar? (opcional) ")? else { return Ok(None) };
-    a.name = clean(&r);
-
-    let Some(r) = question(input, out, line, "2/5 Em que idioma respondo? [português] ")? else { return Ok(None) };
-    if !clean(&r).is_empty() {
-        a.language = clean(&r);
+    let mut raw = Vec::with_capacity(PROMPTS.len());
+    for prompt in PROMPTS {
+        let Some(r) = question(input, out, line, &format!("{prompt} "))? else { return Ok(None) };
+        raw.push(r);
     }
-
-    let Some(r) = question(input, out, line, "3/5 Respostas: 1 curtas, 2 detalhadas [1] ")? else { return Ok(None) };
-    a.detailed = r == "2";
-
-    let Some(r) = question(input, out, line, "4/5 Antes de alterar arquivos: 1 explico em uma frase, 2 vou direto [1] ")? else {
-        return Ok(None);
-    };
-    a.plan_first = r != "2";
-
-    let Some(r) = question(input, out, line, "5/5 O que você faz, em uma linha? (opcional) ")? else { return Ok(None) };
-    a.about = clean(&r);
-    Ok(Some(a))
+    Ok(Some(Answers::from_raw(&raw)))
 }
 
 fn global_file() -> Option<PathBuf> {
@@ -142,19 +151,28 @@ pub fn should_ask(root: &Path) -> bool {
 // Pergunta no terminal e grava, com a tela do SOUL: o BitClaw feliz segurando um coração que pulsa enquanto você responde.
 // Sem terminal, ou com a janela pequena, a arte não aparece e só as perguntas sobram.
 pub fn run_animated(input: &mut dyn BufRead, out: &mut dyn Write, color: bool) -> Result<String, String> {
+    // Com terminal de tamanho razoável, as perguntas vêm na tela cheia, com o BitClaw centralizado.
+    if let Some(answers) = super::tui::soul_screen::run(color) {
+        return finish(answers.map_err(|e| e.to_string())?);
+    }
+    // Sem terminal ou com a janela pequena: o mesmo texto, por linhas, com a arte no alto quando há espaço.
     let art = super::soul_art::Art::start(color);
-    let result = run_with(input, out, &mut |chars| {
+    let answers = run_with(input, out, &mut |chars| {
         if let Some(a) = &art {
             a.line(chars);
         }
     });
     drop(art);
-    result
+    finish(answers?)
 }
 
-fn run_with(input: &mut dyn BufRead, out: &mut dyn Write, line: &mut dyn FnMut(usize)) -> Result<String, String> {
+fn run_with(input: &mut dyn BufRead, out: &mut dyn Write, line: &mut dyn FnMut(usize)) -> Result<Option<Answers>, String> {
+    ask_with(input, out, line).map_err(|e| e.to_string())
+}
+
+// Grava as respostas (ou a dispensa) e diz o que aconteceu.
+fn finish(answers: Option<Answers>) -> Result<String, String> {
     let dir = super::update::config_dir().ok_or("sem HOME: não sei onde gravar o SOUL.md")?;
-    let answers = ask_with(input, out, line).map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| format!("não consegui criar {}: {e}", dir.display()))?;
     match answers {
         None => {

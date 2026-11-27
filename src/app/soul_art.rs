@@ -84,6 +84,13 @@ fn cell(top: char, bottom: char) -> (char, char) {
     }
 }
 
+// As células de um quadro, linha a linha: cada uma é (caractere, tom), com tom 'Y' (amarelo), 'R' (vermelho)
+// ou '.' (sem cor). A tela cheia do SOUL pinta com elas; o fluxo por linhas usa `frame`.
+pub fn cells(ms: u128) -> Vec<Vec<(char, char)>> {
+    let m = map(ms);
+    (0..TERM_ROWS).map(|r| (0..COLS).map(|c| cell(m[2 * r][c], m[2 * r + 1][c])).collect()).collect()
+}
+
 // As linhas de terminal de um quadro, já com o recuo. Com `color`, amarelo e vermelho em ANSI.
 pub fn frame(ms: u128, color: bool) -> Vec<String> {
     let m = map(ms);
