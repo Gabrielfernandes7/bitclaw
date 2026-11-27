@@ -60,13 +60,37 @@ Troca o binário pelo do último release, depois de conferir a soma. Quando sai 
 bitclaw uninstall
 ```
 
-Apaga o binário e `~/.config/bitclaw`, e pergunta antes (`--yes` não pergunta). Sem o binário à mão:
+Mostra o que vai apagar e pergunta antes (`--yes` não pergunta). Apaga:
+
+- o binário;
+- `~/.config/bitclaw`: o SOUL.md global, o cache do aviso de versão, a marca da boas-vindas e o registro de projetos;
+- restos de instalação e atualização interrompidas: `.bitclaw.install` e `.bitclaw.update` ao lado do binário, e `bitclaw-update-*` na pasta temporária.
+
+As pastas `.bitclaw/` dos seus projetos (backup, recibos, `/undo`, skills instaladas) ficam, a menos que você peça:
+
+```sh
+bitclaw uninstall --purge
+```
+
+Sem `--purge`, o comando pergunta à parte. Ele acha essas pastas por um registro dos projetos onde o BitClaw rodou (`~/.config/bitclaw/projects`, só os caminhos) e pela pasta atual, e só apaga um diretório de verdade chamado `.bitclaw`, nunca um link. O `AGENTS.md` e o código dos seus projetos nunca são tocados.
+
+Sem o binário à mão:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Gabrielfernandes7/bitclaw/main/install.sh | sh -s -- --uninstall
 ```
 
-As pastas `.bitclaw/` dos seus projetos ficam.
+Acrescente `--purge` depois de `--uninstall` para apagar também as pastas dos projetos. Um binário instalado com `cargo install` (ou o de `target/`) não é apagado, mas o resíduo é: para o primeiro, rode `cargo uninstall bitclaw`.
+
+## Testar como primeiro acesso
+
+```sh
+bitclaw --fresh
+```
+
+Abre o BitClaw como se você tivesse acabado de instalar: tela de boas-vindas, as cinco perguntas do SOUL (com o coração batendo) e nenhum cache. O estado global dessa sessão é uma pasta temporária, **apagada ao sair**; o seu `~/.config/bitclaw` não é lido nem tocado. Funciona também com `bitclaw --fresh soul`.
+
+Um `.bitclaw/SOUL.md` que já exista no projeto ainda vale e pula as perguntas: para testar de ponta a ponta, use uma pasta nova (`bitclaw --fresh --dir /tmp/novo`).
 
 ## Primeira abertura
 

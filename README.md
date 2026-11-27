@@ -22,7 +22,7 @@ Com Rust instalado, também dá para compilar direto do repositório:
 cargo install --git https://github.com/Gabrielfernandes7/bitclaw
 ```
 
-Para desinstalar, `bitclaw uninstall` apaga o binário e `~/.config/bitclaw` (pergunta antes; `--yes` não pergunta). Sem o binário à mão: `curl -fsSL https://raw.githubusercontent.com/Gabrielfernandes7/bitclaw/main/install.sh | sh -s -- --uninstall`. As pastas `.bitclaw/` dos projetos ficam.
+Para desinstalar, `bitclaw uninstall` apaga o binário e todo o resíduo: `~/.config/bitclaw` (SOUL.md, caches e marcas), restos de instalação e atualização (`.bitclaw.install`, `.bitclaw.update`, `bitclaw-update-*` no temp). Mostra o que vai apagar e pergunta (`--yes` não pergunta). As pastas `.bitclaw/` dos projetos (backup, recibos, `/undo`, skills instaladas) ficam, a menos que você diga que não: `--purge` as apaga junto, e sem `--purge` o comando pergunta à parte. Elas são encontradas por um registro dos projetos onde o BitClaw rodou (`~/.config/bitclaw/projects`, só caminhos) e pela pasta atual. O `AGENTS.md` e o código nunca são tocados. Sem o binário à mão: `curl -fsSL https://raw.githubusercontent.com/Gabrielfernandes7/bitclaw/main/install.sh | sh -s -- --uninstall` (acrescente `--purge` depois de `--uninstall` para apagar as pastas dos projetos). Um binário do `cargo install` ou de desenvolvimento (`target/`) não é apagado, mas o resíduo é: para o primeiro, `cargo uninstall bitclaw`.
 
 Para atualizar, `bitclaw update` troca o binário pelo do último release, depois de conferir a soma. Quando sai uma versão nova, o BitClaw avisa na abertura; a consulta ao GitHub é feita em segundo plano, no máximo uma vez por dia, e fica em `~/.config/bitclaw/`. `BITCLAW_NO_UPDATE_CHECK=1` desliga a consulta.
 
@@ -55,9 +55,10 @@ Opções:
 | `--no-color` | desligado | Desliga as cores. Também é desligado com `NO_COLOR` e quando a saída não é um terminal. |
 | `--think` | desligado | Liga o raciocínio (thinking) do modelo. Gasta mais tokens e enche a janela de contexto mais rápido; nem todo modelo suporta. Também dá para ligar com `think = true` na configuração ou, durante a sessão, com `/think`. |
 | `--plan` | desligado | Modo Plan: só as ferramentas de leitura. Nada é editado, criado, removido nem executado. |
+| `--fresh` | desligado | Abre como na primeira vez (boas-vindas, perguntas do SOUL, sem aviso de versão em cache): o estado global é uma pasta temporária, apagada ao sair, e o seu `~/.config/bitclaw` não é lido nem tocado. Um `.bitclaw/SOUL.md` já existente no projeto ainda vale; use `--dir` numa pasta nova. Funciona também com `bitclaw --fresh soul`. |
 | `-V`, `--version` | | Mostra a versão. |
 | `update` | | `bitclaw update` troca o binário pelo do último release. |
-| `uninstall` | | `bitclaw uninstall` apaga o binário e `~/.config/bitclaw`. |
+| `uninstall` | | `bitclaw uninstall` apaga o binário e o resíduo (`~/.config/bitclaw`, restos de instalação). `--purge` apaga também as pastas `.bitclaw/` dos projetos; `--yes` não pergunta. |
 | `soul` | | `bitclaw soul` refaz as cinco perguntas do SOUL.md: nome, idioma, tamanho das respostas, se explica antes de alterar e o que você faz. A primeira abertura já pergunta; `pular` dispensa. O arquivo fica em `~/.config/bitclaw/SOUL.md`, um `.bitclaw/SOUL.md` no projeto vale mais, e `/soul` mostra o que está em vigor. Entra no prompt cortado em 1200 caracteres e vale na próxima abertura. |
 | `-h`, `--help` | | Mostra a ajuda. |
 

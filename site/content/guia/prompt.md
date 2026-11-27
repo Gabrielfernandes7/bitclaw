@@ -15,13 +15,14 @@ Digite a tarefa em linguagem natural e pressione <kbd>Enter</kbd>. O BitClaw abr
 | `--url U` | `http://localhost:11434` | Endereço do Ollama. |
 | `--yes` | desligado | Aplica edições, criações e remoções sem pedir confirmação. Use com cuidado. Não vale para `run_script` nem para comandos de alteração. |
 | `--plan` | desligado | Modo Plan: só ferramentas de leitura. |
+| `--fresh` | desligado | Abre como na primeira vez, com estado global temporário que some ao sair. Veja [Testar como primeiro acesso](../inicio/instalacao.md#testar-como-primeiro-acesso). |
 | `--think` | desligado | Liga o raciocínio (*thinking*) do modelo. Gasta mais tokens; nem todo modelo suporta. |
 | `--no-color` | desligado | Desliga as cores. Também vale com `NO_COLOR` e quando a saída não é um terminal. |
 | `--no-mouse` | desligado | Devolve o mouse ao terminal (seleção nativa); a conversa rola só pelo teclado. |
 | `-V`, `--version` | | Mostra a versão. |
 | `-h`, `--help` | | Mostra a ajuda. |
 
-Subcomandos: `bitclaw update`, `bitclaw uninstall` e `bitclaw soul` (refaz as perguntas do [SOUL.md](skills.md#soulmd)).
+Subcomandos: `bitclaw update`, `bitclaw uninstall [--yes] [--purge]` e `bitclaw soul` (refaz as perguntas do [SOUL.md](skills.md#soulmd)).
 
 ## Teclas
 
