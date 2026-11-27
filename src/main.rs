@@ -28,6 +28,8 @@ struct Args {
     think: bool,
     no_mouse: bool,
     plan: bool,
+    // `bitclaw update`: troca o binário pelo do último release e sai.
+    update: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -41,6 +43,7 @@ fn parse_args() -> Result<Args, String> {
         think: false,
         no_mouse: false,
         plan: false,
+        update: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -58,8 +61,15 @@ fn parse_args() -> Result<Args, String> {
             "--think" => args.think = true,
             // Modo Plan: só ferramentas que declaram somente leitura. Nada é alterado nem executado.
             "--plan" => args.plan = true,
+            "update" => args.update = true,
+            "-V" | "--version" => {
+                println!("bitclaw {}", app::update::VERSION);
+                std::process::exit(0);
+            }
             "-h" | "--help" => {
                 println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color] [--no-mouse] [--think] [--plan]");
+                println!("     bitclaw update     troca o binário pelo do último release");
+                println!("     bitclaw --version");
                 std::process::exit(0);
             }
             other => return Err(format!("argumento desconhecido: {other}")),
@@ -77,6 +87,10 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
+    if args.update {
+        println!("{}", app::update::run()?);
+        return Ok(());
+    }
     let color = !args.no_color && std::env::var_os("NO_COLOR").is_none();
 
     let mut cfg = match &args.config {
