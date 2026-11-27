@@ -112,25 +112,23 @@ impl Provider {
         }
     }
 
-    // Linha de abertura com o modelo e o que o provedor souber dizer dele.
-    pub fn model_line(&self, cfg: &AgentConfig, info: &ModelInfo) -> String {
-        let window = cfg.model.context_window;
+    // Nome do provedor como aparece no cabeçalho.
+    pub fn label(&self) -> &'static str {
+        match &self.kind {
+            Kind::Ollama(_) => "Ollama",
+            Kind::OpenRouter(_) => "OpenRouter",
+        }
+    }
+
+    // O que o provedor sabe dizer do modelo (tamanho e quantização, no Ollama). Vazio se não sabe.
+    pub fn model_details(&self, info: &ModelInfo) -> String {
         if let Kind::Ollama(_) = &self.kind {
             let effort = Arc::new(Mutex::new(bitclaw::models::Effort::Off));
             if let Ok(d) = self.ollama_client(info, &effort).and_then(|c| c.model_details()) {
-                return format!(
-                    "modelo {} · {} · {} · janela {window} tok",
-                    cfg.model.name,
-                    d.parameter_size.unwrap_or_else(|| "?".into()),
-                    d.quantization.unwrap_or_else(|| "?".into()),
-                );
+                return format!("{} · {}", d.parameter_size.unwrap_or_else(|| "?".into()), d.quantization.unwrap_or_else(|| "?".into()));
             }
         }
-        let provider = match &self.kind {
-            Kind::Ollama(_) => "",
-            Kind::OpenRouter(_) => " · openrouter",
-        };
-        format!("modelo {}{provider} · janela {window} tok", cfg.model.name)
+        String::new()
     }
 }
 

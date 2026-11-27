@@ -218,6 +218,16 @@ pub fn load_with_ignored(dir: &Path) -> Result<(Vec<Skill>, Vec<String>), String
     Ok((skills, ignored))
 }
 
+// Lê uma única skill: `dir` é a pasta dela, com o SKILL.md dentro. Usado para validar uma skill
+// antes de instalá-la.
+pub fn load_one(dir: &Path) -> Result<Skill, String> {
+    let text = fs::read_to_string(dir.join("SKILL.md")).map_err(|e| format!("não consegui ler SKILL.md: {e}"))?;
+    let parsed = parse(&text)?;
+    let mut files = Vec::new();
+    list_files(dir, "", &mut files)?;
+    Ok(Skill { name: parsed.name, description: parsed.description, dir: dir.to_path_buf(), body: parsed.body, files, builtin: false })
+}
+
 // Carrega as skills de uma configuração. `dir` é relativo a `base` (normalmente o diretório de execução).
 pub fn load_configured(dir: Option<&str>, base: &Path) -> Result<Vec<Skill>, String> {
     match dir {

@@ -27,6 +27,10 @@ impl Tool for ListDir {
         )
     }
 
+    fn idempotent(&self) -> bool {
+        true
+    }
+
     fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {
         wrap(list_dir(ctx.root, args).map(Outcome::Done))
     }

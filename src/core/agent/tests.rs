@@ -1,6 +1,6 @@
 use super::guard::*;
 use super::*;
-use crate::core::context::ContextManager;
+use crate::core::context::{self, ContextManager};
 use crate::core::tool::{Approver, Outcome, Registry, ToolContext, ToolSpec};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -272,9 +272,10 @@ fn model_error_propagates() {
 fn repeated_call_stops_the_turn() {
     let r = root("repeat");
     let same = || call("list_dir", json!({"path": "."}));
-    let model = fake(vec![same(), same(), same()]);
+    // A última resposta é o pedido final sem ferramentas; vazia, o turno termina com o erro de repetição.
+    let model = fake(vec![same(), same(), same(), text("")]);
     let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
-    assert!(report.error.is_some());
+    assert_eq!(report.error.as_deref(), Some("o modelo repetiu a mesma chamada; interrompendo"));
 }
 
 #[test]
@@ -560,4 +561,307 @@ fn a_run_claimed_without_a_successful_run_is_flagged() {
     let ok = Action { name: "run_script".into(), args: Value::Null, outcome: Outcome::Done("código de saída: 0\n2880".into()), mutates: true };
     let real = TurnReport { text: "Executei o script: a saída é 2880.".into(), actions: vec![ok], ..Default::default() };
     assert!(crate::toolkit::claims::warnings(&real).iter().all(|x| !x.contains("execução")));
+}
+
+#[test]
+fn tagged_text_call_from_the_model_runs_as_a_real_tool() {
+    let r = root("tagged-call");
+    std::fs::write(r.join("a.txt"), "oi").unwrap();
+    let model = fake(vec![
+        text(r#"list_dir{path:<|"|>.<|"|>}"#),
+        text("Há um arquivo: a.txt."),
+    ]);
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
+    assert_eq!(report.actions.len(), 1);
+    assert!(matches!(report.actions[0].outcome, Outcome::Done(_)));
+    assert_eq!(report.text, "Há um arquivo: a.txt.");
+}
+
+#[test]
+fn native_tool_calls_take_precedence_over_text() {
+    let r = root("native-precedence");
+    let mut msg = call("list_dir", json!({"path": "."}));
+    msg["content"] = json!(r#"read_file{path:<|"|>x<|"|>}"#);
+    let model = fake(vec![msg, text("ok")]);
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
+    assert_eq!(report.actions.len(), 1);
+    assert_eq!(report.actions[0].name, "list_dir");
+}
+
+fn tagged(name: &str, path: &str) -> Value {
+    text(&format!("{name}{{path:<|\"|>{path}<|\"|>}}"))
+}
+
+#[test]
+fn text_call_is_rewritten_as_a_structured_call_in_the_history() {
+    // O resultado da ferramenta precisa responder a uma chamada do modelo no histórico; texto solto não serve.
+    let r = root("rewrite-history");
+    let model = fake(vec![tagged("list_dir", "."), text("Pronto.")]);
+    let mut msgs = start();
+    run(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover).unwrap();
+    let assistant = &msgs[2];
+    assert_eq!(assistant["tool_calls"][0]["function"]["name"], "list_dir");
+    assert_eq!(assistant["tool_calls"][0]["function"]["arguments"], json!({"path": "."}));
+    assert_eq!(assistant["content"], "", "o texto da chamada não fica no histórico");
+    assert_eq!(msgs[3]["role"], "tool");
+}
+
+#[test]
+fn prose_around_a_text_call_stays_in_the_history() {
+    let r = root("rewrite-prose");
+    let model = fake(vec![text("Vou listar.\nlist_dir{path:<|\"|>.<|\"|>}"), text("Pronto.")]);
+    let mut msgs = start();
+    run(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover).unwrap();
+    assert_eq!(msgs[2]["content"], "Vou listar.");
+}
+
+#[test]
+fn glued_text_calls_all_run() {
+    let r = root("glued");
+    fs::write(r.join("a.txt"), "um").unwrap();
+    fs::write(r.join("b.txt"), "dois").unwrap();
+    let both = text(r#"read_file{path:<|"|>a.txt<|"|>}read_file{path:<|"|>b.txt<|"|>}"#);
+    let model = fake(vec![both, text("um e dois")]);
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
+    assert_eq!(report.actions.len(), 2);
+    assert_eq!(report.text, "um e dois");
+}
+
+#[test]
+fn repeated_read_is_not_run_again_and_the_model_gets_a_hint() {
+    let r = root("repeat-read");
+    let model = fake(vec![call("list_dir", json!({"path": "."})), call("list_dir", json!({"path": "."})), text("Está vazio.")]);
+    let mut msgs = start();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover).unwrap();
+    assert_eq!(report.actions.len(), 1, "a repetição não conta como ação nova");
+    assert_eq!(report.text, "Está vazio.");
+    assert!(report.error.is_none());
+    let hints = msgs.iter().filter(|m| m["content"].as_str().is_some_and(|c| c.contains("já fez esta chamada"))).count();
+    assert_eq!(hints, 1);
+}
+
+#[test]
+fn repeated_read_between_other_calls_is_also_caught() {
+    let r = root("repeat-read-gap");
+    fs::create_dir(r.join("src")).unwrap();
+    let model = fake(vec![
+        call("list_dir", json!({"path": "src"})),
+        call("list_dir", json!({"path": "."})),
+        call("list_dir", json!({"path": "src"})),
+        text("ok"),
+    ]);
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
+    assert_eq!(report.actions.len(), 2);
+    assert_eq!(report.text, "ok");
+}
+
+#[test]
+fn a_model_that_keeps_repeating_reads_is_asked_for_an_answer_without_tools() {
+    let r = root("repeat-finalize");
+    let same = || call("list_dir", json!({"path": "."}));
+    let model = fake(vec![same(), same(), same(), text("O projeto está vazio.")]);
+    let mut msgs = start();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover).unwrap();
+    assert_eq!(report.text, "O projeto está vazio.");
+    assert!(report.error.is_none(), "{:?}", report.error);
+    assert_eq!(report.actions.len(), 1);
+    assert_eq!(msgs.last().unwrap()["content"], "O projeto está vazio.");
+    assert!(
+        !msgs.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains("sem chamar mais ferramentas"))),
+        "o pedido final não fica no histórico"
+    );
+}
+
+// Modelo falso que guarda o que recebeu em cada chamada.
+struct Recording {
+    replies: RefCell<VecDeque<Value>>,
+    seen: RefCell<Vec<Vec<Value>>>,
+}
+
+impl ChatModel for Recording {
+    fn complete(&self, messages: &[Value], _tools: &[ToolSpec]) -> Result<Reply, String> {
+        self.seen.borrow_mut().push(messages.to_vec());
+        let message = self.replies.borrow_mut().pop_front().ok_or_else(|| "roteiro esgotado".to_string())?;
+        Ok(Reply { message, prompt_tokens: None, output_tokens: None })
+    }
+}
+
+// Leitura mínima e idempotente: esquema curto, para o pedido final pesar mais que o que a falta de esquemas libera.
+struct Peek;
+
+impl Tool for Peek {
+    fn name(&self) -> &'static str {
+        "peek"
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new("peek", "lê", json!({"type": "object", "properties": {}}))
+    }
+
+    fn idempotent(&self) -> bool {
+        true
+    }
+
+    fn run(&self, _ctx: &ToolContext, _args: &Value) -> Outcome {
+        Outcome::Done("ok".into())
+    }
+}
+
+fn stuck_on_reads(filler: &str) -> (Recording, Vec<Value>) {
+    let same = || call("peek", json!({}));
+    let model = Recording {
+        replies: RefCell::new(vec![same(), same(), same(), text("O projeto está vazio.")].into()),
+        seen: RefCell::new(Vec::new()),
+    };
+    let msgs = vec![
+        json!({"role": "system", "content": "sistema"}),
+        json!({"role": "user", "content": "pedido antigo"}),
+        json!({"role": "assistant", "content": filler}),
+        json!({"role": "user", "content": "tarefa"}),
+    ];
+    (model, msgs)
+}
+
+#[test]
+fn the_forced_final_request_is_fitted_to_the_context_window() {
+    let registry = Registry::new(vec![Box::new(Peek)]);
+    let tools_json = crate::core::tool::specs_value(&registry.specs());
+    let budget = ctx().budget_chars(&tools_json);
+    let r = root("forced-final-fit");
+
+    // Mede o histórico enviado no 3º passo (o último ajustado antes do pedido final) sem enchimento.
+    let (probe, mut msgs) = stuck_on_reads("x");
+    run(&probe, &registry, &r, &mut msgs, &AutoApprover).unwrap();
+    let third = context::size(&probe.seen.borrow()[2]);
+
+    // Enchimento que deixa esse 3º passo quase no limite: o que for acrescentado depois estoura o orçamento.
+    let filler = "x".repeat(budget - third - 10);
+    let (model, mut msgs) = stuck_on_reads(&filler);
+    let report = run(&model, &registry, &r, &mut msgs, &AutoApprover).unwrap();
+
+    assert_eq!(report.text, "O projeto está vazio.");
+    let seen = model.seen.borrow();
+    assert!(seen[2].iter().any(|m| m["content"] == filler.as_str()), "o enchimento ainda cabia no 3º passo");
+    let last = seen.last().unwrap();
+    assert!(
+        context::size(last) + context::value_size(&json!([])) <= ctx().budget_chars(&json!([])),
+        "o pedido final cabe na janela: {} caracteres",
+        context::size(last)
+    );
+    assert!(!last.iter().any(|m| m["content"] == filler.as_str()), "o histórico antigo saiu para dar lugar ao pedido");
+    assert!(last.iter().any(|m| m["content"] == "tarefa"), "o pedido original continua");
+    assert!(last.last().unwrap()["content"].as_str().unwrap().contains("sem chamar mais ferramentas"));
+}
+
+#[test]
+fn an_error_from_the_forced_final_call_is_not_reported_as_a_repeated_call() {
+    let r = root("forced-final-error");
+    let same = || call("list_dir", json!({"path": "."}));
+    // O roteiro acaba antes do pedido final: o provedor falha nessa chamada.
+    let model = fake(vec![same(), same(), same()]);
+    let result = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover);
+    assert_eq!(result.err().as_deref(), Some("roteiro esgotado"));
+}
+
+#[test]
+fn a_looping_forced_final_is_cut_off_early() {
+    use std::cell::Cell;
+    struct StuckAtTheEnd {
+        calls: Cell<usize>,
+        pieces: Cell<usize>,
+    }
+    impl ChatModel for StuckAtTheEnd {
+        fn complete(&self, _m: &[Value], _t: &[ToolSpec]) -> Result<Reply, String> {
+            Err("só o streaming é usado".into())
+        }
+        fn complete_streaming(&self, _m: &[Value], tools: &[ToolSpec], on_chunk: &mut dyn FnMut(Chunk) -> bool) -> Result<Reply, String> {
+            self.calls.set(self.calls.get() + 1);
+            if !tools.is_empty() {
+                return Ok(Reply { message: call("list_dir", json!({"path": "."})), prompt_tokens: None, output_tokens: None });
+            }
+            let mut said = String::new();
+            for _ in 0..500 {
+                let piece = "Taxa: 144 máquina-dias produzem 800 apostilas.\n";
+                self.pieces.set(self.pieces.get() + 1);
+                said.push_str(piece);
+                if !on_chunk(Chunk::Content(piece)) {
+                    break;
+                }
+            }
+            Ok(Reply { message: text(&said), prompt_tokens: None, output_tokens: None })
+        }
+    }
+    let r = root("forced-final-loop");
+    let model = StuckAtTheEnd { calls: Cell::new(0), pieces: Cell::new(0) };
+    let mut msgs = start();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover).unwrap();
+    assert_eq!(report.error.as_deref(), Some(LOOPING));
+    assert!(report.text.is_empty());
+    assert!(model.pieces.get() < 20, "parou cedo: {} pedaços de 500", model.pieces.get());
+    assert!(!msgs.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains("Taxa:"))), "o laço não entra no histórico");
+}
+
+#[test]
+fn reading_again_after_a_change_runs_again() {
+    let r = root("read-after-write");
+    let model = fake(vec![
+        call("list_dir", json!({"path": "."})),
+        call("create_file", json!({"path": "novo.txt", "content": "x"})),
+        call("list_dir", json!({"path": "."})),
+        text("Criei novo.txt."),
+    ]);
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
+    assert_eq!(report.actions.len(), 3);
+    assert!(report.error.is_none());
+}
+
+#[test]
+fn non_idempotent_tools_are_not_deduplicated() {
+    let r = root("echo-twice");
+    let reg = Registry::new(vec![Box::new(Echo)]);
+    let model = fake(vec![call("echo", json!({"texto": "a"})), call("echo", json!({"texto": "a"})), text("fim")]);
+    let report = run(&model, &reg, &r, &mut start(), &AutoApprover).unwrap();
+    assert_eq!(report.actions.len(), 2, "uma ferramenta que não se declara idempotente roda sempre");
+}
+
+#[test]
+fn an_empty_reply_is_asked_again_and_leaves_no_trace_in_the_history() {
+    let r = root("empty-retry");
+    let model = fake(vec![text(""), call("create_file", json!({"path": "a.txt", "content": "x"})), text("Criei a.txt.")]);
+    let mut msgs = start();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover).unwrap();
+    assert!(report.changed());
+    assert_eq!(report.text, "Criei a.txt.");
+    assert!(
+        !msgs.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains("veio vazia")) || (m["role"] == "assistant" && m["content"] == "" && m.get("tool_calls").is_none())),
+        "a resposta vazia e o empurrão não entram no histórico: {msgs:?}"
+    );
+}
+
+#[test]
+fn the_retry_nudge_is_sent_only_with_the_retry() {
+    use std::cell::Cell;
+    struct Spy(FakeModel, Cell<usize>, RefCell<Vec<bool>>);
+    impl ChatModel for Spy {
+        fn complete(&self, messages: &[Value], tools: &[ToolSpec]) -> Result<Reply, String> {
+            let nudged = messages.last().is_some_and(|m| m["content"].as_str().is_some_and(|c| c.contains("veio vazia")));
+            self.2.borrow_mut().push(nudged);
+            self.1.set(self.1.get() + 1);
+            self.0.complete(messages, tools)
+        }
+    }
+    let r = root("empty-nudge");
+    let spy = Spy(fake(vec![text(""), text("Olá.")]), Cell::new(0), RefCell::new(vec![]));
+    let report = run(&spy, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
+    assert_eq!(report.text, "Olá.");
+    assert_eq!(*spy.2.borrow(), vec![false, true]);
+}
+
+#[test]
+fn a_model_that_stays_silent_ends_with_an_empty_report_after_two_retries() {
+    let r = root("empty-forever");
+    let model = fake(vec![text(""), text(""), text(""), text("nunca chega")]);
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
+    assert!(report.text.is_empty());
+    assert!(report.actions.is_empty());
 }

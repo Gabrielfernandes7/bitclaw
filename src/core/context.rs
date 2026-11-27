@@ -104,7 +104,13 @@ impl ContextManager {
     // marcador curto e, se ainda não bastar, descarta turnos antigos inteiros.
     // Devolve `None` se nada foi descartado. Erra se o turno atual sozinho não cabe.
     pub fn fit(&self, messages: &mut Vec<Value>, tools: &Value) -> Result<Option<Trim>, String> {
-        let budget = self.budget_chars(tools);
+        self.fit_reserving(messages, tools, 0)
+    }
+
+    // Igual a `fit`, mas deixa `reserve` caracteres livres no orçamento para uma mensagem que ainda será
+    // acrescentada. Ajustar depois de acrescentá-la faria dela o turno atual e descartaria o pedido original.
+    pub fn fit_reserving(&self, messages: &mut Vec<Value>, tools: &Value, reserve: usize) -> Result<Option<Trim>, String> {
+        let budget = self.budget_chars(tools).saturating_sub(reserve);
         let Some(mut current) = messages.iter().rposition(|m| is_role(m, "user")) else {
             return Ok(None);
         };

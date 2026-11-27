@@ -44,6 +44,10 @@ impl Registry {
         self.find(name).is_some_and(|t| t.mutates())
     }
 
+    pub fn idempotent(&self, name: &str) -> bool {
+        self.find(name).is_some_and(|t| t.idempotent())
+    }
+
     pub fn execute(&self, ctx: &ToolContext, name: &str, args: &Value) -> Outcome {
         match self.find(name) {
             Some(tool) => tool.run(ctx, args),

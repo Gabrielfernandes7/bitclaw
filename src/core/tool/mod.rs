@@ -92,6 +92,12 @@ pub trait Tool {
         false
     }
 
+    // Se chamar de novo com os mesmos argumentos, sem alteração no meio, devolve o mesmo resultado
+    // e não tem efeito colateral (ex.: ler e listar). O agente não repete essas chamadas no turno.
+    fn idempotent(&self) -> bool {
+        false
+    }
+
     fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome;
 }
 

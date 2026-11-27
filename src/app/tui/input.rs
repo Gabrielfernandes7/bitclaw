@@ -302,6 +302,7 @@ impl App {
             _ if command.is_some_and(|c| c.name == "/temp") => self.temperature_command(arg)?,
             _ if command.is_some_and(|c| c.name == "/effort") => self.effort_command(arg)?,
             _ if command.is_some_and(|c| c.name == "/init") => self.init_command()?,
+            _ if command.is_some_and(|c| c.name == "/skill") => self.skill_command(arg)?,
             _ if command.is_some_and(|c| c.name == "/skills") => {
                 if self.settings.skills.is_empty() {
                     self.print(vec![note("nenhuma skill carregada."), Line::default()])?;
@@ -376,6 +377,67 @@ impl App {
         let _ = self.commands.send(Command::Init);
         self.work = Some(Work::new("montando AGENTS.md"));
         Ok(())
+    }
+
+    // `/skill install <origem>` baixa e mostra a prévia; `/skill yes` instala; `/skill no` descarta.
+    pub(super) fn skill_command(&mut self, arg: &str) -> io::Result<()> {
+        let (sub, rest) = arg.split_once(char::is_whitespace).map_or((arg, ""), |(s, r)| (s, r.trim()));
+        let lines = match sub {
+            "install" | "instalar" => match skill_install::parse_args(rest) {
+                _ if self.skill_job.is_some() => vec![note("já estou baixando uma skill; espere terminar.")],
+                Err(e) => vec![Line::from(Span::styled(format!("  {e}"), fg(YELLOW)))],
+                Ok(spec) => {
+                    self.skill_pending = None;
+                    let (tx, rx) = mpsc::channel();
+                    let shown = spec.url.clone();
+                    thread::spawn(move || {
+                        let _ = tx.send(skill_install::stage(&spec));
+                    });
+                    self.skill_job = Some(rx);
+                    vec![note(&format!("baixando {shown}…"))]
+                }
+            },
+            "yes" | "sim" | "y" => match self.skill_pending.take() {
+                None => vec![note("nenhuma skill esperando aprovação. Use /skill install <origem>.")],
+                Some(staged) => match skill_install::install(&staged, &self.settings.root) {
+                    Ok(dest) => vec![
+                        note(&format!("skill {} instalada em {}.", staged.skill.name, dest.display())),
+                        note("ela aparece em /skills quando o BitClaw for aberto de novo."),
+                    ],
+                    Err(e) => vec![Line::from(Span::styled(format!("  não instalei: {e}"), fg(RED)))],
+                },
+            },
+            "no" | "não" | "nao" | "n" => match self.skill_pending.take() {
+                None => vec![note("nenhuma skill esperando aprovação.")],
+                Some(staged) => vec![note(&format!("skill {} descartada; nada foi instalado.", staged.skill.name))],
+            },
+            _ => vec![note(skill_install::USAGE), note("depois: /skill yes para instalar ou /skill no para descartar.")],
+        };
+        let mut lines = lines;
+        lines.push(Line::default());
+        self.print(lines)
+    }
+
+    // Quando o download termina, mostra a prévia e guarda a skill até o usuário responder.
+    pub(super) fn poll_skill_job(&mut self) -> io::Result<()> {
+        let Some(rx) = &self.skill_job else { return Ok(()) };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return Ok(()),
+            Err(TryRecvError::Disconnected) => Err("o download terminou sem resposta".to_string()),
+        };
+        self.skill_job = None;
+        let mut lines: Vec<Line<'static>> = match result {
+            Ok(staged) => {
+                let mut lines: Vec<Line<'static>> = skill_install::preview(&staged).iter().map(|l| note(l)).collect();
+                lines.push(Line::from(Span::styled("  /skill yes instala · /skill no descarta", bold(YELLOW))));
+                self.skill_pending = Some(staged);
+                lines
+            }
+            Err(e) => vec![Line::from(Span::styled(format!("  {e}"), fg(RED)))],
+        };
+        lines.push(Line::default());
+        self.print(lines)
     }
 
     // `/restart-dev`: recompila e, se deu certo, sai para o `run` reabrir o binário novo. Se a compilação

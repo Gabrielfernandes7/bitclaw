@@ -39,6 +39,10 @@ impl Tool for GrepFiles {
         )
     }
 
+    fn idempotent(&self) -> bool {
+        true
+    }
+
     fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {
         wrap(grep(ctx.root, args).map(Outcome::Done))
     }

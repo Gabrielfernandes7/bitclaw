@@ -113,12 +113,28 @@ fn run() -> Result<(), String> {
         Some(d) => Some(std::env::current_dir().map_err(|e| e.to_string())?.join(d)),
         None => None,
     };
-    let (project_skills, ignored) = match &skills_path {
+    let (mut project_skills, mut ignored) = match &skills_path {
         Some(p) => skills::load_with_ignored(p)?,
         None => (Vec::new(), Vec::new()),
     };
+    // Skills baixadas com `/skill install` ficam em `.bitclaw/skills`, dentro do projeto. A do projeto
+    // prevalece se o nome se repete.
+    let (installed, installed_ignored) = skills::load_with_ignored(&root.join(app::skill_install::INSTALL_DIR))?;
+    ignored.extend(installed_ignored);
+    for skill in installed {
+        if project_skills.iter().any(|s| s.name == skill.name) {
+            ignored.push(format!("{} (baixada, mas o projeto já tem uma skill com esse nome)", skill.name));
+        } else {
+            project_skills.push(skill);
+        }
+    }
     let skills = skills::with_builtins(project_skills);
-    let mut info = vec![format!("projeto {}", root.display()), provider.model_line(&cfg, &default_info)];
+    let provider_label = provider.label().to_string();
+    let model_details = provider.model_details(&default_info);
+    let mut info = vec![
+        app::header::project_line(&root),
+        app::header::model_line(&cfg.model.name, start_effort, &provider_label, &model_details, cfg.model.context_window),
+    ];
     info.extend(provider.notices.iter().cloned());
     // Os nomes das skills não vão para a tela da TUI (o painel `/skills` os mostra). O modo simples os lista.
     let mut skill_info = Vec::new();
@@ -152,6 +168,8 @@ fn run() -> Result<(), String> {
         let settings = app::tui::Settings {
             title: cfg.name.clone(),
             info,
+            provider: provider_label,
+            details: model_details,
             skills: skills.clone(),
             skills_off: Arc::clone(&skills_off),
             model: Arc::clone(&active),
