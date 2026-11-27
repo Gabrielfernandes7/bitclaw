@@ -37,6 +37,16 @@ impl Cmd {
     }
 }
 
+// Comandos que o menu e o `/help` mostram. `/restart-dev` só aparece com o código-fonte por perto:
+// num binário instalado ele não tem o que recompilar. Digitado mesmo assim, explica por quê.
+pub(super) fn visible() -> impl Iterator<Item = &'static Cmd> {
+    visible_with(super::restart::available())
+}
+
+fn visible_with(has_source: bool) -> impl Iterator<Item = &'static Cmd> {
+    COMMANDS.iter().filter(move |c| c.name != "/restart-dev" || has_source)
+}
+
 // Comandos que aceitam um argumento depois do nome (`/model <id>`, `/effort <nível>`).
 pub(super) const ARG_COMMANDS: &[&str] = &["/model", "/effort", "/context", "/temp", "/skill"];
 
@@ -204,5 +214,13 @@ mod tests {
         assert_eq!(keyword_ranges("/efort"), vec![], "comando desconhecido não é destacado");
         assert_eq!(keyword_ranges("model load"), vec![], "sem a barra, é texto comum");
         assert_eq!(keyword_ranges("/effort load"), vec![(0, 7)], "load só é subcomando de /model");
+    }
+
+    #[test]
+    fn restart_dev_is_listed_only_with_the_source_around() {
+        let names = |src| visible_with(src).map(|c| c.name).collect::<Vec<_>>();
+        assert!(names(true).contains(&"/restart-dev"));
+        assert!(!names(false).contains(&"/restart-dev"));
+        assert_eq!(names(false).len(), COMMANDS.len() - 1, "só ele sai");
     }
 }

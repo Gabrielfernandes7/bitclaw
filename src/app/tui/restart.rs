@@ -17,6 +17,12 @@ fn source_dir() -> Result<PathBuf, String> {
     }
 }
 
+// Se há código-fonte para recompilar. Verificado uma vez: a pasta não aparece no meio da sessão.
+pub(super) fn available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| source_dir().is_ok())
+}
+
 // Recompila com o mesmo perfil do binário em execução. A saída do cargo é capturada para não
 // bagunçar o terminal; em caso de erro, devolve o fim dela.
 pub(super) fn build() -> Result<(), String> {
