@@ -152,8 +152,8 @@ mod tests {
 
     #[test]
     fn openrouter_without_the_key_variable_names_it() {
-        let c = cfg("provider = \"openrouter\"", "[openrouter]\napi_key_env = \"BITCLAW_TESTE_SEM_CHAVE\"\n");
-        let err = Provider::connect(&c, None).err().unwrap();
+        // Sem arquivo de chave: o teste não depende da chave guardada em ~/.config/bitclaw de quem roda.
+        let err = openrouter::ApiKey::from_env_or_file("BITCLAW_TESTE_SEM_CHAVE", None).err().unwrap();
         assert!(err.contains("BITCLAW_TESTE_SEM_CHAVE"), "{err}");
     }
 }

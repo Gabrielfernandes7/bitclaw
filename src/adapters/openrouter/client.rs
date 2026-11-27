@@ -63,12 +63,14 @@ impl Client {
     }
 }
 
-// Pedido de raciocínio: só modelos com níveis, e só quando o usuário ligou. Desligado, o campo é omitido
-// e o modelo faz o que faz por padrão.
+// Pedido de raciocínio: só modelos com níveis. Desligado, pede `effort: "none"`: sem isso o modelo raciocina
+// por padrão e o texto chega mesmo com o rótulo "thinking off". Modelos de raciocínio obrigatório rejeitam
+// `none`; o catálogo ainda não lê essa marca, então o erro do provedor aparece como está.
 fn reasoning_value(caps: &ModelCapabilities, effort: Effort) -> Option<Value> {
     match (&caps.reasoning, effort) {
         (Reasoning::Levels(_), Effort::Low | Effort::Medium | Effort::High) => Some(json!({"effort": effort.as_str()})),
         (Reasoning::Levels(_), Effort::On) => Some(json!({"effort": "medium"})),
+        (Reasoning::Levels(_), Effort::Off) => Some(json!({"effort": "none"})),
         _ => None,
     }
 }
@@ -380,7 +382,7 @@ mod tests {
     #[test]
     fn reasoning_is_requested_only_for_models_with_levels_and_only_when_on() {
         assert_eq!(reasoning_value(&levels(), Effort::High), Some(json!({"effort": "high"})));
-        assert_eq!(reasoning_value(&levels(), Effort::Off), None);
+        assert_eq!(reasoning_value(&levels(), Effort::Off), Some(json!({"effort": "none"})));
         assert_eq!(reasoning_value(&ModelCapabilities::unknown(), Effort::High), None);
     }
 }
