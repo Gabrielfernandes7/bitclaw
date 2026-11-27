@@ -155,7 +155,7 @@ fn mutating_tools_are_marked() {
 #[test]
 fn plan_mode_keeps_only_read_only_tools() {
     let names = crate::toolkit::default_registry().read_only().names();
-    assert_eq!(names, vec!["list_dir", "read_file", "grep_files", "find_files"], "só leitura, na ordem do catálogo");
+    assert_eq!(names, vec!["list_dir", "read_file", "grep_files", "find_files", "run_command"], "só leitura, na ordem do catálogo");
     assert!(!names.contains(&"run_script"), "script pode alterar qualquer coisa: fica fora do modo Plan");
 }
 

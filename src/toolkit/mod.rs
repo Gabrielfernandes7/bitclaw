@@ -4,6 +4,7 @@
 //! com `Registry::with_tool`, sem tocar no core.
 
 pub mod claims;
+pub mod command;
 pub mod fs;
 pub mod script;
 pub mod verify;
@@ -12,7 +13,7 @@ use crate::core::tool::{Registry, Tool};
 
 // Nomes das ferramentas embutidas, na ordem padrão.
 pub const BUILTIN_TOOLS: &[&str] =
-    &["list_dir", "read_file", "grep_files", "find_files", "edit_file", "create_file", "create_dir", "delete_file", "run_script"];
+    &["list_dir", "read_file", "grep_files", "find_files", "edit_file", "create_file", "create_dir", "delete_file", "run_script", "run_command"];
 
 // Constrói uma ferramenta embutida pelo nome. Nome desconhecido devolve `None`.
 pub fn builtin_catalog(name: &str) -> Option<Box<dyn Tool>> {
@@ -26,6 +27,7 @@ pub fn builtin_catalog(name: &str) -> Option<Box<dyn Tool>> {
         "create_dir" => Some(Box::new(fs::CreateDir)),
         "delete_file" => Some(Box::new(fs::DeleteFile)),
         "run_script" => Some(Box::new(script::RunScript)),
+        "run_command" => Some(Box::new(command::RunCommand)),
         _ => None,
     }
 }
