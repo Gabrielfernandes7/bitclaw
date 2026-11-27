@@ -38,9 +38,37 @@ impl Tool for ReadFile {
         )
     }
 
+    fn idempotent(&self) -> bool {
+        true
+    }
+
     fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {
         wrap(read_file(ctx.root, args).map(Outcome::Done))
     }
+}
+
+// Nomes da mesma pasta que o modelo provavelmente quis dizer: o mesmo nome sem extensão (README → README.md)
+// ou com outra caixa (readme.md → README.md). Devolve caminhos relativos ao projeto, no máximo três.
+fn similar_names(path: &Path, rel: &str) -> Vec<String> {
+    let (Some(dir), Some(wanted)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else { return Vec::new() };
+    let wanted = wanted.to_lowercase();
+    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
+    let prefix = Path::new(rel).parent().filter(|p| !p.as_os_str().is_empty());
+    let mut found: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| {
+            let lower = name.to_lowercase();
+            lower == wanted || lower.strip_prefix(&wanted).is_some_and(|rest| rest.starts_with('.'))
+        })
+        .map(|name| match prefix {
+            Some(p) => p.join(&name).to_string_lossy().into_owned(),
+            None => name,
+        })
+        .collect();
+    found.sort();
+    found.truncate(3);
+    found
 }
 
 // Número de linha vindo do modelo: aceita inteiro ou texto numérico ("10").
@@ -61,8 +89,10 @@ fn read_file(root: &Path, args: &Value) -> Result<String, String> {
         return Err(format!("'{rel}' é uma pasta, não um arquivo. Use list_dir para ver o que tem dentro dela"));
     }
     if !path.exists() {
+        let similar = similar_names(&path, rel);
+        let didyoumean = if similar.is_empty() { String::new() } else { format!(" Você quis dizer: {}?", similar.join(", ")) };
         return Err(format!(
-            "'{rel}' não existe. Para criar um arquivo novo, chame create_file direto, sem ler antes; para achar um arquivo, use list_dir ou grep_files"
+            "'{rel}' não existe.{didyoumean} Use list_dir para ver o que há na pasta ou grep_files para achar o arquivo"
         ));
     }
     let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;

@@ -246,5 +246,21 @@ fn read_file_errors_say_what_to_do_instead() {
     let Outcome::Error(dir) = run(&r, "read_file", json!({"path": "src"})) else { panic!() };
     assert!(dir.contains("é uma pasta") && dir.contains("list_dir"), "{dir}");
     let Outcome::Error(missing) = run(&r, "read_file", json!({"path": "novo.py"})) else { panic!() };
-    assert!(missing.contains("não existe") && missing.contains("create_file"), "{missing}");
+    assert!(missing.contains("não existe") && missing.contains("list_dir"), "{missing}");
+    assert!(!missing.contains("create_file"), "o erro de leitura não mistura instruções de outra ferramenta: {missing}");
+    assert!(!missing.contains("Você quis dizer"), "sem nome parecido, não sugere nada: {missing}");
+}
+
+#[test]
+fn read_file_suggests_the_name_with_extension() {
+    let r = root("read-suggest");
+    fs::write(r.join("README.md"), "oi").unwrap();
+    fs::create_dir(r.join("docs")).unwrap();
+    fs::write(r.join("docs/Guia.md"), "oi").unwrap();
+    let Outcome::Error(a) = run(&r, "read_file", json!({"path": "README"})) else { panic!() };
+    assert!(a.contains("Você quis dizer: README.md?"), "{a}");
+    let Outcome::Error(b) = run(&r, "read_file", json!({"path": "docs/guia"})) else { panic!() };
+    assert!(b.contains("docs/Guia.md"), "{b}");
+    let Outcome::Error(c) = run(&r, "read_file", json!({"path": "readme"})) else { panic!() };
+    assert!(c.contains("README.md"), "{c}");
 }
