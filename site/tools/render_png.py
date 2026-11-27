@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Gera os PNGs do site a partir dos SVGs aprovados. Só macOS (usa `qlmanage` e `sips`).
+"""Gera os PNGs do site a partir dos SVGs de `assets/`. Só macOS (usa `qlmanage` e `sips`).
 
 Saída (commitada, para o build do Pages não depender de macOS):
   site/static/img/og-image.png        1200x630, imagem de compartilhamento
   site/static/img/favicon-32.png      32x32
   site/static/img/apple-touch-icon.png 180x180
-  site/static/img/png/bricks-*.png    as ilustrações, em 2x
+  site/static/img/icon-512.png        512x512
+  site/static/img/png/bitclaw-bricks.png  assets/bitclaw-bricks.svg em 2x
 
 O `qlmanage` só gera miniaturas quadradas; por isso cada SVG é embrulhado num SVG
 quadrado e depois cortado com `sips` na proporção original.
@@ -43,78 +44,79 @@ def render(svg_markup: str, width: int, height: int, dest: Path, scale_to: int |
     k = scale_to / width
     with tempfile.TemporaryDirectory() as tmp:
         t = Path(tmp)
+        px = int(side * k)
+        hi = max(px, 1024)
         sq = (
-            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {side} {side}" width="{side}" height="{side}">'
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {side} {side}" width="{hi}" height="{hi}">'
             f'<rect width="{side}" height="{side}" fill="#171717"/>'
             f'<svg x="0" y="{(side - height) / 2}" width="{width}" height="{height}" viewBox="0 0 {width} {height}">'
             f"{svg_markup}</svg></svg>"
         )
         src = t / "in.svg"
         src.write_text(sq)
-        px = int(side * k)
-        run("qlmanage", "-t", "-s", str(px), "-o", str(t), str(src))
+        # O qlmanage usa o tamanho do próprio SVG e deixa uma faixa branca se ele for menor que a miniatura:
+        # o SVG já nasce grande (`hi`), é cortado na proporção e só então reduzido ao tamanho pedido.
+        hi_h = round(height * hi / side)
+        run("qlmanage", "-t", "-s", str(hi), "-o", str(t), str(src))
         png = t / "in.svg.png"
-        out_h = int(height * k)
-        run("sips", "--cropToHeightWidth", str(out_h), str(px), str(png))
+        run("sips", "--cropToHeightWidth", str(hi_h), str(hi), str(png))
+        if hi != px:
+            run("sips", "-z", str(round(height * k)), str(px), str(png))
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(png, dest)
 
 
-MASCOT = ROOT / "docs" / "identidade" / "bitclaw-bricks-dark.svg"
-ICON_SIDE = 760  # o mascote (684x624) com folga de ~6% em cada lado
+def crab_runs() -> str:
+    """O mascote de `assets/bitclaw-crab.svg` com as células de uma linha fundidas, sem fresta entre elas."""
+    s = CRAB.read_text()
+    cells = {(int(m[2]) // 24, int(m[1]) // 24) for m in re.finditer(r'x="(\d+)" y="(\d+)" width="24" height="24" fill="#FFCC00"', s)}
+    out = []
+    for r in range(6):
+        c = 0
+        while c < 10:
+            if (r, c) not in cells:
+                c += 1
+                continue
+            e = c
+            while (r, e) in cells:
+                e += 1
+            out.append(f'<rect x="{c * 24 - 0.5}" y="{r * 24 - 0.5}" width="{(e - c) * 24 + 1}" height="25" fill="#FFCC00"/>')
+            c = e
+    return "".join(out)
+
+
+ICON_SIDE = 264
 
 
 def icon_svg() -> str:
-    """O mascote de peças no meio de um quadrado escuro, para favicon e ícones."""
-    w, h, body = inner(MASCOT)
-    ox, oy = (ICON_SIDE - w) / 2, (ICON_SIDE - h) / 2 + 6
+    """O mascote inteiro, centrado num quadrado escuro com folga igual dos quatro lados."""
+    ox, oy = (ICON_SIDE - 240) / 2, (ICON_SIDE - 144) / 2
     return (
-        f'<rect width="{ICON_SIDE}" height="{ICON_SIDE}" rx="120" fill="#141416"/>'
-        f'<svg x="{ox}" y="{oy}" width="{w}" height="{h}" viewBox="0 0 {w:g} {h:g}">{body}</svg>'
-    )
-
-
-def crab_cells() -> str:
-    s = CRAB.read_text()
-    return "".join(
-        f'<rect x="{m[1]}" y="{m[2]}" width="24" height="24" fill="#FFCC00" stroke="#FFCC00" stroke-width="1"/>'
-        for m in re.finditer(r'x="(\d+)" y="(\d+)" width="24" height="24" fill="#FFCC00"', s)
+        f'<rect width="{ICON_SIDE}" height="{ICON_SIDE}" rx="48" fill="#171717"/>'
+        f'<g transform="translate({ox} {oy})">{crab_runs()}</g>'
     )
 
 
 def main() -> None:
-    # ilustrações aprovadas
-    for name in ("bricks-cena", "bricks-feliz", "bricks-pecas"):
-        w, h, body = inner(ROOT / "docs" / "identidade" / f"{name}.svg")
-        render(body, int(w), int(h), OUT / "png" / f"{name}.png", scale_to=int(w) * 2 if w < 1000 else int(w))
+    w, h, body = inner(ROOT / "assets" / "bitclaw-bricks.svg")
+    render(body, int(w), int(h), OUT / "png" / "bitclaw-bricks.png", scale_to=int(w) * 2)
 
-    # og-image: nome e frase à esquerda; à direita a cena aprovada INTEIRA (caranguejo, peça vermelha,
-    # faíscas e a pilha), dentro de um painel do tamanho dela, sem nada cortado.
-    w, h, body = inner(ROOT / "docs" / "identidade" / "bricks-cena.svg")
-    panel_w, panel_h = 640, 630
-    vb_w = 950.0  # largura da cena que cabe no painel (a linha do chão sai pelos lados, de propósito)
-    vb_x = 80.0
-    vb_h = vb_w * panel_h / panel_w
-    vb_y = (h - vb_h) / 2
     font = "Helvetica Neue, Arial, sans-serif"
+    panel_w = 600
+    scale = panel_w / w
     og = (
         '<rect width="1200" height="630" fill="#171717"/>'
         '<g fill="#FFCC00"><rect x="64" y="70" width="34" height="14" rx="5"/><rect x="108" y="70" width="34" height="14" rx="5"/></g>'
         f'<text x="60" y="270" font-family="{font}" font-weight="900" font-size="132" letter-spacing="-6" fill="#F5F3EB">bit<tspan fill="#FFCC00">claw</tspan></text>'
         f'<text x="64" y="345" font-family="{font}" font-weight="700" font-size="34" fill="#F5F3EB">Um agente de IA local,</text>'
         f'<text x="64" y="390" font-family="{font}" font-weight="700" font-size="34" fill="#FFCC00">montado peça por peça.</text>'
-        f'<text x="64" y="560" font-family="Menlo, monospace" font-size="24" fill="#A8A399">Rust · Ollama · documentação</text>'
-        f'<svg x="{1200 - panel_w}" y="0" width="{panel_w}" height="{panel_h}" viewBox="{vb_x} {vb_y} {vb_w} {vb_h}">'
-        f'<rect x="-2000" y="-2000" width="6000" height="6000" fill="#0C0C0E"/>{body}</svg>'
+        '<text x="64" y="560" font-family="Menlo, monospace" font-size="24" fill="#A8A399">Rust · Ollama · documentação</text>'
+        f'<g transform="translate({1200 - panel_w - 40} {(630 - h * scale) / 2}) scale({scale})"><svg width="{w}" height="{h}" viewBox="0 0 {w:g} {h:g}">{body}</svg></g>'
     )
     render(og, 1200, 630, OUT / "og-image.png")
 
-    # ícones: o caranguejo de peças (o mesmo da galeria), inteiro, num quadrado com folga ao redor
     for name, size in (("favicon-32.png", 32), ("apple-touch-icon.png", 180), ("icon-512.png", 512)):
         render(icon_svg(), ICON_SIDE, ICON_SIDE, OUT / name, scale_to=size)
-    (OUT / "favicon.svg").write_text(
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {ICON_SIDE} {ICON_SIDE}">{icon_svg()}</svg>\n'
-    )
     print("PNGs em", OUT)
 
 

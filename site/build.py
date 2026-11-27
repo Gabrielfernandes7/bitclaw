@@ -5,7 +5,7 @@ Fontes:
   - `site/content/*.md`: páginas escritas para o site.
   - `docs/*.md`: documentos do próprio repositório, publicados como estão
     (uma única fonte: o que muda em `docs/` muda no site).
-  - `assets/` e `docs/identidade/`: os SVGs aprovados da identidade visual.
+  - `assets/`: os SVGs da identidade visual.
 
 Uso: python3 site/build.py [--out _site] [--base /bitclaw/]
 Dependências: `pip install -r site/requirements.txt` (markdown, pygments).
@@ -73,11 +73,6 @@ NAV = [
 SVGS = {
     "bitclaw-crab.svg": "assets/bitclaw-crab.svg",
     "bitclaw-bricks.svg": "assets/bitclaw-bricks.svg",
-    "bricks-cena.svg": "docs/identidade/bricks-cena.svg",
-    "bricks-feliz.svg": "docs/identidade/bricks-feliz.svg",
-    "bricks-pecas.svg": "docs/identidade/bricks-pecas.svg",
-    "bitclaw-bricks-dark.svg": "docs/identidade/bitclaw-bricks-dark.svg",
-    "bitclaw-ambar.svg": "docs/identidade/bitclaw-ambar.svg",
     "lua.svg": "assets/lua.svg",
 }
 
@@ -131,9 +126,45 @@ def root_prefix(url: str) -> str:
     return "../" * url.count("/")
 
 
-def logo(cls: str, prefix: str) -> str:
-    """O caranguejo de peças aprovado (`bitclaw-bricks-dark.svg`), sem pixel art."""
-    return f'<img class="{cls}" src="{prefix}img/bitclaw-bricks-dark.svg" alt="" width="36" height="33">'
+def crab_grid() -> list[list[str]]:
+    """Lê o mapa 10x6 de `assets/bitclaw-crab.svg` (fonte única da arte)."""
+    svg = (ROOT / "assets/bitclaw-crab.svg").read_text()
+    cells = {
+        (int(m[2]) // 24, int(m[1]) // 24)
+        for m in re.finditer(r'x="(\d+)" y="(\d+)" width="24" height="24" fill="#FFCC00"', svg)
+    }
+    return [["#" if (r, c) in cells else "." for c in range(10)] for r in range(6)]
+
+
+def crab_svg(cls: str = "crab", animated: bool = True) -> str:
+    """O caranguejo em pixels como SVG inline; olho é buraco, como na arte aprovada."""
+    grid = crab_grid()
+    pegs = {(0, 3): "p0", (0, 6): "p1"}
+    claws = {"cl": [(0, 0), (0, 1), (1, 0), (1, 1)], "cr": [(0, 8), (0, 9), (1, 8), (1, 9)]}
+    parts = []
+    for r, row in enumerate(grid):
+        for c, v in enumerate(row):
+            if v != "#":
+                continue
+            klass = ""
+            if (r, c) in pegs:
+                klass = f' class="{pegs[(r, c)]}"'
+            elif (r, c) in claws["cl"]:
+                klass = ' class="cl"'
+            elif (r, c) in claws["cr"]:
+                klass = ' class="cr"'
+            elif r == 5:
+                klass = ' class="leg"'
+            parts.append(f'<rect x="{c}" y="{r}" width="1" height="1"{klass}/>')
+    eyes = "".join(
+        f'<rect class="lid" x="{c}" y="2" width="1" height="1"/>' for c in (2, 7)
+    )
+    anim = " anim" if animated else ""
+    return (
+        f'<svg class="crab {cls}{anim}" viewBox="0 0 10 6" role="img" aria-label="BitClaw, caranguejo de peças de montar" '
+        f'shape-rendering="crispEdges" xmlns="http://www.w3.org/2000/svg">'
+        f'<g class="body">{"".join(parts)}{eyes}</g></svg>'
+    )
 
 
 class Builder:
@@ -238,7 +269,7 @@ class Builder:
   <button class="burger" aria-label="Abrir menu" aria-controls="side" data-burger>
     <span></span><span></span><span></span></button>
   <a class="brand" href="{prefix}index.html" aria-label="BitClaw, início">
-    {logo("brand-crab", prefix)}<span class="wordmark">bit<b>claw</b></span></a>
+    {crab_svg("brand-crab", animated=False)}<span class="wordmark">bit<b>claw</b></span></a>
   <nav class="top-nav" aria-label="Principal">
     <a href="{prefix}inicio/filosofia.html"{' aria-current="page"' if current == 'Começar' else ''}>Começar</a>
     <a href="{prefix}guia/prompt.html"{' aria-current="page"' if current == 'Usar' else ''}>Usar</a>
@@ -293,7 +324,7 @@ class Builder:
         return f"""<footer class="foot">
   <div class="studs" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
   <div class="foot-in">
-    <div>{logo("foot-crab", prefix)}<span class="wordmark">bit<b>claw</b></span></div>
+    <div>{crab_svg("foot-crab", animated=False)}<span class="wordmark">bit<b>claw</b></span></div>
     <p>Um agente de IA local e enxuto, montado peça por peça. Feito em Rust.</p>
     <p class="muted"><a href="{REPO_URL}" rel="noopener">GitHub</a> · <a href="{REPO_URL}/releases" rel="noopener">Releases</a> · <a href="{REPO_URL}/issues" rel="noopener">Issues</a> · <a href="{BLOB}LICENSE" rel="noopener">Licença (PolyForm Noncommercial)</a></p>
   </div>
@@ -420,9 +451,11 @@ class Builder:
     </div>
     <div class="hero-art">
       <div class="stage">
-        <img class="hero-img" src="img/bricks-cena.svg" alt="O BitClaw, caranguejo de peças de montar amarelas, encaixando uma peça vermelha na pinça" width="1200" height="760">
+        {crab_svg("hero-crab")}
+        <span class="peg r" aria-hidden="true"></span><span class="peg b" aria-hidden="true"></span>
+        <span class="peg g" aria-hidden="true"></span><span class="peg p" aria-hidden="true"></span>
       </div>
-      <p class="caption">O BitClaw encaixando a próxima peça: o core não muda, o agente novo entra.</p>
+      <p class="caption">O mascote do terminal, no navegador: ele pisca, e os dois pinos contam em binário enquanto pensa.</p>
     </div>
   </div>
   <div class="studs wide" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
@@ -444,7 +477,7 @@ class Builder:
       <p><a class="more" href="inicio/filosofia.html">Filosofia completa →</a></p>
     </div>
     <figure class="shot">
-      <img src="img/bricks-pecas.svg" alt="Peças de montar coloridas do BitClaw" loading="lazy">
+      <img src="img/bitclaw-bricks.svg" alt="O BitClaw, em pixels, encaixando peças coloridas" loading="lazy">
     </figure>
   </div>
 </section>
@@ -464,10 +497,9 @@ class Builder:
 <section class="band dark">
   <div class="wrap">
     <h2 class="sec">A marca</h2>
-    <p class="sec-sub">Um caranguejo formado por brinquedo de montar amarelo. Olho é buraco; os dois pinos do topo são a assinatura.</p>
+    <p class="sec-sub">Um caranguejo de peças de montar amarelas, em pixels. Olho é buraco; os dois pinos do topo são a assinatura.</p>
     <div class="gallery">
-      <figure><img src="img/bricks-cena.svg" alt="O caranguejo de peças encaixando uma peça vermelha" loading="lazy"></figure>
-      <figure><img src="img/bricks-feliz.svg" alt="Variações do mascote: feliz, pinças abertas e piscando" loading="lazy"></figure>
+      <figure><img src="img/bitclaw-bricks.svg" alt="O BitClaw, em pixels, encaixando peças coloridas" loading="lazy"></figure>
     </div>
     <p><a class="more" href="marca/galeria.html">Ver a galeria →</a></p>
   </div>
@@ -497,7 +529,7 @@ class Builder:
 <body class="home">
 {self.header(prefix)}
 <main id="main"><section class="band"><div class="wrap nf">
-  {logo("hero-crab small", prefix)}
+  {crab_svg("hero-crab small")}
   <h1>404: faltou uma peça.</h1>
   <p>Esta página não existe (ou mudou de lugar).</p>
   <p><a class="btn primary" href="{prefix}index.html">Voltar ao início</a></p>
@@ -531,6 +563,7 @@ class Builder:
         img.mkdir(exist_ok=True)
         for name, src in SVGS.items():
             shutil.copy(ROOT / src, img / name)
+        (img / "favicon.svg").write_text(favicon_svg())
         for src, rel in self.copied_images.items():
             dest = img / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -549,6 +582,27 @@ class Builder:
         ]
         (self.out / "search-index.json").write_text(json.dumps(index, ensure_ascii=False))
         print(f"{len(self.pages)} páginas + início em {self.out}")
+
+
+def favicon_svg() -> str:
+    grid = crab_grid()
+    rects = ""
+    for r, row in enumerate(grid):
+        c = 0
+        while c < 10:
+            if row[c] != "#":
+                c += 1
+                continue
+            e = c
+            while e < 10 and row[e] == "#":
+                e += 1
+            rects += f'<rect x="{c - 0.02}" y="{r - 0.02}" width="{e - c + 0.04}" height="1.04"/>'
+            c = e
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="-0.5 -2.5 11 11" shape-rendering="crispEdges">'
+        '<rect x="-0.5" y="-2.5" width="11" height="11" rx="2" fill="#171717"/>'
+        f'<g fill="#FFCC00">{rects}</g></svg>'
+    )
 
 
 def main() -> int:

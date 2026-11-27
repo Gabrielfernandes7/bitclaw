@@ -7,9 +7,9 @@ BitClaw é um **Agent Core** experimental, modular e extensível: uma fundação
 
 O nome e o mascote contam a ideia. O BitClaw é um caranguejo **feito de peças de montar**, e o software segue o mesmo princípio: cada parte (modelo, ferramenta, interface) é uma peça que se encaixa e se troca sem desmontar o resto.
 
-<figure class="fig dark">
-  <img src="@img/bricks-cena.svg" alt="O caranguejo de peças amarelas encaixando uma peça vermelha na pinça">
-  <figcaption>A peça vermelha é o próximo agente: encaixa no core sem que o core mude.</figcaption>
+<figure class="fig">
+  <img src="@img/bitclaw-bricks.svg" alt="O BitClaw, em pixels, encaixando peças coloridas">
+  <figcaption>As peças coloridas são o que encaixa no corpo amarelo: um modelo, uma ferramenta, um agente novo.</figcaption>
 </figure>
 
 ## A régua
