@@ -71,52 +71,48 @@ fn read_line(input: &mut dyn BufRead) -> io::Result<Option<String>> {
     Ok((input.read_line(&mut line)? > 0).then(|| line.trim().to_string()))
 }
 
-// Faz as perguntas. `None` = a pessoa dispensou (digitou `pular` ou fechou a entrada). Enter vazio
+// Faz as perguntas (versão sem tela, para os testes). `None` = a pessoa dispensou (digitou `pular` ou fechou a entrada). Enter vazio
 // fica com o padrão de cada pergunta.
+#[cfg(test)]
 pub fn ask(input: &mut dyn BufRead, out: &mut dyn Write) -> io::Result<Option<Answers>> {
-    let mut a = Answers::default();
-    writeln!(out, "Cinco perguntas para eu falar do seu jeito. Enter aceita o padrão; \"{SKIP_WORD}\" dispensa.")?;
+    ask_with(input, out, &mut |_| {})
+}
 
-    write!(out, "1/5 Como devo te chamar? (opcional) ")?;
+// Escreve uma pergunta e lê a resposta. `None` = dispensou (`pular` ou fim da entrada).
+fn question(input: &mut dyn BufRead, out: &mut dyn Write, line: &mut dyn FnMut(usize), text: &str) -> io::Result<Option<String>> {
+    write!(out, "{text}")?;
     out.flush()?;
     let Some(r) = read_line(input)? else { return Ok(None) };
-    if r.eq_ignore_ascii_case(SKIP_WORD) {
-        return Ok(None);
-    }
+    // A linha na tela é a pergunta mais o que foi digitado (o Enter fecha a linha).
+    line(text.chars().count() + r.chars().count());
+    Ok((!r.eq_ignore_ascii_case(SKIP_WORD)).then_some(r))
+}
+
+// Como `ask`, e avisa por `line` quantos caracteres tem cada linha que a tela ganha: a arte do alto da
+// tela precisa saber quantas linhas há abaixo dela (contando as que quebram) para se repintar.
+fn ask_with(input: &mut dyn BufRead, out: &mut dyn Write, line: &mut dyn FnMut(usize)) -> io::Result<Option<Answers>> {
+    let mut a = Answers::default();
+    let intro = format!("Cinco perguntas para eu falar do seu jeito. Enter aceita o padrão; \"{SKIP_WORD}\" dispensa.");
+    writeln!(out, "{intro}")?;
+    line(intro.chars().count());
+
+    let Some(r) = question(input, out, line, "1/5 Como devo te chamar? (opcional) ")? else { return Ok(None) };
     a.name = clean(&r);
 
-    write!(out, "2/5 Em que idioma respondo? [português] ")?;
-    out.flush()?;
-    let Some(r) = read_line(input)? else { return Ok(None) };
-    if r.eq_ignore_ascii_case(SKIP_WORD) {
-        return Ok(None);
-    }
+    let Some(r) = question(input, out, line, "2/5 Em que idioma respondo? [português] ")? else { return Ok(None) };
     if !clean(&r).is_empty() {
         a.language = clean(&r);
     }
 
-    write!(out, "3/5 Respostas: 1 curtas, 2 detalhadas [1] ")?;
-    out.flush()?;
-    let Some(r) = read_line(input)? else { return Ok(None) };
-    if r.eq_ignore_ascii_case(SKIP_WORD) {
-        return Ok(None);
-    }
+    let Some(r) = question(input, out, line, "3/5 Respostas: 1 curtas, 2 detalhadas [1] ")? else { return Ok(None) };
     a.detailed = r == "2";
 
-    write!(out, "4/5 Antes de alterar arquivos: 1 explico em uma frase, 2 vou direto [1] ")?;
-    out.flush()?;
-    let Some(r) = read_line(input)? else { return Ok(None) };
-    if r.eq_ignore_ascii_case(SKIP_WORD) {
+    let Some(r) = question(input, out, line, "4/5 Antes de alterar arquivos: 1 explico em uma frase, 2 vou direto [1] ")? else {
         return Ok(None);
-    }
+    };
     a.plan_first = r != "2";
 
-    write!(out, "5/5 O que você faz, em uma linha? (opcional) ")?;
-    out.flush()?;
-    let Some(r) = read_line(input)? else { return Ok(None) };
-    if r.eq_ignore_ascii_case(SKIP_WORD) {
-        return Ok(None);
-    }
+    let Some(r) = question(input, out, line, "5/5 O que você faz, em uma linha? (opcional) ")? else { return Ok(None) };
     a.about = clean(&r);
     Ok(Some(a))
 }
@@ -143,10 +139,22 @@ pub fn should_ask(root: &Path) -> bool {
     !skipped && load(root).is_none()
 }
 
-// Pergunta no terminal e grava. Devolve uma linha para mostrar à pessoa.
-pub fn run(input: &mut dyn BufRead, out: &mut dyn Write) -> Result<String, String> {
+// Pergunta no terminal e grava, com a tela do SOUL: o BitClaw feliz segurando um coração que pulsa enquanto você responde.
+// Sem terminal, ou com a janela pequena, a arte não aparece e só as perguntas sobram.
+pub fn run_animated(input: &mut dyn BufRead, out: &mut dyn Write, color: bool) -> Result<String, String> {
+    let art = super::soul_art::Art::start(color);
+    let result = run_with(input, out, &mut |chars| {
+        if let Some(a) = &art {
+            a.line(chars);
+        }
+    });
+    drop(art);
+    result
+}
+
+fn run_with(input: &mut dyn BufRead, out: &mut dyn Write, line: &mut dyn FnMut(usize)) -> Result<String, String> {
     let dir = super::update::config_dir().ok_or("sem HOME: não sei onde gravar o SOUL.md")?;
-    let answers = ask(input, out).map_err(|e| e.to_string())?;
+    let answers = ask_with(input, out, line).map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| format!("não consegui criar {}: {e}", dir.display()))?;
     match answers {
         None => {

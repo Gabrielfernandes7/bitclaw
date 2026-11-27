@@ -107,6 +107,28 @@ Para terminais e fontes sem os caracteres de bloco, ou logs que passam por ferra
  /_/ \/ \_\
 ```
 
+### 3.5 Tela do SOUL: feliz, segurando um coração
+
+Em uso (`src/app/soul_art.rs`): aparece no alto das cinco perguntas do SOUL (primeira abertura e `bitclaw soul`) e
+continua batendo enquanto a pessoa responde. Mapa de 14 × 12 pixels, 6 linhas de terminal. O corpo vem de
+`assets/bitclaw-crab.svg`, de olhos fechados (feliz); os braços sobem pelos lados e a mão fecha em volta do
+coração, com a ponta entre os dois pinos do topo. Caranguejo amarelo e coração vermelho (uma cor por desenho).
+
+Inchado (batida) e em repouso, os dois quadros:
+
+```text
+   ▄▄▄██▄▄██▄▄▄        ▄▄  ▄  ▄  ▄▄
+   ▀█▀██████▀█▀        ▀█ ██████ █▀
+    █  ▀██▀  █          █  ▀██▀  █
+    ██▄█▄▄█▄██          ██▄█▄▄█▄██
+    ██████████          ██████████
+     ▄▀█▀▀█▀▄            ▄▀█▀▀█▀▄
+```
+
+O ciclo dura 1,2 s: incha, murcha, incha de novo (lub-dub) e descansa. Em repouso as mãos soltam um pixel; na
+batida o coração encosta nelas. Só aparece num terminal com pelo menos 17 linhas de altura; sem terminal, sem
+espaço ou com a saída redirecionada, só as perguntas aparecem.
+
 ## 4. Por que o mascote pode parecer cortado
 
 Em testes com o `TestBackend` do ratatui (80×24, 100×30, 120×40, 40×12, 30×10 e 24×8), as três linhas e

@@ -106,7 +106,8 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     if args.soul {
-        println!("{}", app::soul::run(&mut io::stdin().lock(), &mut io::stdout())?);
+        let color = !args.no_color && std::env::var_os("NO_COLOR").is_none();
+        println!("{}", app::soul::run_animated(&mut io::stdin().lock(), &mut io::stdout(), color)?);
         return Ok(());
     }
     let color = !args.no_color && std::env::var_os("NO_COLOR").is_none();
@@ -213,7 +214,7 @@ fn run() -> Result<(), String> {
         }
         // Primeira abertura sem SOUL.md: as perguntas vêm depois da boas-vindas e antes da conversa.
         if app::soul::should_ask(&root) {
-            println!("{}", app::soul::run(&mut io::stdin().lock(), &mut io::stdout())?);
+            println!("{}", app::soul::run_animated(&mut io::stdin().lock(), &mut io::stdout(), color)?);
         }
         let settings = app::tui::Settings {
             title: cfg.name.clone(),
