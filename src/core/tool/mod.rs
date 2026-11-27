@@ -3,7 +3,7 @@
 mod approval;
 mod registry;
 
-pub use approval::{Approver, AutoApprover, Preview, PreviewLine};
+pub use approval::{Approver, AutoApprover, Preview, PreviewKind, PreviewLine};
 pub use registry::Registry;
 
 use serde_json::{json, Value};
@@ -80,6 +80,26 @@ impl<'a> ToolContext<'a> {
     }
 }
 
+// O que a ferramenta declara sobre si. O agente, o modo Plan e a aprovação decidem por isto, e não
+// pelo nome da ferramenta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Annotations {
+    // Não altera nada, nem no projeto nem fora dele: pode rodar no modo Plan, sem aprovação.
+    pub read_only: bool,
+    // Remove ou sobrescreve conteúdo que já existia (com cópia em `.bitclaw/backup`, quando há).
+    pub destructive: bool,
+    // Chamar de novo com os mesmos argumentos, sem alteração no meio, devolve o mesmo resultado e não
+    // tem efeito colateral (ex.: ler e listar). O agente não repete essas chamadas no turno.
+    pub idempotent: bool,
+}
+
+impl Default for Annotations {
+    // Sem declaração, a ferramenta é tratada como alteradora e destrutiva: o lado seguro.
+    fn default() -> Self {
+        Self { read_only: false, destructive: true, idempotent: false }
+    }
+}
+
 // Contrato de uma ferramenta: nome, descrição e execução juntos.
 // Adicionar uma ferramenta é implementar esta trait e registrá-la; o loop do agente não muda.
 pub trait Tool {
@@ -87,15 +107,8 @@ pub trait Tool {
 
     fn spec(&self) -> ToolSpec;
 
-    // Se a ferramenta altera arquivos. Usado pelo relatório do turno e pela proteção contra repetição.
-    fn mutates(&self) -> bool {
-        false
-    }
-
-    // Se chamar de novo com os mesmos argumentos, sem alteração no meio, devolve o mesmo resultado
-    // e não tem efeito colateral (ex.: ler e listar). O agente não repete essas chamadas no turno.
-    fn idempotent(&self) -> bool {
-        false
+    fn annotations(&self) -> Annotations {
+        Annotations::default()
     }
 
     fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome;

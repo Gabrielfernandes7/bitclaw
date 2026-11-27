@@ -9,17 +9,32 @@ pub enum PreviewLine {
     Note(String),
 }
 
-// Prévia de uma alteração: título e linhas. O core não a imprime; quem mostra é o `Approver`.
+// O tipo de alteração que a prévia mostra. Uma remoção nunca entra em aprovação em lote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewKind {
+    Change,
+    Removal,
+}
+
+// Prévia de uma alteração: título, linhas e tipo. O core não a imprime; quem mostra é o `Approver`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Preview {
     pub title: String,
     pub lines: Vec<PreviewLine>,
+    pub kind: PreviewKind,
 }
 
 impl Preview {
-    // Remoção de arquivo: a prévia se chama `remover arquivo …`. Fica fora de qualquer aprovação em lote.
+    pub fn new(title: impl Into<String>, lines: Vec<PreviewLine>) -> Self {
+        Self { title: title.into(), lines, kind: PreviewKind::Change }
+    }
+
+    pub fn removal(title: impl Into<String>, lines: Vec<PreviewLine>) -> Self {
+        Self { title: title.into(), lines, kind: PreviewKind::Removal }
+    }
+
     pub fn is_removal(&self) -> bool {
-        self.title.starts_with("remover ")
+        self.kind == PreviewKind::Removal
     }
 }
 
@@ -52,15 +67,10 @@ impl Approver for AutoApprover {
 mod tests {
     use super::*;
 
-    fn preview(title: &str) -> Preview {
-        Preview { title: title.into(), lines: Vec::new() }
-    }
-
     #[test]
-    fn only_removals_are_removals() {
-        assert!(preview("remover arquivo a.txt").is_removal());
-        assert!(!preview("edição proposta em a.txt").is_removal());
-        assert!(!preview("nova pasta docs").is_removal());
-        assert!(!preview("executar scripts/x.sh").is_removal());
+    fn only_removals_are_removals_by_kind_not_by_title() {
+        assert!(Preview::removal("apagar a.txt", Vec::new()).is_removal());
+        assert!(!Preview::new("remover arquivo a.txt", Vec::new()).is_removal(), "o título não decide");
+        assert!(!Preview::new("edição proposta em a.txt", Vec::new()).is_removal());
     }
 }

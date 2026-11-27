@@ -29,8 +29,8 @@ impl Tool for CreateFile {
         )
     }
 
-    fn mutates(&self) -> bool {
-        true
+    fn annotations(&self) -> crate::core::tool::Annotations {
+        crate::core::tool::Annotations { read_only: false, destructive: false, idempotent: false }
     }
 
     fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {
@@ -47,10 +47,7 @@ fn create_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Out
         return Err(format!("{rel} já existe; use edit_file para alterar um arquivo existente"));
     }
 
-    let preview = Preview {
-        title: format!("novo arquivo {rel}"),
-        lines: content.lines().map(|l| PreviewLine::Added(l.to_string())).collect(),
-    };
+    let preview = Preview::new(format!("novo arquivo {rel}"), content.lines().map(|l| PreviewLine::Added(l.to_string())).collect());
     if !approver.approve(&preview) {
         return Ok(Outcome::Refused("usuário recusou a criação; nenhum arquivo foi criado".into()));
     }

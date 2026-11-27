@@ -40,12 +40,38 @@ impl Registry {
         self.tools.iter().map(|t| t.name()).collect()
     }
 
+    // Ferramenta que altera algo (tudo que não declara `read_only`).
     pub fn mutates(&self, name: &str) -> bool {
-        self.find(name).is_some_and(|t| t.mutates())
+        self.find(name).is_some_and(|t| !t.annotations().read_only)
+    }
+
+    // Ferramenta que remove ou sobrescreve conteúdo (e altera).
+    pub fn destructive(&self, name: &str) -> bool {
+        self.find(name).is_some_and(|t| {
+            let a = t.annotations();
+            a.destructive && !a.read_only
+        })
+    }
+
+    // As especificações sem as ferramentas destrutivas: o que o modelo vê antes de olhar o projeto.
+    pub fn specs_without_destructive(&self) -> Vec<ToolSpec> {
+        self.tools
+            .iter()
+            .filter(|t| {
+                let a = t.annotations();
+                a.read_only || !a.destructive
+            })
+            .map(|t| t.spec())
+            .collect()
     }
 
     pub fn idempotent(&self, name: &str) -> bool {
-        self.find(name).is_some_and(|t| t.idempotent())
+        self.find(name).is_some_and(|t| t.annotations().idempotent)
+    }
+
+    // O modo Plan: só as ferramentas que declaram `read_only`. Nada que altera chega ao modelo.
+    pub fn read_only(self) -> Registry {
+        Self::new(self.tools.into_iter().filter(|t| t.annotations().read_only).collect())
     }
 
     pub fn execute(&self, ctx: &ToolContext, name: &str, args: &Value) -> Outcome {

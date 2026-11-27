@@ -49,6 +49,10 @@ impl Tool for Echo {
         ToolSpec::new("echo", "ecoa", json!({"type": "object", "properties": {}}))
     }
 
+    fn annotations(&self) -> crate::core::tool::Annotations {
+        crate::core::tool::Annotations { read_only: true, destructive: false, idempotent: false }
+    }
+
     fn run(&self, _ctx: &ToolContext, args: &Value) -> Outcome {
         Outcome::Done(args.get("texto").and_then(Value::as_str).unwrap_or("").to_string())
     }
@@ -698,8 +702,8 @@ impl Tool for Peek {
         ToolSpec::new("peek", "lê", json!({"type": "object", "properties": {}}))
     }
 
-    fn idempotent(&self) -> bool {
-        true
+    fn annotations(&self) -> crate::core::tool::Annotations {
+        crate::core::tool::Annotations { read_only: true, destructive: false, idempotent: true }
     }
 
     fn run(&self, _ctx: &ToolContext, _args: &Value) -> Outcome {

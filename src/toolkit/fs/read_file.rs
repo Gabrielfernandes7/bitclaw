@@ -38,8 +38,8 @@ impl Tool for ReadFile {
         )
     }
 
-    fn idempotent(&self) -> bool {
-        true
+    fn annotations(&self) -> crate::core::tool::Annotations {
+        crate::core::tool::Annotations { read_only: true, destructive: false, idempotent: true }
     }
 
     fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {
@@ -179,7 +179,7 @@ fn outline_of(content: &str) -> String {
 }
 
 // Declarações de nível de arquivo ou de impl (até um nível de indentação), nas linguagens mais comuns.
-fn is_outline_line(line: &str) -> bool {
+pub(super) fn is_outline_line(line: &str) -> bool {
     let trimmed = line.trim_start();
     let indent = line.len() - trimmed.len();
     if trimmed.starts_with("//!") || trimmed.starts_with("#!") {

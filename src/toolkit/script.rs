@@ -85,7 +85,7 @@ fn run_preview(rel: &str, extra: &[String], content: &str) -> Preview {
     lines.push(PreviewLine::Context(String::new()));
     lines.extend(content.lines().map(|l| PreviewLine::Context(visible(l))));
     lines.push(PreviewLine::Note("o script roda com as suas permissões, sem isolamento: confira o conteúdo antes de aceitar.".into()));
-    Preview { title: format!("executar {rel}"), lines }
+    Preview::new(format!("executar {rel}"), lines)
 }
 
 // Script sem shebang de uma linguagem conhecida: roda com o interpretador da extensão. Sem isso, o sistema

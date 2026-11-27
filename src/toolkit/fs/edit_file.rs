@@ -31,8 +31,8 @@ impl Tool for EditFile {
         )
     }
 
-    fn mutates(&self) -> bool {
-        true
+    fn annotations(&self) -> crate::core::tool::Annotations {
+        crate::core::tool::Annotations { read_only: false, destructive: true, idempotent: false }
     }
 
     fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {

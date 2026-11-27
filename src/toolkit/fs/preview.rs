@@ -19,5 +19,5 @@ pub(super) fn edit_preview(rel: &str, updated: &str, start_line: usize, old: &st
     out.extend(old.lines().map(|l| PreviewLine::Removed(l.to_string())));
     out.extend(new.lines().map(|l| PreviewLine::Added(l.to_string())));
     out.extend(lines[after_begin..after_end].iter().map(|l| PreviewLine::Context(l.to_string())));
-    Preview { title: format!("edição proposta em {rel}"), lines: out }
+    Preview::new(format!("edição proposta em {rel}"), out)
 }

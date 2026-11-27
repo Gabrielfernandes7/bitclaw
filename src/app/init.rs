@@ -70,10 +70,7 @@ pub fn write(root: &Path, approver: &dyn Approver) -> Result<String, String> {
         return complete(root, &path, approver);
     }
     let text = draft(root)?;
-    let preview = Preview {
-        title: format!("criar {FILE}"),
-        lines: text.lines().map(|l| PreviewLine::Added(l.to_string())).collect(),
-    };
+    let preview = Preview::new(format!("criar {FILE}"), text.lines().map(|l| PreviewLine::Added(l.to_string())).collect());
     if !approver.approve(&preview) {
         return Ok(format!("usuário recusou; {FILE} não foi criado."));
     }
@@ -100,10 +97,7 @@ fn complete(root: &Path, path: &Path, approver: &dyn Approver) -> Result<String,
     for s in &missing {
         added.push_str(&format!("## {}\n\n{}\n\n", s.title, s.body.trim_end()));
     }
-    let preview = Preview {
-        title: format!("acrescentar ao {FILE}"),
-        lines: added.lines().map(|l| PreviewLine::Added(l.to_string())).collect(),
-    };
+    let preview = Preview::new(format!("acrescentar ao {FILE}"), added.lines().map(|l| PreviewLine::Added(l.to_string())).collect());
     if !approver.approve(&preview) {
         return Ok(format!("usuário recusou; {FILE} não foi alterado."));
     }

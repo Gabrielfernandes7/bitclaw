@@ -30,8 +30,8 @@ impl Tool for DeleteFile {
         )
     }
 
-    fn mutates(&self) -> bool {
-        true
+    fn annotations(&self) -> crate::core::tool::Annotations {
+        crate::core::tool::Annotations { read_only: false, destructive: true, idempotent: false }
     }
 
     fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {
@@ -50,10 +50,10 @@ fn delete_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Out
     }
 
     let content = fs::read_to_string(&path).unwrap_or_default();
-    let preview = Preview {
-        title: format!("remover arquivo {rel}"),
-        lines: vec![PreviewLine::Note(format!("{rel} será removido ({} linhas)", content.lines().count()))],
-    };
+    let preview = Preview::removal(
+        format!("remover arquivo {rel}"),
+        vec![PreviewLine::Note(format!("{rel} será removido ({} linhas)", content.lines().count()))],
+    );
     if !approver.approve(&preview) {
         return Ok(Outcome::Refused(format!("usuário recusou a remoção; {rel} foi mantido")));
     }
