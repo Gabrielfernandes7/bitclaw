@@ -174,6 +174,15 @@ impl Session {
         for skill in self.all_skills.iter().filter(|s| !off.contains(&s.name)) {
             if lower.contains(&skill.name.to_lowercase()) {
                 text.push_str(&format!("\n\n[Instruções da skill {}]\n{}", skill.name, skill.body));
+                // O corpo cita os arquivos da skill como caminhos (references/x.md). Sem este aviso, um
+                // modelo pequeno os procura no projeto com read_file, onde eles não estão.
+                if !skill.files.is_empty() {
+                    text.push_str(&format!(
+                        "\n[Arquivos da skill {0}: {1}. Não estão no projeto: leia com load_skill, name \"{0}\" e file.]",
+                        skill.name,
+                        skill.files.join(", ")
+                    ));
+                }
             }
         }
         text
@@ -350,6 +359,21 @@ url = "http://unused"
         s.submit("use a skill DEMO nesta tarefa", &Silent).unwrap();
         let user = s.messages.iter().find(|m| m["role"] == "user").unwrap()["content"].as_str().unwrap().to_string();
         assert!(user.contains("Passo secreto"), "o corpo da skill entra no turno");
+    }
+
+    #[test]
+    fn a_named_skill_with_files_says_they_are_read_with_load_skill() {
+        let dir = tempdir("named-files");
+        let skill_dir = dir.join("skills/demo");
+        fs::create_dir_all(skill_dir.join("references")).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "---\nname: demo\ndescription: faz demo\n---\n\nLeia references/x.md.\n").unwrap();
+        fs::write(skill_dir.join("references/x.md"), "detalhe").unwrap();
+        let skills = crate::core::skill::load(&dir.join("skills")).unwrap();
+        let model = scripted(vec![json!({"role": "assistant", "content": "Feito."})]);
+        let mut s = from_parts(&config(""), model, &dir).unwrap().with_skills(skills, skills::new_disabled());
+        s.submit("use a skill demo", &Silent).unwrap();
+        let user = s.messages.iter().find(|m| m["role"] == "user").unwrap()["content"].as_str().unwrap().to_string();
+        assert!(user.contains("references/x.md. Não estão no projeto: leia com load_skill, name \"demo\" e file"), "{user}");
     }
 
     #[test]

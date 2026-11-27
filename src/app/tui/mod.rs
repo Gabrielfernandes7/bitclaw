@@ -16,6 +16,7 @@ mod mention;
 mod input;
 mod print;
 mod restart;
+pub mod welcome;
 mod transcript;
 mod markdown;
 mod steps;
@@ -477,7 +478,7 @@ impl App {
         match lines {
             // Comando recuperado do histórico: sem menu, para ↑ e ↓ seguirem no histórico.
             [line] if self.work.is_none() && !self.history.browsing() && line.starts_with('/') && !line.contains(char::is_whitespace) => {
-                COMMANDS.iter().filter(|c| c.starts_with(line)).collect()
+                commands::visible().filter(|c| c.starts_with(line)).collect()
             }
             _ => Vec::new(),
         }
@@ -638,7 +639,7 @@ mod tests {
         let mut editor = new_editor();
         editor.insert_str(typed);
         let menu: Vec<&'static Cmd> = match editor.lines() {
-            [line] if work.is_none() && line.starts_with('/') => COMMANDS.iter().filter(|c| c.starts_with(line)).collect(),
+            [line] if work.is_none() && line.starts_with('/') => commands::visible().filter(|c| c.starts_with(line)).collect(),
             _ => Vec::new(),
         };
         let summary = if work.is_some() { 1 } else { 0 };

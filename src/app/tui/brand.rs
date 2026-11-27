@@ -55,6 +55,68 @@ fn svg_attr(tag: &str, name: &str) -> Option<u32> {
 // Largura do mascote em colunas do terminal.
 pub const WIDTH: u16 = GRID.0 as u16;
 
+// ---- Arte grande (boas-vindas) ----
+//
+// Mesmas regras do mascote pequeno, decididas em `docs/identidade/ARTE-TERMINAL.md`: a grade mora num
+// SVG de retângulos de `PIXEL`, uma cor por desenho, olho como buraco e só caracteres de largura 1.
+
+pub const MOON_SVG: &str = include_str!("../../../assets/lua.svg");
+// Olhos do mascote (coluna, linha no mapa 10×6): buracos que a piscada fecha.
+const EYES: [(usize, usize); 2] = [(2, 2), (7, 2)];
+
+// Grade de pixels de um SVG de retângulos: `true` = aceso. O tamanho vem de `width` e `height` do SVG.
+pub fn svg_grid(svg: &str) -> Vec<Vec<bool>> {
+    let head = svg.split("<rect").next().unwrap_or("");
+    let cols = svg_attr(head, "width").unwrap_or(0) / PIXEL;
+    let rows = svg_attr(head, "height").unwrap_or(0) / PIXEL;
+    let mut grid = vec![vec![false; cols as usize]; rows as usize];
+    for tag in svg.split("<rect").skip(1) {
+        let (Some(x), Some(y)) = (svg_attr(tag, "x"), svg_attr(tag, "y")) else { continue };
+        if let Some(cell) = grid.get_mut((y / PIXEL) as usize).and_then(|r| r.get_mut((x / PIXEL) as usize)) {
+            *cell = true;
+        }
+    }
+    grid
+}
+
+// Linhas de terminal de uma grade, com cada pixel repetido `scale` vezes nas duas direções. Na escala 2
+// cada pixel ocupa uma célula inteira de altura: com espaçamento de linha maior que 1, as faixas caem só
+// entre pixels e o desenho vira tijolos empilhados (ver o estudo).
+pub fn halfblocks(grid: &[Vec<bool>], scale: usize) -> Vec<String> {
+    let scale = scale.max(1);
+    let mut rows: Vec<Vec<bool>> =
+        grid.iter().flat_map(|r| std::iter::repeat_n(r.iter().flat_map(|&p| std::iter::repeat_n(p, scale)).collect(), scale)).collect();
+    if rows.len() % 2 == 1 {
+        rows.push(vec![false; rows.first().map_or(0, Vec::len)]);
+    }
+    let on = |b: bool| if b { 'Y' } else { '.' };
+    rows.chunks(2).map(|pair| pair[0].iter().zip(&pair[1]).map(|(&t, &b)| cell(on(t), on(b))).collect()).collect()
+}
+
+// O mascote do cabeçalho (`bitclaw-crab.svg`) ampliado. De olhos fechados, os buracos se fecham.
+pub fn crab_scaled(scale: usize, eyes_open: bool) -> Vec<String> {
+    static GRID: OnceLock<Vec<Vec<bool>>> = OnceLock::new();
+    let mut grid = GRID.get_or_init(|| svg_grid(CRAB_SVG)).clone();
+    if !eyes_open {
+        for (x, y) in EYES {
+            grid[y][x] = true;
+        }
+    }
+    halfblocks(&grid, scale)
+}
+
+// Uma peça de montar das de `assets/bitclaw-bricks.svg`: os pinos numa linha de pixel e o corpo embaixo.
+// `studs` marca as colunas dos pinos (`#`); `body` é a altura do corpo em pixels.
+pub fn brick(studs: &str, body: usize) -> Vec<String> {
+    let mut grid = vec![studs.chars().map(|c| c == '#').collect::<Vec<_>>()];
+    grid.extend(std::iter::repeat_n(vec![true; studs.chars().count()], body));
+    halfblocks(&grid, 1)
+}
+
+pub fn moon() -> Vec<String> {
+    halfblocks(&svg_grid(MOON_SVG), 1)
+}
+
 // Duas linhas do mapa por linha do terminal: `▀`, `▄`, `█` ou espaço, conforme os dois pixels.
 fn cell(top: char, bottom: char) -> char {
     let on = |c: char| matches!(c, 'Y' | 'T' | 'S');
@@ -439,6 +501,30 @@ mod tests {
     fn the_map_is_read_from_the_svg() {
         let rows: Vec<String> = base_map().iter().map(|r| r.iter().collect()).collect();
         assert_eq!(rows, ["YY.T..T.YY", "YYYYYYYYYY", "YY.YYYY.YY", "YYYYYYYYYY", "..YYYYYY..", ".S.S..S.S."]);
+    }
+
+    #[test]
+    fn the_scaled_crab_is_the_header_crab_and_blinks() {
+        assert_eq!(crab_scaled(1, true), crab(), "na escala 1 é o mesmo do cabeçalho");
+        let two = crab_scaled(2, true);
+        assert_eq!(two.len(), 6, "6 pixels de altura, um por linha");
+        assert!(two.iter().all(|l| l.chars().count() == 20));
+        assert!(two.iter().all(|l| l.chars().all(|c| c == ' ' || c == '█')), "só blocos inteiros: {two:?}");
+        assert_ne!(crab_scaled(2, false), two, "a piscada fecha os olhos");
+    }
+
+    #[test]
+    fn a_brick_has_studs_on_top_of_its_body() {
+        assert_eq!(brick(".#..#.", 3), vec!["▄█▄▄█▄".to_string(), "██████".to_string()]);
+        assert_eq!(brick(".#..#.", 1), vec!["▄█▄▄█▄".to_string()]);
+    }
+
+    #[test]
+    fn the_moon_is_a_crescent_four_rows_tall() {
+        let m = moon();
+        assert_eq!(m.len(), 4);
+        assert!(m.iter().all(|l| l.chars().count() == 8));
+        assert!(m.iter().all(|l| l.ends_with("   ")), "aberta para a direita: {m:?}");
     }
 
     #[test]

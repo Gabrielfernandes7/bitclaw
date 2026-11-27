@@ -69,27 +69,17 @@ o que deixa metade da última linha vazia e dá a impressão de que o mascote fo
 
 Mapa: igual ao atual, com a linha 5 `..YYYYYY..` no lugar de `.YYYYYYYY.`.
 
-### 3.2 Grande
+### 3.2 Boas-vindas: o mesmo mascote, ampliado, com as peças
 
-14 colunas × 4 linhas, mapa 14×8. Para telas de boas-vindas ou o README, onde sobra espaço.
+A tela de boas-vindas usa o mascote do cabeçalho na escala 2 (20 colunas × 6 linhas,
+`brand::crab_scaled`), cercado pelas peças coloridas de `assets/bitclaw-bricks.svg`, com as mesmas cores.
+A vermelha fica junto da pinça, sendo encaixada, como na referência. Num terminal comum (escala 1) é o
+mascote do cabeçalho com peças de uma linha.
 
-```text
-███  █  █  ███
-███▀▀████▀▀███
-███▄▄████▄▄███
- ▄ ▀█▀▀▀▀█▀ ▄
-```
+Uma versão anterior usava um mascote grande feito do mestre da identidade (15 × 11, pinças erguidas). Saiu
+porque ficava "monstruosa" ao lado do mascote do cabeçalho: era outro bicho, não o mesmo maior.
 
-```text
-YYY..T..T..YYY
-YYY..T..T..YYY
-YYYYYYYYYYYYYY
-YYYEEYYYYEEYYY
-YYYEEYYYYEEYYY
-YDDDDDDDDDDDDY
-...YYYYYYYY...
-.S..S....S..S.
-```
+Para fundos claros: `docs/identidade/bitclaw-ambar.svg`, o mesmo mapa em âmbar `#D9A400`.
 
 ### 3.3 Compacto
 

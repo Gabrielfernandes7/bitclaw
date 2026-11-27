@@ -318,7 +318,7 @@ impl App {
             }
             _ if command.is_some_and(|c| c.name == "/help") => {
                 let mut lines: Vec<Line<'static>> =
-                    COMMANDS.iter().map(|c| note(&format!("{:<8} {}", c.name, c.desc))).collect();
+                    super::commands::visible().map(|c| note(&format!("{:<8} {}", c.name, c.desc))).collect();
                 lines.push(note("enter envia · shift+enter ou ctrl+j nova linha · esc interrompe"));
                 lines.push(note("roda do mouse, PageUp/PageDown ou shift+↑/↓ rolam a conversa · ctrl+end volta ao fim"));
                 lines.push(note("arrastar seleciona e copia · ctrl+c com seleção copia de novo · --no-mouse devolve a seleção ao terminal"));
