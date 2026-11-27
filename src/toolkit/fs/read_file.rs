@@ -107,6 +107,15 @@ fn read_file(root: &Path, args: &Value) -> Result<String, String> {
         return Ok(range_of(&content, start.unwrap_or(1), end));
     }
     if content.len() > MAX_READ_BYTES {
+        // Arquivo grande sem intervalo: como um programador, olha o índice primeiro e depois pula para o
+        // trecho. O começo truncado só serve quando o arquivo não tem estrutura reconhecível.
+        let map = outline_of(&content);
+        if map.starts_with("[outline") {
+            return Ok(format!(
+                "{map}\n[arquivo grande ({} bytes): esta é só a estrutura. Leia o trecho que precisa com start_line e end_line]",
+                content.len()
+            ));
+        }
         let mut cut = MAX_READ_BYTES;
         while !content.is_char_boundary(cut) {
             cut -= 1;

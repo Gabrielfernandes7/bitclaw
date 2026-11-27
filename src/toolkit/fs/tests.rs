@@ -88,6 +88,18 @@ fn read_file_truncates_large_files() {
 }
 
 #[test]
+fn read_file_returns_the_outline_for_a_large_file_without_range() {
+    let r = root("big-outline");
+    let body = format!("//! modulo\npub fn alvo() {{}}\n{}", "// enchimento\n".repeat(MAX_READ_BYTES));
+    fs::write(r.join("grande.rs"), body).unwrap();
+    let Outcome::Done(text) = run(&r, "read_file", json!({"path": "grande.rs"})) else { panic!() };
+    assert!(text.starts_with("[outline"), "{text}");
+    assert!(text.contains("2: pub fn alvo"));
+    assert!(text.contains("start_line"));
+    assert!(text.len() < MAX_READ_BYTES);
+}
+
+#[test]
 fn read_file_keeps_small_files_intact() {
     let r = root("small");
     fs::write(r.join("p.txt"), "oi").unwrap();
