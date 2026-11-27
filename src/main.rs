@@ -27,6 +27,7 @@ struct Args {
     no_color: bool,
     think: bool,
     no_mouse: bool,
+    plan: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -39,6 +40,7 @@ fn parse_args() -> Result<Args, String> {
         no_color: false,
         think: false,
         no_mouse: false,
+        plan: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -54,8 +56,10 @@ fn parse_args() -> Result<Args, String> {
             "--no-mouse" => args.no_mouse = true,
             "--mouse" => args.no_mouse = false,
             "--think" => args.think = true,
+            // Modo Plan: só ferramentas que declaram somente leitura. Nada é alterado nem executado.
+            "--plan" => args.plan = true,
             "-h" | "--help" => {
-                println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color] [--no-mouse] [--think]");
+                println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color] [--no-mouse] [--think] [--plan]");
                 std::process::exit(0);
             }
             other => return Err(format!("argumento desconhecido: {other}")),
@@ -136,6 +140,9 @@ fn run() -> Result<(), String> {
         app::header::model_line(&cfg.model.name, start_effort, &provider_label, &model_details, cfg.model.context_window),
     ];
     info.extend(provider.notices.iter().cloned());
+    if args.plan {
+        info.push("modo plano: só leitura, sem edição, criação, remoção nem scripts".into());
+    }
     // Os nomes das skills não vão para a tela da TUI (o painel `/skills` os mostra). O modo simples os lista.
     let mut skill_info = Vec::new();
     match &skills_path {
@@ -189,14 +196,14 @@ fn run() -> Result<(), String> {
             settings,
             move |approver| {
                 let client = provider.client(&default_info, &session_effort)?;
-                Ok(build_session(&cfg, client, approver, &root)?.with_skills(skills, skills_off))
+                Ok(build_session(&cfg, client, approver, &root, args.plan, args.auto_yes)?.with_skills(skills, skills_off))
             },
             Box::new(make_model),
         )
     } else {
         let approver: Box<dyn Approver> = Box::new(app::plain::StdinApprover { auto_edits: args.auto_yes });
         let client = provider.client(&default_info, &effort)?;
-        let mut session = build_session(&cfg, client, approver, &root)?.with_skills(skills, skills::new_disabled());
+        let mut session = build_session(&cfg, client, approver, &root, args.plan, args.auto_yes)?.with_skills(skills, skills::new_disabled());
         let mut header = vec![cfg.name.clone()];
         header.extend(info);
         header.extend(skill_info);
@@ -205,8 +212,11 @@ fn run() -> Result<(), String> {
 }
 
 // Monta a sessão: as ferramentas vêm do toolkit, pelos nomes do TOML.
-fn build_session(cfg: &AgentConfig, client: Box<dyn ChatModel>, approver: Box<dyn Approver>, root: &std::path::Path) -> Result<Session, String> {
+fn build_session(cfg: &AgentConfig, client: Box<dyn ChatModel>, approver: Box<dyn Approver>, root: &std::path::Path, plan: bool, auto_yes: bool) -> Result<Session, String> {
     let tools = toolkit::registry_from_names(&cfg.tools).map_err(|e| format!("configuração: {e}"))?;
+    let tools = if plan { tools.read_only() } else { tools };
+    // Cada decisão sobre alteração ou script fica registrada em `.bitclaw/approvals.jsonl`.
+    let approver: Box<dyn Approver> = Box::new(app::receipts::Recorded::new(approver, root, auto_yes));
     let builder = Session::builder(cfg).model(client).approver(approver).tools(tools).hook(Box::new(toolkit::claims::FileClaims)).retriever(Box::new(toolkit::fs::SymbolIndex::default())).root(root);
     let builder = if cfg.limits.verify { builder.verifier(Box::new(toolkit::verify::ProjectCheck)) } else { builder };
     builder.build()
