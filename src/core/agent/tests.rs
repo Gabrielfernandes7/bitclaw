@@ -265,6 +265,32 @@ fn step_limit_stops_the_turn() {
 }
 
 #[test]
+fn step_limit_asks_for_a_final_answer_without_tools() {
+    let r = root("steps-final");
+    let mut replies: Vec<Value> = (0..MAX_STEPS).map(|i| call("list_dir", json!({"path": ".", "n": i}))).collect();
+    replies.push(text("resposta final"));
+    let model = fake(replies);
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
+    assert_eq!(report.text, "resposta final");
+    assert!(report.error.is_none());
+}
+
+#[test]
+fn many_reads_of_the_same_file_force_an_answer() {
+    let r = root("same-path");
+    std::fs::write(r.join("a.txt"), "x\ny\nz\n").unwrap();
+    // Intervalos diferentes a cada vez: não são chamadas idênticas, mas é o mesmo arquivo.
+    let mut replies: Vec<Value> = (1..=6)
+        .map(|i| call("read_file", json!({"path": "a.txt", "start_line": i, "end_line": i})))
+        .collect();
+    replies.push(text("resposta"));
+    let model = fake(replies);
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
+    assert_eq!(report.text, "resposta");
+    assert!(report.actions.len() <= 4, "só as 4 primeiras leituras executam: {}", report.actions.len());
+}
+
+#[test]
 fn model_error_propagates() {
     let r = root("model-error");
     let model = fake(vec![]); // roteiro vazio: o modelo "falha" na primeira chamada

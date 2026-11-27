@@ -17,6 +17,9 @@ const MAX_EMPTY_RETRIES: usize = 2;
 // Dito ao modelo, só na nova tentativa, quando a resposta veio vazia. Não entra no histórico.
 const EMPTY_REPLY_NUDGE: &str = "Sua resposta anterior veio vazia. Se o pedido exige uma alteração ou leitura, chame a ferramenta agora, \
                                  com todos os argumentos preenchidos; se não, responda em texto.";
+// Quantas leituras seguidas do mesmo arquivo valem num turno; da próxima em diante, o modelo é mandado responder.
+const MAX_SAME_PATH_READS: usize = 4;
+const REPEATED_CALL: &str = "o modelo repetiu a mesma chamada; interrompendo";
 // Quantas falhas seguidas da mesma ferramenta encerram o turno.
 pub const MAX_CONSECUTIVE_FAILURES: usize = 2;
 
@@ -93,6 +96,8 @@ pub fn run_turn_with(
     let mut seen_reads: HashSet<String> = HashSet::new();
     // Passos seguidos em que o modelo só pediu leituras que já tinha.
     let mut stalled = 0;
+    // Leituras seguidas do mesmo arquivo (mesma ferramenta e mesmo `path`), mesmo com argumentos diferentes.
+    let mut same_path: Option<(String, usize)> = None;
     let mut empty_retries = 0;
     let mut nudge = false;
 
@@ -205,6 +210,23 @@ pub fn run_turn_with(
                 }));
                 continue;
             }
+            // Muitas leituras seguidas do mesmo arquivo, mesmo com intervalos diferentes: o modelo está dando
+            // voltas. Não executa; o aviso diz o que fazer, e a insistência vira resposta sem ferramentas.
+            let path_key = (name == "read_file").then(|| args.get("path").and_then(Value::as_str)).flatten().map(|p| format!("{name}\u{0}{p}"));
+            if registry.idempotent(&name)
+                && let (Some(key), Some((last, count))) = (&path_key, &same_path)
+                && key == last
+                && *count >= MAX_SAME_PATH_READS
+            {
+                suppressed += 1;
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_name": name.clone(),
+                    "content": "você já leu este arquivo várias vezes seguidas neste turno. Use o que já leu e responda ao usuário, \
+                                ou procure em outro lugar com grep_files ou find_files."
+                }));
+                continue;
+            }
             progress.tool_call(&name, &args);
 
             // Mesma chamada repetida: o modelo está preso, interrompe.
@@ -212,7 +234,7 @@ pub fn run_turn_with(
             if last_call.as_deref() == Some(key.as_str()) {
                 repeats += 1;
                 if repeats >= 2 {
-                    report.error = Some("o modelo repetiu a mesma chamada; interrompendo".into());
+                    report.error = Some(REPEATED_CALL.into());
                     return Ok(report);
                 }
             } else {
@@ -243,7 +265,13 @@ pub fn run_turn_with(
             progress.tool_done(&name, &args, &outcome);
             if registry.idempotent(&name) {
                 seen_reads.insert(read_key);
+                same_path = match (path_key, same_path.take()) {
+                    (Some(k), Some((last, n))) if k == last => Some((k, n + 1)),
+                    (Some(k), _) => Some((k, 1)),
+                    (None, _) => None,
+                };
             } else {
+                same_path = None;
                 // Alteração ou execução pode mudar o que as leituras devolvem: valem de novo.
                 seen_reads.clear();
             }
@@ -281,15 +309,16 @@ pub fn run_turn_with(
         if suppressed == total_calls {
             stalled += 1;
             if stalled >= 2 {
-                return finish_without_tools(model, messages, ctx, progress, report);
+                return finish_without_tools(model, messages, ctx, progress, report, REPEATED_CALL.into());
             }
         } else {
             stalled = 0;
         }
     }
 
-    report.error = Some(format!("limite de {} passos atingido sem resposta final", limits.max_steps));
-    Ok(report)
+    // Passos esgotados: em vez de terminar mudo, pede a resposta com o que já foi lido.
+    let fallback = format!("limite de {} passos atingido sem resposta final", limits.max_steps);
+    finish_without_tools(model, messages, ctx, progress, report, fallback)
 }
 
 // Última tentativa quando o modelo não sai das mesmas leituras: pede a resposta com o que já foi lido,
@@ -302,6 +331,7 @@ fn finish_without_tools(
     ctx: &ContextManager,
     progress: &dyn Progress,
     mut report: TurnReport,
+    fallback: String,
 ) -> Result<TurnReport, String> {
     let prompt = json!({
         "role": "user",
@@ -330,7 +360,7 @@ fn finish_without_tools(
     } else {
         let text = reply.message.get("content").and_then(Value::as_str).unwrap_or("").trim().to_string();
         if text.is_empty() {
-            report.error = Some("o modelo repetiu a mesma chamada; interrompendo".into());
+            report.error = Some(fallback);
         } else {
             messages.push(reply.message);
             report.text = text;
