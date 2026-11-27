@@ -7,7 +7,7 @@
 #   BITCLAW_VERSION      versão a instalar, ex.: v0.2.0 (padrão: o último release)
 #   BITCLAW_INSTALL_DIR  pasta do binário (padrão: ~/.local/bin)
 #
-# Desinstalar (o mesmo que `bitclaw uninstall --yes`):
+# Desinstalar (o mesmo que `bitclaw uninstall --yes`; `--purge` apaga também as pastas .bitclaw/ dos projetos):
 #   curl -fsSL https://raw.githubusercontent.com/Gabrielfernandes7/bitclaw/main/install.sh | sh -s -- --uninstall
 #
 # O contrato com o release é o de src/app/update.rs: bitclaw-<target>.tar.gz e SHA256SUMS.
@@ -49,15 +49,32 @@ sha256() {
 uninstall() {
   dir="${BITCLAW_INSTALL_DIR:-$HOME/.local/bin}"
   config="${XDG_CONFIG_HOME:-$HOME/.config}/bitclaw"
+  purge=0
+  [ "${1:-}" = "--purge" ] && purge=1
+  # As pastas .bitclaw/ dos projetos estão anotadas em $config/projects; lê antes de apagar o estado global.
+  # Só apaga um diretório de verdade com esse nome (nunca um link), e só com --purge.
+  if [ -f "$config/projects" ]; then
+    while IFS= read -r p; do
+      case "$p" in /*) ;; *) continue ;; esac
+      d="$p/.bitclaw"
+      if [ -d "$d" ] && [ ! -L "$d" ]; then
+        if [ "$purge" = 1 ]; then rm -rf "$d" && say "apagado: $d"; else say "fica: $d (use --purge para apagar)"; fi
+      fi
+    done < "$config/projects"
+  fi
   [ -f "$dir/bitclaw" ] && rm -f "$dir/bitclaw" && say "apagado: $dir/bitclaw"
+  for f in "$dir/.bitclaw.install" "$dir/.bitclaw.update"; do
+    [ -e "$f" ] && rm -f "$f" && say "apagado: $f"
+  done
   [ -d "$config" ] && rm -rf "$config" && say "apagado: $config"
-  say "as pastas .bitclaw/ dentro dos seus projetos ficam (backup, recibos e /undo)."
+  say "o AGENTS.md e o código dos seus projetos não são tocados."
   say "bitclaw desinstalado."
 }
 
 main() {
   if [ "${1:-}" = "--uninstall" ]; then
-    uninstall
+    shift
+    uninstall "$@"
     return
   fi
   command -v curl >/dev/null 2>&1 || fail "preciso do curl"

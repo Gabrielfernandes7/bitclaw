@@ -174,9 +174,40 @@ pub fn run() -> Result<String, String> {
 const CHECK_FILE: &str = "update-check.json";
 const CHECK_EVERY_SECS: u64 = 24 * 60 * 60;
 
+// Com `--fresh`, o estado global vive numa pasta temporária em vez de `~/.config/bitclaw`.
+static FRESH_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+// A pasta temporária de `--fresh`, apagada quando o guarda sai de escopo.
+pub struct Fresh(PathBuf);
+
+impl Fresh {
+    pub fn dir(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Fresh {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(self.dir().parent().unwrap_or(&self.0));
+    }
+}
+
+// Liga o modo `--fresh`: um estado global novo e vazio, como o de quem acabou de instalar. O
+// `~/.config/bitclaw` de verdade não é lido nem tocado.
+pub fn start_fresh() -> Result<Fresh, String> {
+    let root = std::env::temp_dir().join(format!("bitclaw-fresh-{}", std::process::id()));
+    let dir = root.join("bitclaw");
+    fs::create_dir_all(&dir).map_err(|e| format!("não consegui criar {}: {e}", dir.display()))?;
+    FRESH_DIR.set(dir.clone()).map_err(|_| "--fresh já estava ligado".to_string())?;
+    Ok(Fresh(dir))
+}
+
 // Pasta do estado global do BitClaw (fora de qualquer projeto): `$XDG_CONFIG_HOME/bitclaw` ou
 // `~/.config/bitclaw`. `None` sem `HOME`.
 pub fn config_dir() -> Option<PathBuf> {
+    if let Some(dir) = FRESH_DIR.get() {
+        return Some(dir.clone());
+    }
     let base = match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
         Some(x) => PathBuf::from(x),
         None => PathBuf::from(std::env::var_os("HOME")?).join(".config"),

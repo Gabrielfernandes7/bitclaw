@@ -3,6 +3,7 @@
 pub mod header;
 pub mod init;
 pub mod plain;
+pub mod projects;
 pub mod receipts;
 pub mod provider;
 pub mod skill_install;

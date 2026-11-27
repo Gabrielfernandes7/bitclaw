@@ -34,6 +34,10 @@ struct Args {
     uninstall: bool,
     // `bitclaw soul`: refaz as perguntas do SOUL.md e sai.
     soul: bool,
+    // `--fresh`: estado global novo e temporário, para testar a primeira abertura sem tocar no seu.
+    fresh: bool,
+    // `bitclaw uninstall --purge`: apaga também as pastas `.bitclaw/` dos projetos.
+    purge: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -50,6 +54,8 @@ fn parse_args() -> Result<Args, String> {
         update: false,
         uninstall: false,
         soul: false,
+        fresh: false,
+        purge: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -67,6 +73,8 @@ fn parse_args() -> Result<Args, String> {
             "--think" => args.think = true,
             // Modo Plan: só ferramentas que declaram somente leitura. Nada é alterado nem executado.
             "--plan" => args.plan = true,
+            "--fresh" => args.fresh = true,
+            "--purge" => args.purge = true,
             "update" => args.update = true,
             "uninstall" => args.uninstall = true,
             "soul" => args.soul = true,
@@ -75,9 +83,11 @@ fn parse_args() -> Result<Args, String> {
                 std::process::exit(0);
             }
             "-h" | "--help" => {
-                println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color] [--no-mouse] [--think] [--plan]");
+                println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color] [--no-mouse] [--think] [--plan] [--fresh]");
                 println!("     bitclaw update     troca o binário pelo do último release");
-                println!("     bitclaw uninstall  apaga o binário e ~/.config/bitclaw (--yes não pergunta)");
+                println!("     bitclaw uninstall  apaga o binário e o resíduo (~/.config/bitclaw, restos de instalação); --yes não pergunta,");
+                println!("                        --purge apaga também as pastas .bitclaw/ dos projetos");
+                println!("     bitclaw --fresh    abre como na primeira vez (estado global temporário; o seu não é tocado)");
                 println!("     bitclaw soul       refaz as perguntas do SOUL.md (quem o agente é para você)");
                 println!("     bitclaw --version");
                 std::process::exit(0);
@@ -97,8 +107,16 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
+    // `--fresh` vale até o fim do programa: ao sair, a pasta temporária é apagada.
+    let _fresh = if args.fresh && !args.uninstall && !args.update {
+        let f = app::update::start_fresh()?;
+        eprintln!("--fresh: estado global temporário em {} (apagado ao sair); o seu ~/.config/bitclaw não é tocado.", f.dir().display());
+        Some(f)
+    } else {
+        None
+    };
     if args.uninstall {
-        println!("{}", app::uninstall::run(args.auto_yes)?);
+        println!("{}", app::uninstall::run(args.auto_yes, args.purge)?);
         return Ok(());
     }
     if args.update {
@@ -143,6 +161,7 @@ fn run() -> Result<(), String> {
     let options = Arc::clone(&provider.options);
 
     let root = args.dir.canonicalize().map_err(|e| format!("diretório inválido: {e}"))?;
+    app::projects::record(&root);
     // As skills são procuradas em relação ao diretório de execução, não ao `--dir`.
     let skills_path = match cfg.skills_dir.as_deref() {
         Some(d) => Some(std::env::current_dir().map_err(|e| e.to_string())?.join(d)),
