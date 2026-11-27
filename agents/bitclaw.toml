@@ -44,7 +44,7 @@ think = false
 # Seção do provedor: o core não a interpreta, quem lê é o adaptador do Ollama.
 [ollama]
 url = "http://localhost:11434"
-temperature = 0.1
+temperature = 0.2
 # Decodificação restrita: o decoder só emite chamada válida. Ligue para modelos pequenos (~1B).
 constrained = false
 

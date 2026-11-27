@@ -58,6 +58,7 @@ Opções:
 | `-V`, `--version` | | Mostra a versão. |
 | `update` | | `bitclaw update` troca o binário pelo do último release. |
 | `uninstall` | | `bitclaw uninstall` apaga o binário e `~/.config/bitclaw`. |
+| `soul` | | `bitclaw soul` refaz as cinco perguntas do SOUL.md: nome, idioma, tamanho das respostas, se explica antes de alterar e o que você faz. A primeira abertura já pergunta; `pular` dispensa. O arquivo fica em `~/.config/bitclaw/SOUL.md`, um `.bitclaw/SOUL.md` no projeto vale mais, e `/soul` mostra o que está em vigor. Entra no prompt cortado em 1200 caracteres e vale na próxima abertura. |
 | `-h`, `--help` | | Mostra a ajuda. |
 
 Ao iniciar, o programa mostra o modelo em uso e a janela de contexto. Se o modelo não estiver instalado no Ollama, ele avisa antes de começar.

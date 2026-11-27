@@ -15,7 +15,7 @@ cargo run
 
 Flags do binário: `--config`, `--model`, `--url`, `--dir`, `--yes`, `--no-color`, `--no-mouse`, `--think` e `--plan` (modo Plan: só ferramentas que declaram `read_only`).
 
-Subcomandos `bitclaw update` e `bitclaw uninstall`, e `--version`. Instalação por `install.sh` (releases do GitHub); o contrato dos arquivos do release está no topo de `src/app/update.rs`, e `install.sh` e `.github/workflows/release.yml` o seguem.
+Subcomandos `bitclaw update`, `bitclaw uninstall` e `bitclaw soul`, e `--version`. Instalação por `install.sh` (releases do GitHub); o contrato dos arquivos do release está no topo de `src/app/update.rs`, e `install.sh` e `.github/workflows/release.yml` o seguem.
 
 ## Estrutura
 
@@ -32,6 +32,7 @@ Subcomandos `bitclaw update` e `bitclaw uninstall`, e `--version`. Instalação 
 ## Skills
 
 - `skills/create-skill/SKILL.md`
+- `skills/create-tool/SKILL.md` (cria ferramenta como script dentro de uma skill)
 - `skills/markdown/SKILL.md`
 - `skills/small-model-optimization/SKILL.md`
 
@@ -49,6 +50,7 @@ Subcomandos `bitclaw update` e `bitclaw uninstall`, e `--version`. Instalação 
 - **Skills instaladas carregam só com digest aprovado.** `/skill install` grava o SHA-256 da pasta em `.bitclaw/skills.lock`. Skill cujo conteúdo mudou, ou sem digest, não é carregada, e a lista de ignoradas diz por quê. Skill instalada antes do digest precisa ser apagada e instalada de novo.
 - **Recibos de aprovação** ficam em `.bitclaw/approvals.jsonl`: tipo, título, decisão e quem decidiu. Aprovação em lote (`a`) aparece como do usuário.
 - **`/undo` desfaz o último turno com alterações** a partir de `.bitclaw/undo.jsonl`. Só mexe em arquivo que ainda está como o turno deixou. Não desfaz criação de pasta, nem o `/init`. No modo simples (sem terminal) não há `/undo`.
+- **SOUL.md** é quem o agente é para a pessoa, não fato do projeto. O de `.bitclaw/SOUL.md` vale mais que o de `~/.config/bitclaw/SOUL.md`. É montado por molde (sem modelo) e só vale na próxima abertura.
 - **Estado global** fica em `~/.config/bitclaw/` (ou `$XDG_CONFIG_HOME/bitclaw`): o cache do aviso de versão e a marca da tela de boas-vindas. O resto continua em `.bitclaw/` do projeto.
 - **Arte de terminal** segue `docs/identidade/ARTE-TERMINAL.md`: uma cor por desenho, olho como buraco, só caracteres de largura 1, a grade num SVG em `assets/`.
 - **Mascote.** A arte vem de `assets/bitclaw-crab.svg`, a fonte única. Em terminais gráficos (como iTerm2 no macOS), o SVG é rasterizado diretamente em RGBA e exibido via protocolo gráfico nativo; em terminais sem suporte a imagens (como Terminal.app) ou em modo texto, há fallback com meios-blocos.
@@ -79,6 +81,7 @@ Subcomandos `bitclaw update` e `bitclaw uninstall`, e `--version`. Instalação 
 - `src/app/`: o BitClaw em si.
   - `src/app/provider.rs`: o único lugar que sabe quais adaptadores existem.
   - `src/app/skill_install.rs`: `/skill install` (git, prévia, aprovação, lock com digest) e a carga das skills instaladas.
+  - `src/app/soul.rs`: SOUL.md, as cinco perguntas da primeira abertura (`bitclaw soul` refaz) e o texto que entra no prompt do sistema (`Session::builder().persona`, teto de 1200 caracteres).
   - `src/app/receipts.rs`: `Recorded`, o aprovador que grava os recibos.
   - `src/app/init.rs`: `/init`, que cria o `AGENTS.md` com fatos do próprio repositório.
   - `src/app/header.rs`: texto do cabeçalho.

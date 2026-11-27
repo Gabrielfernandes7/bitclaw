@@ -55,6 +55,10 @@ struct Bundled {
 const BUILTIN: &[Bundled] = &[
     Bundled { text: include_str!("../../skills/create-skill/SKILL.md"), files: &[] },
     Bundled {
+        text: include_str!("../../skills/create-tool/SKILL.md"),
+        files: &[("references/modelos.md", include_str!("../../skills/create-tool/references/modelos.md"))],
+    },
+    Bundled {
         text: include_str!("../../skills/markdown/SKILL.md"),
         files: &[("references/microsoft-learn.md", include_str!("../../skills/markdown/references/microsoft-learn.md"))],
     },
@@ -529,6 +533,19 @@ mod tests {
         let Outcome::Error(e) = tool.run(&ctx, &json!({"name": "markdown", "file": "references/nada.md"})) else { panic!() };
         assert!(e.contains("microsoft-learn.md"), "o erro diz quais arquivos existem: {e}");
         assert!(matches!(tool.run(&ctx, &json!({"name": "markdown", "file": "../x"})), Outcome::Error(_)));
+    }
+
+    #[test]
+    fn builtin_create_tool_skill_carries_its_script_templates() {
+        let skills = builtins();
+        let tool = skills.iter().find(|s| s.name == "create-tool").expect("create-tool embutida");
+        assert!(tool.builtin);
+        assert_eq!(tool.files, vec!["references/modelos.md".to_string()]);
+        let empty = tempdir("create-tool");
+        let load = LoadSkill::new(skills.clone(), new_disabled());
+        let ctx = ToolContext::new(&empty, &AutoApprover);
+        let Outcome::Done(text) = load.run(&ctx, &json!({"name": "create-tool", "file": "references/modelos.md"})) else { panic!() };
+        assert!(text.contains("#!/bin/bash") && text.contains("#!/usr/bin/env python3"));
     }
 
     #[test]
