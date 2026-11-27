@@ -16,6 +16,7 @@ mod mention;
 mod input;
 mod print;
 mod restart;
+pub mod welcome;
 mod transcript;
 mod markdown;
 mod steps;

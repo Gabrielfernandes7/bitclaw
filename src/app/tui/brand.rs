@@ -55,6 +55,62 @@ fn svg_attr(tag: &str, name: &str) -> Option<u32> {
 // Largura do mascote em colunas do terminal.
 pub const WIDTH: u16 = GRID.0 as u16;
 
+// ---- Arte grande (boas-vindas) ----
+//
+// Mesmas regras do mascote pequeno, decididas em `docs/identidade/ARTE-TERMINAL.md`: a grade mora num
+// SVG de retângulos de `PIXEL`, uma cor por desenho, olho como buraco e só caracteres de largura 1.
+
+// O mestre da identidade (`docs/identidade/gerar-bricks.py`) com os dois pinos e os olhos.
+pub const CRAB_BIG_SVG: &str = include_str!("../../../assets/bitclaw-crab-grande.svg");
+pub const MOON_SVG: &str = include_str!("../../../assets/lua.svg");
+// Olhos do mascote grande (coluna, linha): buracos que a piscada fecha.
+const BIG_EYES: [(usize, usize); 2] = [(5, 6), (9, 6)];
+
+// Grade de pixels de um SVG de retângulos: `true` = aceso. O tamanho vem de `width` e `height` do SVG.
+pub fn svg_grid(svg: &str) -> Vec<Vec<bool>> {
+    let head = svg.split("<rect").next().unwrap_or("");
+    let cols = svg_attr(head, "width").unwrap_or(0) / PIXEL;
+    let rows = svg_attr(head, "height").unwrap_or(0) / PIXEL;
+    let mut grid = vec![vec![false; cols as usize]; rows as usize];
+    for tag in svg.split("<rect").skip(1) {
+        let (Some(x), Some(y)) = (svg_attr(tag, "x"), svg_attr(tag, "y")) else { continue };
+        if let Some(cell) = grid.get_mut((y / PIXEL) as usize).and_then(|r| r.get_mut((x / PIXEL) as usize)) {
+            *cell = true;
+        }
+    }
+    grid
+}
+
+// Linhas de terminal de uma grade, com cada pixel repetido `scale` vezes nas duas direções. Na escala 2
+// cada pixel ocupa uma célula inteira de altura: com espaçamento de linha maior que 1, as faixas caem só
+// entre pixels e o desenho vira tijolos empilhados (ver o estudo).
+pub fn halfblocks(grid: &[Vec<bool>], scale: usize) -> Vec<String> {
+    let scale = scale.max(1);
+    let mut rows: Vec<Vec<bool>> =
+        grid.iter().flat_map(|r| std::iter::repeat_n(r.iter().flat_map(|&p| std::iter::repeat_n(p, scale)).collect(), scale)).collect();
+    if rows.len() % 2 == 1 {
+        rows.push(vec![false; rows.first().map_or(0, Vec::len)]);
+    }
+    let on = |b: bool| if b { 'Y' } else { '.' };
+    rows.chunks(2).map(|pair| pair[0].iter().zip(&pair[1]).map(|(&t, &b)| cell(on(t), on(b))).collect()).collect()
+}
+
+// O mascote grande. De olhos fechados, os buracos dos olhos se fecham: a piscada.
+pub fn big_crab(scale: usize, eyes_open: bool) -> Vec<String> {
+    static GRID: OnceLock<Vec<Vec<bool>>> = OnceLock::new();
+    let mut grid = GRID.get_or_init(|| svg_grid(CRAB_BIG_SVG)).clone();
+    if !eyes_open {
+        for (x, y) in BIG_EYES {
+            grid[y][x] = true;
+        }
+    }
+    halfblocks(&grid, scale)
+}
+
+pub fn moon() -> Vec<String> {
+    halfblocks(&svg_grid(MOON_SVG), 1)
+}
+
 // Duas linhas do mapa por linha do terminal: `▀`, `▄`, `█` ou espaço, conforme os dois pixels.
 fn cell(top: char, bottom: char) -> char {
     let on = |c: char| matches!(c, 'Y' | 'T' | 'S');
@@ -439,6 +495,40 @@ mod tests {
     fn the_map_is_read_from_the_svg() {
         let rows: Vec<String> = base_map().iter().map(|r| r.iter().collect()).collect();
         assert_eq!(rows, ["YY.T..T.YY", "YYYYYYYYYY", "YY.YYYY.YY", "YYYYYYYYYY", "..YYYYYY..", ".S.S..S.S."]);
+    }
+
+    #[test]
+    fn the_big_crab_is_read_from_its_svg_with_studs_and_eye_holes() {
+        let grid = svg_grid(CRAB_BIG_SVG);
+        assert_eq!((grid[0].len(), grid.len()), (15, 11));
+        let row = |y: usize| grid[y].iter().map(|&p| if p { '#' } else { '.' }).collect::<String>();
+        assert_eq!(row(4), "..###.#.#.###..", "os dois pinos no topo do corpo");
+        assert_eq!(row(6), "...##.###.##...", "os olhos são buracos");
+        for (x, y) in BIG_EYES {
+            assert!(!grid[y][x], "olho em ({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn the_big_crab_scales_and_blinks_without_changing_size() {
+        let one = big_crab(1, true);
+        assert_eq!(one.len(), 6, "11 pixels de altura viram 6 linhas");
+        assert!(one.iter().all(|l| l.chars().count() == 15));
+        let two = big_crab(2, true);
+        assert_eq!(two.len(), 11, "na escala 2, um pixel por linha");
+        assert!(two.iter().all(|l| l.chars().count() == 30));
+        assert!(two.iter().all(|l| l.chars().all(|c| c == ' ' || c == '█')), "só blocos inteiros: {two:?}");
+        let closed = big_crab(1, false);
+        assert_eq!(closed.len(), one.len());
+        assert_ne!(closed, one, "a piscada fecha os olhos");
+    }
+
+    #[test]
+    fn the_moon_is_a_crescent_four_rows_tall() {
+        let m = moon();
+        assert_eq!(m.len(), 4);
+        assert!(m.iter().all(|l| l.chars().count() == 8));
+        assert!(m.iter().all(|l| l.ends_with("   ")), "aberta para a direita: {m:?}");
     }
 
     #[test]

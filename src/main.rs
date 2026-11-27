@@ -113,11 +113,9 @@ fn run() -> Result<(), String> {
     let catalog = Arc::clone(&provider.catalog);
 
     // Modelo padrão = o da configuração. O ativo começa nele e pode ser trocado com `/model`.
-    let default_info = catalog
-        .find(&cfg.model.name)
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| ModelInfo::unknown(&cfg.model.name));
+    let found = catalog.find(&cfg.model.name).ok().flatten();
+    let model_found = found.is_some();
+    let default_info = found.unwrap_or_else(|| ModelInfo::unknown(&cfg.model.name));
     // Raciocínio começa desligado, salvo `think = true` na configuração ou `--think`.
     let start_effort = if cfg.model.think || args.think { default_info.capabilities.default_on() } else { Effort::Off };
     let effort: SharedEffort = Arc::new(Mutex::new(start_effort));
@@ -188,6 +186,13 @@ fn run() -> Result<(), String> {
     };
 
     if interactive {
+        // Primeira abertura: a tela de boas-vindas, com o que foi conferido. Esc sai sem abrir a conversa.
+        if app::tui::welcome::should_show() {
+            let checks = welcome_checks(&provider_label, &cfg.model.name, model_found, &root);
+            if !app::tui::welcome::show(&checks, color)? {
+                return Ok(());
+            }
+        }
         let settings = app::tui::Settings {
             title: cfg.name.clone(),
             info,
@@ -225,6 +230,60 @@ fn run() -> Result<(), String> {
         header.extend(info);
         header.extend(skill_info);
         app::plain::run(&mut session, &header, args.auto_yes, &active, &effort, &skill_lines)
+    }
+}
+
+// O que a tela de boas-vindas mostra como conferido. Se o Ollama não responde, o BitClaw já parou
+// antes com a instrução para iniciá-lo; aqui só chegam o provedor no ar e o resto.
+fn welcome_checks(provider: &str, model: &str, model_found: bool, root: &std::path::Path) -> Vec<app::tui::welcome::Check> {
+    use app::tui::welcome::Check;
+    let local = provider == "Ollama";
+    let provider_line = if local {
+        "Ollama respondendo".to_string()
+    } else {
+        format!("{provider}: o que o agente ler sai desta máquina")
+    };
+    let model_line = match (model_found, local) {
+        (true, _) => format!("modelo {model} pronto"),
+        (false, true) => format!("modelo {model} não está instalado: ollama pull {model}"),
+        (false, false) => format!("modelo {model} não encontrado em {provider}"),
+    };
+    vec![
+        Check { ok: true, text: provider_line },
+        Check { ok: model_found, text: model_line },
+        Check { ok: true, text: format!("projeto {}", short_path(root, 48)) },
+    ]
+}
+
+// Caminho para mostrar numa linha: `~` no lugar da pasta pessoal e, se ainda passar de `max`
+// caracteres, o começo trocado por `…`. O fim (o nome do projeto) fica sempre.
+fn short_path(path: &std::path::Path, max: usize) -> String {
+    let full = path.display().to_string();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let text = match full.strip_prefix(&home) {
+        Some(rest) if !home.is_empty() && (rest.is_empty() || rest.starts_with('/')) => format!("~{rest}"),
+        _ => full,
+    };
+    let count = text.chars().count();
+    if count <= max {
+        return text;
+    }
+    let tail: String = text.chars().skip(count - (max - 1)).collect();
+    format!("…{tail}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::short_path;
+    use std::path::Path;
+
+    #[test]
+    fn long_paths_keep_their_end() {
+        assert_eq!(short_path(Path::new("/a/b"), 48), "/a/b");
+        let long = Path::new("/var/folders/xyz/T/scratchpad/7fe2835f-0d01-4e01-86b3-343391a80856/projeto");
+        let short = short_path(long, 30);
+        assert_eq!(short.chars().count(), 30);
+        assert!(short.starts_with('…') && short.ends_with("/projeto"), "{short}");
     }
 }
 
