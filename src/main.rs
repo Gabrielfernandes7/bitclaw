@@ -154,6 +154,8 @@ fn run() -> Result<(), String> {
         app::header::model_line(&cfg.model.name, start_effort, &provider_label, &model_details, cfg.model.context_window),
     ];
     info.extend(provider.notices.iter().cloned());
+    // Versão nova no GitHub: vem do cache de `~/.config/bitclaw`, sem esperar a rede.
+    info.extend(app::update::startup_notice());
     if args.plan {
         info.push("modo plano: só leitura, sem edição, criação, remoção nem scripts".into());
     }

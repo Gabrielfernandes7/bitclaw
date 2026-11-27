@@ -166,9 +166,87 @@ pub fn run() -> Result<String, String> {
     Ok(format!("bitclaw atualizado de {VERSION} para {tag} em {}.", exe.display()))
 }
 
+// ---- Aviso de versão nova ----
+//
+// A abertura nunca espera a rede: o aviso vem de um cache. Se o cache tem mais de um dia, uma thread
+// consulta o GitHub em segundo plano e grava a resposta, que aparece na próxima abertura.
+
+const CHECK_FILE: &str = "update-check.json";
+const CHECK_EVERY_SECS: u64 = 24 * 60 * 60;
+
+// Pasta do estado global do BitClaw (fora de qualquer projeto): `$XDG_CONFIG_HOME/bitclaw` ou
+// `~/.config/bitclaw`. `None` sem `HOME`.
+pub fn config_dir() -> Option<PathBuf> {
+    let base = match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+        Some(x) => PathBuf::from(x),
+        None => PathBuf::from(std::env::var_os("HOME")?).join(".config"),
+    };
+    Some(base.join("bitclaw"))
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+// O que o cache diz agora: o aviso a mostrar (se houver) e se está na hora de consultar de novo.
+fn read_check(cache: Option<&str>, now: u64, current: &str) -> (Option<String>, bool) {
+    let v: serde_json::Value = cache.and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+    // Sem data legível (sem cache, ou estragado), consulta já.
+    let due = v["checked"].as_u64().is_none_or(|checked| now.saturating_sub(checked) >= CHECK_EVERY_SECS);
+    let notice = v["latest"]
+        .as_str()
+        .filter(|latest| is_newer(latest, current))
+        .map(|latest| format!("versão {latest} disponível (você tem {current}): rode bitclaw update"));
+    (notice, due)
+}
+
+// Aviso de versão nova para o cabeçalho. Desligado em build de desenvolvimento e com
+// `BITCLAW_NO_UPDATE_CHECK`, porque é uma chamada de rede que o usuário não pediu.
+pub fn startup_notice() -> Option<String> {
+    if cfg!(debug_assertions) || std::env::var_os("BITCLAW_NO_UPDATE_CHECK").is_some() || target().is_none() {
+        return None;
+    }
+    let path = config_dir()?.join(CHECK_FILE);
+    let (notice, due) = read_check(fs::read_to_string(&path).ok().as_deref(), now_secs(), VERSION);
+    if due {
+        std::thread::spawn(move || {
+            // Sem resposta (offline, sem release), grava só a hora: tenta de novo amanhã, não a cada abertura.
+            let latest = latest_tag(Duration::from_secs(4)).ok();
+            let body = serde_json::json!({ "checked": now_secs(), "latest": latest });
+            if let Some(dir) = path.parent() {
+                let _ = fs::create_dir_all(dir);
+            }
+            let _ = fs::write(&path, body.to_string());
+        });
+    }
+    notice
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_notice_comes_from_the_cache_and_the_check_runs_once_a_day() {
+        let day = CHECK_EVERY_SECS;
+        assert_eq!(read_check(None, 10 * day, "0.1.0"), (None, true), "sem cache: consulta");
+        let fresh = r#"{"checked": 1000, "latest": "v0.2.0"}"#;
+        let (notice, due) = read_check(Some(fresh), 1000 + 60, "0.1.0");
+        assert_eq!(notice.as_deref(), Some("versão v0.2.0 disponível (você tem 0.1.0): rode bitclaw update"));
+        assert!(!due, "consultou há um minuto");
+        assert!(read_check(Some(fresh), 1000 + day, "0.1.0").1, "um dia depois, consulta de novo");
+        assert_eq!(read_check(Some(fresh), 1060, "0.2.0").0, None, "já atualizado: sem aviso");
+        assert_eq!(read_check(Some(r#"{"checked": 1000, "latest": null}"#), 1060, "0.1.0"), (None, false), "offline");
+        assert_eq!(read_check(Some("lixo"), 1060, "0.1.0"), (None, true), "cache estragado: consulta");
+    }
+
+    #[test]
+    fn config_dir_follows_xdg_or_home() {
+        // Só o formato: as variáveis do processo são compartilhadas entre testes.
+        if let Some(dir) = config_dir() {
+            assert!(dir.ends_with("bitclaw"), "{}", dir.display());
+        }
+    }
 
     fn tempdir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("bitclaw-update-test-{name}-{}", std::process::id()));
