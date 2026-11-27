@@ -54,7 +54,6 @@ a { color: inherit; }
 kbd { font: 600 12px var(--mono); background: var(--card); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 1px 6px; }
 code { font-family: var(--mono); }
 
-/* ------------------------------------------------------------ cabeçalho */
 .top {
   position: sticky; top: 0; z-index: 40; height: var(--header-h);
   display: flex; align-items: center; gap: 18px; padding: 0 20px;
@@ -89,7 +88,6 @@ code { font-family: var(--mono); }
 .burger { display: none; width: 36px; padding: 0; flex-direction: column; justify-content: center; gap: 4px; }
 .burger span { width: 16px; height: 2px; background: currentColor; border-radius: 2px; }
 
-/* ---------------------------------------------------------------- botões */
 .btn { display: inline-flex; align-items: center; height: 46px; padding: 0 22px; border-radius: 12px; font-weight: 700; text-decoration: none; border: 2px solid var(--ink); background: var(--card); box-shadow: 0 3px 0 var(--ink); transition: transform .08s, box-shadow .08s; }
 .btn:hover { transform: translateY(1px); box-shadow: 0 2px 0 var(--ink); }
 .btn:active { transform: translateY(3px); box-shadow: 0 0 0 var(--ink); }
@@ -101,13 +99,11 @@ code { font-family: var(--mono); }
   :root:not([data-theme="light"]) .btn.primary { border-color: #171717; box-shadow: 0 3px 0 var(--yellow-side); }
 }
 
-/* ------------------------------------------------------- peças (studs) */
 .studs { display: flex; gap: 14px; padding: 0 20px; justify-content: center; }
 .studs i { width: 22px; height: 9px; background: var(--yellow); border-radius: 5px 5px 0 0; box-shadow: inset 0 -2px 0 var(--yellow-side); }
 .studs.wide { max-width: 1160px; margin: 0 auto; justify-content: space-between; }
 .studs.wide i { width: 28px; }
 
-/* ----------------------------------------------------------------- home */
 .hero { padding: 56px 20px 0; position: relative; overflow: hidden; }
 .hero::before { content: ""; position: absolute; inset: 0; background: radial-gradient(60% 70% at 78% 42%, color-mix(in srgb, var(--yellow) 26%, transparent), transparent 70%); pointer-events: none; }
 .hero-in > *, .wrap.two > * { min-width: 0; }
@@ -186,7 +182,6 @@ code { font-family: var(--mono); }
 .nf { text-align: center; padding-block: 60px; }
 .nf h1 { font-size: 40px; letter-spacing: -2px; margin: 0 0 8px; }
 
-/* -------------------------------------------------------------- rodapé */
 .foot { margin-top: 40px; background: #171717; color: #F5F3EB; padding-bottom: 36px; }
 .foot .studs { padding-top: 0; transform: translateY(-9px); }
 .foot-in { max-width: 1160px; margin: 0 auto; padding: 18px 20px 0; display: grid; gap: 6px; }
@@ -197,7 +192,6 @@ code { font-family: var(--mono); }
 .foot-in a { color: var(--yellow); }
 body.doc .foot { margin-top: 0; }
 
-/* ----------------------------------------------------------- documentação */
 .shell { display: grid; grid-template-columns: 260px minmax(0, 1fr) 220px; max-width: 1340px; margin: 0 auto; gap: 0 36px; padding: 0 20px; }
 .side { position: sticky; top: var(--header-h); height: calc(100vh - var(--header-h)); overflow-y: auto; padding: 26px 8px 40px 0; font-size: 14px; scrollbar-width: thin; }
 .grp { margin-bottom: 22px; }
@@ -269,7 +263,6 @@ h2:hover .headerlink, h3:hover .headerlink { opacity: .5; }
 .toc a:hover { color: var(--ink); }
 .toc a.on { color: var(--ink); border-left-color: var(--yellow); font-weight: 600; }
 
-/* ---------------------------------------------------------------- busca */
 .search { width: min(640px, calc(100vw - 24px)); margin: 10vh auto auto; padding: 0; border: 1px solid var(--line); border-radius: 16px; background: var(--card); color: var(--ink); box-shadow: 0 30px 80px -20px rgba(0,0,0,.5); }
 .search::backdrop { background: rgba(10,10,12,.55); backdrop-filter: blur(3px); }
 .search-box { display: flex; gap: 8px; padding: 12px; border-bottom: 1px solid var(--line); margin: 0; }
@@ -284,7 +277,6 @@ h2:hover .headerlink, h3:hover .headerlink { opacity: .5; }
 .results .empty { padding: 18px; color: var(--muted); text-align: center; }
 mark { background: var(--yellow); color: #171717; border-radius: 3px; }
 
-/* ----------------------------------------------------------- responsivo */
 @media (max-width: 1100px) {
   .shell { grid-template-columns: 240px minmax(0, 1fr); }
   .toc { display: none; }

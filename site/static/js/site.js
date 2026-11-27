@@ -8,7 +8,6 @@
     return null;
   }
 
-  // ---- tema
   var themeBtn = doc.querySelector("[data-theme-toggle]");
   if (themeBtn) themeBtn.addEventListener("click", function () {
     var dark = root.dataset.theme === "dark" ||
@@ -17,7 +16,6 @@
     store("bc-theme", root.dataset.theme);
   });
 
-  // ---- menu lateral (celular)
   var burger = doc.querySelector("[data-burger]");
   if (burger) {
     burger.addEventListener("click", function () {
@@ -30,7 +28,6 @@
     });
   }
 
-  // ---- copiar comando e blocos de código
   function copy(text, btn, label) {
     function done() { var old = btn.textContent; btn.textContent = "copiado"; setTimeout(function () { btn.textContent = old; }, 1400); }
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, function () {});
@@ -47,7 +44,6 @@
     block.appendChild(b);
   });
 
-  // ---- índice da página: destaca a seção visível
   var links = [].slice.call(doc.querySelectorAll(".toc a"));
   if (links.length && "IntersectionObserver" in window) {
     var map = {};
@@ -65,7 +61,6 @@
     });
   }
 
-  // ---- busca (índice gerado no build: search-index.json)
   var dlg = doc.getElementById("search");
   if (!dlg || typeof dlg.showModal !== "function") return;
   var input = dlg.querySelector("[data-search-input]");

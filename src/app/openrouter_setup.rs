@@ -34,7 +34,6 @@ pub fn api_key(var: &str) -> Result<ApiKey, String> {
     ApiKey::from_env_or_file(var, key_path().as_deref())
 }
 
-// ---- o que fala com a rede, atrás de uma trait para o fluxo ser testável sem rede ----
 
 pub trait Net {
     fn account(&self, key: &ApiKey) -> Result<Account, String>;
@@ -53,7 +52,6 @@ impl Net for Live {
     }
 }
 
-// ---- peças puras ----
 
 // Gratuitos (`:free`) primeiro, o `default` na frente de todos, e só os que casam com `query`.
 fn rank_models(mut models: Vec<ModelInfo>, default: &str, query: &str) -> Vec<ModelInfo> {
@@ -125,7 +123,6 @@ fn describe(a: &Account) -> String {
     parts.join(", ")
 }
 
-// ---- o fluxo ----
 
 pub struct Ctx {
     pub dir: PathBuf,

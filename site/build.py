@@ -34,7 +34,6 @@ INSTALL_CMD = (
     "curl -fsSL https://raw.githubusercontent.com/Gabrielfernandes7/bitclaw/main/install.sh | sh"
 )
 
-# ---------------------------------------------------------------- navegação
 # (pasta, título da seção, [(slug, título no menu, fonte)])
 NAV = [
     ("Começar", [
@@ -132,13 +131,11 @@ def root_prefix(url: str) -> str:
     return "../" * url.count("/")
 
 
-# ------------------------------------------------------------------ marca
 def logo(cls: str, prefix: str) -> str:
     """O caranguejo de peças aprovado (`bitclaw-bricks-dark.svg`), sem pixel art."""
     return f'<img class="{cls}" src="{prefix}img/bitclaw-bricks-dark.svg" alt="" width="36" height="33">'
 
 
-# ---------------------------------------------------------- Markdown -> HTML
 class Builder:
     def __init__(self, out: Path, base: str):
         self.out, self.base = out, base
@@ -151,7 +148,6 @@ class Builder:
                 self.by_source[(ROOT / source).resolve()] = p
         self.copied_images: dict[Path, str] = {}
 
-    # -- links e imagens
     def rewrite(self, page: Page, body: str) -> str:
         src_dir = (ROOT / page.source).parent
         prefix = root_prefix(page.url)
@@ -237,7 +233,6 @@ class Builder:
         text = re.sub(r"<[^>]+>", " ", body)
         page.text = re.sub(r"\s+", " ", html.unescape(text)).strip()
 
-    # -- templates
     def header(self, prefix: str, current: str = "") -> str:
         return f"""<header class="top">
   <button class="burger" aria-label="Abrir menu" aria-controls="side" data-burger>
@@ -370,7 +365,6 @@ class Builder:
 """
         )
 
-    # -- página inicial
     def home(self) -> str:
         prefix = ""
         cards = [
@@ -514,7 +508,6 @@ class Builder:
 """
         )
 
-    # -- execução
     def build(self) -> None:
         if self.out.exists():
             shutil.rmtree(self.out)
