@@ -66,6 +66,8 @@ Digite `/` para abrir o menu. Setas escolhem, <kbd>Tab</kbd> completa, <kbd>Ente
 | `/init` | Cria um `AGENTS.md` com fatos do próprio repositório, sem usar modelo. |
 | `/undo` | Desfaz o último turno com alterações. |
 | `/restart-dev` | Recompila e reabre o BitClaw no lugar (só em desenvolvimento). |
+| `/welcome-dev` | Reabre como na primeira vez, com a tela de boas-vindas. Não apaga nada. |
+| `/openrouter` | Configura o OpenRouter (chave, modelo, agente) no terminal e reabre com ele. |
 | `/exit`, `/quit` | Encerra o programa. |
 
 ### Detalhes que valem a pena

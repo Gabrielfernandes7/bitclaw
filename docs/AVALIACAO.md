@@ -72,4 +72,19 @@ Interpretação adotada: **o pedido vem em português e o código está em ingl�
 
 Antes de aceitar uma mudança que mexe no prompt, nas ferramentas ou no modelo padrão, rode `scripts/eval.sh` com `REPEATS` de 3 ou mais (uma execução só engana: o Qwen deu 2/5 numa execução e 3/15 em três) e compare com a rodada anterior. Quando uma lacuna acima atrapalhar uma decisão, vale fechá-la no script antes de decidir: contar chamadas por execução (critérios 1, 3 e 4) é a maior.
 
+## Treino e teste
+
+O `scripts/eval.sh` tem dois conjuntos:
+
+- **Treino** (`TASK_SET=treino`, padrão): tarefas já usadas para ajustar o agente. Ajustes são feitos olhando só para elas.
+- **Teste** (`TASK_SET=teste`): tarefas escritas antes de qualquer ajuste. Rodam só para decidir se uma mudança fica. Se o teste piorar, a mudança sai, mesmo que o treino melhore.
+
+Regras de contribuição:
+
+1. Uma mudança declara a classe de problema que resolve (achar arquivo, contar, buscar conteúdo, ler, editar ou criar, segurança, cálculo, persona), e as tarefas de treino que falham nessa classe.
+2. Um caso isolado vira no máximo uma tarefa de teste, não uma regra.
+3. Regra de prompt fala de critério, não de tarefa. Vira regra só quando o mesmo erro aparece em pelo menos três tarefas de classes diferentes.
+4. Antes de aceitar, rodar com pelo menos dois modelos diferentes. Melhora que aparece só em um deles não conta.
+5. Valores esperados são calculados no próprio eval (por exemplo, a contagem de `.rs` com `find`), não escritos à mão.
+
 Resultados e diagnósticos dos modelos: [`docs/MODELOS.md`](MODELOS.md).

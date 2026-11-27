@@ -190,6 +190,8 @@ Digite `/` para abrir o menu de comandos. Setas escolhem, Tab completa, Enter ex
 - `/think`: atalho de `/effort`. Liga no padrão do modelo ou desliga, e mostra o aviso de custo. O rodapé mostra `esforço <nível>` enquanto estiver ligado. O raciocínio de turnos anteriores sai do histórico, para não gastar contexto.
 - `/help`: mostra os comandos e as teclas.
 - `/restart-dev`: recompila (`cargo build`) e reabre o BitClaw no lugar, com os mesmos argumentos, para ver alterações do código sem sair do terminal. Se a compilação falhar, mostra o erro e continua na sessão atual. A conversa não é preservada. Só funciona em desenvolvimento, com o código-fonte onde foi compilado.
+- `/welcome-dev`: reabre o BitClaw como na primeira vez, com a tela de boas-vindas. Não apaga nada; o SOUL.md e o agente ficam como estão.
+- `/openrouter`: faz o fluxo de `bitclaw openrouter` (chave, modelo, agente) no próprio terminal e reabre com `--openrouter`. Se o fluxo for cancelado ou falhar, o BitClaw fecha com a mensagem; depois, rode `bitclaw openrouter` e `bitclaw --openrouter`.
 - `/exit`: encerra o programa.
 
 `/quit` também encerra o programa, como alias de `/exit`.
