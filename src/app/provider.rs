@@ -94,6 +94,7 @@ impl Provider {
             info.capabilities.clone(),
             Arc::clone(effort),
         )
+        .map(|c| c.constrained(settings.constrained))
     }
 
     // Cliente para um modelo, com o esforço compartilhado. Cada troca de modelo é um cliente novo.

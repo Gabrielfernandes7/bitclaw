@@ -16,11 +16,13 @@ pub const TEMPERATURE: f32 = 0.6;
 pub struct OllamaSettings {
     pub url: String,
     pub temperature: f32,
+    // Decodificação restrita por schema em vez do `tools` nativo (para modelos pequenos).
+    pub constrained: bool,
 }
 
 impl Default for OllamaSettings {
     fn default() -> Self {
-        Self { url: DEFAULT_URL.into(), temperature: TEMPERATURE }
+        Self { url: DEFAULT_URL.into(), temperature: TEMPERATURE, constrained: false }
     }
 }
 
@@ -43,6 +45,9 @@ impl OllamaSettings {
             if let Some(temperature) = own.temperature {
                 settings.temperature = temperature;
             }
+            if let Some(constrained) = own.constrained {
+                settings.constrained = constrained;
+            }
         }
         Ok(settings)
     }
@@ -58,6 +63,7 @@ impl OllamaSettings {
 struct PartialOllama {
     url: Option<String>,
     temperature: Option<f32>,
+    constrained: Option<bool>,
 }
 
 #[cfg(test)]
@@ -90,6 +96,12 @@ mod tests {
         assert_eq!((s.url.as_str(), s.temperature), ("http://old:1", 0.9));
         let both = cfg("url = \"http://old:1\"\n[ollama]\nurl = \"http://new:1\"\n");
         assert_eq!(OllamaSettings::from_config(&both).unwrap().url, "http://new:1");
+    }
+
+    #[test]
+    fn constrained_is_off_by_default_and_read_from_the_section() {
+        assert!(!OllamaSettings::from_config(&cfg("")).unwrap().constrained);
+        assert!(OllamaSettings::from_config(&cfg("[ollama]\nconstrained = true\n")).unwrap().constrained);
     }
 
     #[test]

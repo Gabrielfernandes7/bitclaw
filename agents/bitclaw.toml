@@ -44,6 +44,8 @@ think = false
 [ollama]
 url = "http://localhost:11434"
 temperature = 0.1
+# Decodificação restrita: o decoder só emite chamada válida. Ligue para modelos pequenos (~1B).
+constrained = false
 
 [limits]
 # Passos de modelo por turno.
