@@ -15,6 +15,8 @@ cargo run
 
 Flags do binário: `--config`, `--model`, `--url`, `--dir`, `--yes`, `--no-color`, `--no-mouse`, `--think` e `--plan` (modo Plan: só ferramentas que declaram `read_only`).
 
+Subcomando `bitclaw update` e `--version`. Instalação por `install.sh` (releases do GitHub); o contrato dos arquivos do release está no topo de `src/app/update.rs`, e `install.sh` e `.github/workflows/release.yml` o seguem.
+
 ## Estrutura
 
 - `Cargo.lock`
@@ -47,6 +49,8 @@ Flags do binário: `--config`, `--model`, `--url`, `--dir`, `--yes`, `--no-color
 - **Skills instaladas carregam só com digest aprovado.** `/skill install` grava o SHA-256 da pasta em `.bitclaw/skills.lock`. Skill cujo conteúdo mudou, ou sem digest, não é carregada, e a lista de ignoradas diz por quê. Skill instalada antes do digest precisa ser apagada e instalada de novo.
 - **Recibos de aprovação** ficam em `.bitclaw/approvals.jsonl`: tipo, título, decisão e quem decidiu. Aprovação em lote (`a`) aparece como do usuário.
 - **`/undo` desfaz o último turno com alterações** a partir de `.bitclaw/undo.jsonl`. Só mexe em arquivo que ainda está como o turno deixou. Não desfaz criação de pasta, nem o `/init`. No modo simples (sem terminal) não há `/undo`.
+- **Estado global** fica em `~/.config/bitclaw/` (ou `$XDG_CONFIG_HOME/bitclaw`): o cache do aviso de versão e a marca da tela de boas-vindas. O resto continua em `.bitclaw/` do projeto.
+- **Arte de terminal** segue `docs/identidade/ARTE-TERMINAL.md`: uma cor por desenho, olho como buraco, só caracteres de largura 1, a grade num SVG em `assets/`.
 - **Mascote.** A arte vem de `assets/bitclaw-crab.svg`, a fonte única. Em terminais gráficos (como iTerm2 no macOS), o SVG é rasterizado diretamente em RGBA e exibido via protocolo gráfico nativo; em terminais sem suporte a imagens (como Terminal.app) ou em modo texto, há fallback com meios-blocos.
 
 ## Stack

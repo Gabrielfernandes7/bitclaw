@@ -1,14 +1,34 @@
 # BitClaw
 
-<p align="center"><img src="assets/bitclaw-crab.svg" alt="Mascote do BitClaw" width="160"></p> 
+<p align="center"><img src="docs/identidade/cena-noturna.svg" alt="O mascote do BitClaw numa praia à noite" width="560"></p>
 
 Núcleo experimental de agente de IA, local e enxuto, escrito em Rust. Hoje ele funciona como um agente de linha de comando que lê e edita arquivos de um projeto, usando um modelo servido pelo [Ollama](https://ollama.com).
 
 O objetivo do projeto é um **core** reutilizável para construir agentes, não um produto. O plano e as decisões de arquitetura estão em [`docs/PROJETO.md`](docs/PROJETO.md).
 
+## Instalação
+
+Binário pronto para macOS (Apple Silicon e Intel) e Linux (x86_64 e arm64):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Gabrielfernandes7/bitclaw/main/install.sh | sh
+```
+
+O script baixa o binário do último release, confere o SHA-256 e o instala em `~/.local/bin`, sem `sudo`. Ele avisa se essa pasta não estiver no `PATH` e se o Ollama não estiver instalado ou não responder. Outra pasta: `BITCLAW_INSTALL_DIR=/outra/pasta`. Outra versão: `BITCLAW_VERSION=v0.2.0`.
+
+Com Rust instalado, também dá para compilar direto do repositório:
+
+```sh
+cargo install --git https://github.com/Gabrielfernandes7/bitclaw
+```
+
+Para atualizar, `bitclaw update` troca o binário pelo do último release, depois de conferir a soma. Quando sai uma versão nova, o BitClaw avisa na abertura; a consulta ao GitHub é feita em segundo plano, no máximo uma vez por dia, e fica em `~/.config/bitclaw/`. `BITCLAW_NO_UPDATE_CHECK=1` desliga a consulta.
+
+Na primeira abertura aparece uma tela de boas-vindas, que mostra o que foi conferido (provedor, modelo e projeto). `BITCLAW_WELCOME=1` a mostra de novo.
+
 ## Pré-requisitos
 
-- Rust e Cargo.
+- Rust e Cargo, para compilar (o binário instalado não precisa).
 - Ollama rodando em `http://localhost:11434`.
 - Um modelo com suporte a ferramentas (*tools*). O padrão é `nemotron-3-nano:4b-mlx`:
 
@@ -32,6 +52,9 @@ Opções:
 | `--yes` | desligado | Aplica edições, criações e remoções sem pedir confirmação. Use com cuidado. |
 | `--no-color` | desligado | Desliga as cores. Também é desligado com `NO_COLOR` e quando a saída não é um terminal. |
 | `--think` | desligado | Liga o raciocínio (thinking) do modelo. Gasta mais tokens e enche a janela de contexto mais rápido; nem todo modelo suporta. Também dá para ligar com `think = true` na configuração ou, durante a sessão, com `/think`. |
+| `--plan` | desligado | Modo Plan: só as ferramentas de leitura. Nada é editado, criado, removido nem executado. |
+| `-V`, `--version` | | Mostra a versão. |
+| `update` | | `bitclaw update` troca o binário pelo do último release. |
 | `-h`, `--help` | | Mostra a ajuda. |
 
 Ao iniciar, o programa mostra o modelo em uso e a janela de contexto. Se o modelo não estiver instalado no Ollama, ele avisa antes de começar.
@@ -199,7 +222,16 @@ O script roda cinco tarefas fixas (criar `.txt`, criar `.py`, editar, ler e resp
 cargo test
 ```
 
-Os testes não dependem de rede nem de modelo: usam um modelo falso com respostas roteirizadas.
+Os testes não dependem de rede nem de modelo: usam um modelo falso com respostas roteirizadas. A CI (`.github/workflows/ci.yml`) os roda em Linux e macOS a cada push e pull request.
+
+## Publicar uma versão
+
+1. Suba `version` no `Cargo.toml` e faça o commit.
+2. Crie e envie a tag com a mesma versão: `git tag v0.2.0 && git push origin v0.2.0`.
+
+O workflow `.github/workflows/release.yml` compila e testa em cada plataforma, num runner nativo, e publica `bitclaw-<alvo>.tar.gz` e `SHA256SUMS` no release. Ele falha se a tag não bater com o `Cargo.toml`. O `install.sh` e o `bitclaw update` leem esses mesmos arquivos; o contrato está no topo de `src/app/update.rs`.
+
+O `curl` do `install.sh` e a consulta do `bitclaw update` não usam credenciais: só funcionam com o repositório público.
 
 ## Segurança
 
