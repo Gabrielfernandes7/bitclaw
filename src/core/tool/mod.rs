@@ -111,6 +111,19 @@ pub trait Tool {
         Annotations::default()
     }
 
+    // As anotações desta chamada. Quase toda ferramenta tem uma só, igual para todas as chamadas.
+    // Uma ferramenta que decide pelos argumentos (um comando de leitura ou de alteração) sobrescreve
+    // isto e `per_call_annotations`; sem declarar, vale `annotations()`.
+    fn call_annotations(&self, _args: &Value) -> Annotations {
+        self.annotations()
+    }
+
+    // Verdadeiro se `call_annotations` muda de chamada para chamada. No modo Plan, a ferramenta
+    // continua visível e cada chamada é julgada pelos seus argumentos.
+    fn per_call_annotations(&self) -> bool {
+        false
+    }
+
     fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome;
 }
 

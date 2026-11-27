@@ -200,7 +200,7 @@ pub fn run_turn_with(
 
             // Leitura idêntica a uma já feita: não executa de novo; devolve o aviso e o resultado segue acima.
             let read_key = format!("{name}{args}");
-            if registry.idempotent(&name) && seen_reads.contains(&read_key) {
+            if registry.idempotent_call(&name, &args) && seen_reads.contains(&read_key) {
                 suppressed += 1;
                 messages.push(json!({
                     "role": "tool",
@@ -213,7 +213,7 @@ pub fn run_turn_with(
             // Muitas leituras seguidas do mesmo arquivo, mesmo com intervalos diferentes: o modelo está dando
             // voltas. Não executa; o aviso diz o que fazer, e a insistência vira resposta sem ferramentas.
             let path_key = (name == "read_file").then(|| args.get("path").and_then(Value::as_str)).flatten().map(|p| format!("{name}\u{0}{p}"));
-            if registry.idempotent(&name)
+            if registry.idempotent_call(&name, &args)
                 && let (Some(key), Some((last, count))) = (&path_key, &same_path)
                 && key == last
                 && *count >= MAX_SAME_PATH_READS
@@ -242,7 +242,7 @@ pub fn run_turn_with(
             }
             last_call = Some(key.clone());
 
-            let mutates = registry.mutates(&name);
+            let mutates = registry.mutates_call(&name, &args);
             if mutates && !applied.insert(key.clone()) {
                 // Alteração idêntica já feita neste turno: não reaplica nem conta como ação nova.
                 messages.push(json!({
@@ -253,7 +253,7 @@ pub fn run_turn_with(
                 continue;
             }
 
-            if phased && registry.destructive(&name) {
+            if phased && registry.destructive_call(&name, &args) {
                 messages.push(json!({
                     "role": "tool",
                     "tool_name": name.clone(),
@@ -263,7 +263,7 @@ pub fn run_turn_with(
             }
             let outcome = registry.execute(&ToolContext::new(root, approver), &name, &args);
             progress.tool_done(&name, &args, &outcome);
-            if registry.idempotent(&name) {
+            if registry.idempotent_call(&name, &args) {
                 seen_reads.insert(read_key);
                 same_path = match (path_key, same_path.take()) {
                     (Some(k), Some((last, n))) if k == last => Some((k, n + 1)),

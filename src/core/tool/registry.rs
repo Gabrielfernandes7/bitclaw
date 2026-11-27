@@ -39,7 +39,7 @@ impl Registry {
 
     // As ferramentas que o modelo pode usar agora: todas, ou só as de leitura no modo Plan.
     fn available(&self) -> impl Iterator<Item = &Box<dyn Tool>> {
-        self.tools.iter().filter(|t| !self.plan || t.annotations().read_only)
+        self.tools.iter().filter(|t| !self.plan || t.annotations().read_only || t.per_call_annotations())
     }
 
     pub fn specs(&self) -> Vec<ToolSpec> {
@@ -82,6 +82,22 @@ impl Registry {
             .collect()
     }
 
+    // As mesmas perguntas, olhando os argumentos da chamada (ver `Tool::call_annotations`).
+    pub fn mutates_call(&self, name: &str, args: &Value) -> bool {
+        self.find(name).is_some_and(|t| !t.call_annotations(args).read_only)
+    }
+
+    pub fn destructive_call(&self, name: &str, args: &Value) -> bool {
+        self.find(name).is_some_and(|t| {
+            let a = t.call_annotations(args);
+            a.destructive && !a.read_only
+        })
+    }
+
+    pub fn idempotent_call(&self, name: &str, args: &Value) -> bool {
+        self.find(name).is_some_and(|t| t.call_annotations(args).idempotent)
+    }
+
     pub fn idempotent(&self, name: &str) -> bool {
         self.find(name).is_some_and(|t| t.annotations().idempotent)
     }
@@ -94,8 +110,8 @@ impl Registry {
 
     pub fn execute(&self, ctx: &ToolContext, name: &str, args: &Value) -> Outcome {
         match self.find(name) {
-            Some(tool) if self.plan && !tool.annotations().read_only => Outcome::Error(format!(
-                "modo Plan: {name} altera o projeto e está desligada. Use só ferramentas de leitura"
+            Some(tool) if self.plan && !tool.call_annotations(args).read_only => Outcome::Error(format!(
+                "modo Plan: esta chamada de {name} altera o projeto e está desligada. Use só leitura"
             )),
             Some(tool) => tool.run(ctx, args),
             None => Outcome::Error(format!(
