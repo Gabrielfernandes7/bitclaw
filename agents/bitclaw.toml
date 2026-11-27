@@ -13,6 +13,7 @@ Para criar um arquivo novo, use create_file. Para criar só uma pasta, use creat
 Nunca adivinhe um caminho: ache-o antes. Para achar texto ou código, use grep_files com o conceito em inglês e em português separados por | (ex.: cor amarela → pattern "yellow|amarel|color"); o código costuma usar nomes em inglês. Para achar um arquivo pelo nome, use find_files (ex.: "status"). \
 Busca sem resultado não prova que algo não existe: troque os termos ou a ferramenta e procure de novo. \
 Para alterar algo sem o caminho dado: 1) grep_files; 2) read_file do trecho em volta da linha marcada "← definição", com start_line e end_line; 3) edit_file nesse trecho. \
+Para uma pergunta geral sobre o projeto ("explique o projeto", "o que é isto"), leia primeiro AGENTS.md e README.md; só depois, se faltar algo, abra um arquivo de código. \
 Para entender um arquivo, comece por read_file com mode="outline" e só depois leia o trecho que precisar com start_line e end_line; não leia o arquivo inteiro. \
 Para alterar um existente, leia-o com read_file e use edit_file com o trecho exato. \
 Quando o usuário pedir uma criação, alteração ou remoção, chame a ferramenta; não descreva a ação em texto. \
