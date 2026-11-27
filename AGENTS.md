@@ -26,6 +26,7 @@ Subcomandos `bitclaw update`, `bitclaw uninstall` e `bitclaw soul`, e `--version
 - `assets/`
 - `docs/`
 - `scripts/`
+- `site/`
 - `skills/`
 - `src/`
 
@@ -106,6 +107,12 @@ Subcomandos `bitclaw update`, `bitclaw uninstall` e `bitclaw soul`, e `--version
 - `docs/PROJETO.md`: BitClaw — documento de projeto
 - `docs/TEST.md`: pilares do teste
 - `docs/identidade/`: SVGs da identidade visual e o script que os gera
+
+## Site
+
+- `site/build.py`: gera o site (GitHub Pages) em `_site/` a partir de `site/content/`, `docs/` e dos SVGs de `assets/` e `docs/identidade/`. `pip install -r site/requirements.txt` e `python3 site/build.py`.
+- `site/tools/render_png.py`: gera os PNGs (og-image, favicons, ilustrações) a partir dos SVGs; só macOS, e os PNGs ficam commitados.
+- `.github/workflows/pages.yml` publica o site a cada push na `main` que mexa em `site/`, `docs/` ou `assets/`.
 
 ## Scripts
 
