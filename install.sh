@@ -7,6 +7,9 @@
 #   BITCLAW_VERSION      versão a instalar, ex.: v0.2.0 (padrão: o último release)
 #   BITCLAW_INSTALL_DIR  pasta do binário (padrão: ~/.local/bin)
 #
+# Desinstalar (o mesmo que `bitclaw uninstall --yes`):
+#   curl -fsSL https://raw.githubusercontent.com/Gabrielfernandes7/bitclaw/main/install.sh | sh -s -- --uninstall
+#
 # O contrato com o release é o de src/app/update.rs: bitclaw-<target>.tar.gz e SHA256SUMS.
 # Tudo fica dentro de main, chamada na última linha: um download cortado no meio não roda nada.
 
@@ -43,7 +46,20 @@ sha256() {
   fi
 }
 
+uninstall() {
+  dir="${BITCLAW_INSTALL_DIR:-$HOME/.local/bin}"
+  config="${XDG_CONFIG_HOME:-$HOME/.config}/bitclaw"
+  [ -f "$dir/bitclaw" ] && rm -f "$dir/bitclaw" && say "apagado: $dir/bitclaw"
+  [ -d "$config" ] && rm -rf "$config" && say "apagado: $config"
+  say "as pastas .bitclaw/ dentro dos seus projetos ficam (backup, recibos e /undo)."
+  say "bitclaw desinstalado."
+}
+
 main() {
+  if [ "${1:-}" = "--uninstall" ]; then
+    uninstall
+    return
+  fi
   command -v curl >/dev/null 2>&1 || fail "preciso do curl"
   command -v tar >/dev/null 2>&1 || fail "preciso do tar"
 

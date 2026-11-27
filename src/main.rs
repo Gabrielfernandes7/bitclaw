@@ -30,6 +30,8 @@ struct Args {
     plan: bool,
     // `bitclaw update`: troca o binário pelo do último release e sai.
     update: bool,
+    // `bitclaw uninstall`: apaga o binário e o estado global.
+    uninstall: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -44,6 +46,7 @@ fn parse_args() -> Result<Args, String> {
         no_mouse: false,
         plan: false,
         update: false,
+        uninstall: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -62,6 +65,7 @@ fn parse_args() -> Result<Args, String> {
             // Modo Plan: só ferramentas que declaram somente leitura. Nada é alterado nem executado.
             "--plan" => args.plan = true,
             "update" => args.update = true,
+            "uninstall" => args.uninstall = true,
             "-V" | "--version" => {
                 println!("bitclaw {}", app::update::VERSION);
                 std::process::exit(0);
@@ -69,6 +73,7 @@ fn parse_args() -> Result<Args, String> {
             "-h" | "--help" => {
                 println!("uso: bitclaw [--config A.toml] [--model M] [--url U] [--dir D] [--yes] [--no-color] [--no-mouse] [--think] [--plan]");
                 println!("     bitclaw update     troca o binário pelo do último release");
+                println!("     bitclaw uninstall  apaga o binário e ~/.config/bitclaw (--yes não pergunta)");
                 println!("     bitclaw --version");
                 std::process::exit(0);
             }
@@ -87,6 +92,10 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
+    if args.uninstall {
+        println!("{}", app::uninstall::run(args.auto_yes)?);
+        return Ok(());
+    }
     if args.update {
         println!("{}", app::update::run()?);
         return Ok(());
