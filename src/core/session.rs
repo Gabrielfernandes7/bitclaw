@@ -51,10 +51,24 @@ pub struct SessionBuilder<'a> {
     hooks: Vec<Box<dyn TurnHook>>,
     retriever: Option<Box<dyn Retriever>>,
     verifier: Option<Box<dyn Verifier>>,
+    persona: Option<String>,
     root: PathBuf,
 }
 
+// Teto, em caracteres, da persona (SOUL.md) que entra no prompt do sistema. Num modelo pequeno, cada
+// token do prompt tira espaço da conversa; o que passa disto é cortado.
+pub const MAX_PERSONA_CHARS: usize = 1_200;
+
 impl<'a> SessionBuilder<'a> {
+    // Quem o agente é e como fala (o conteúdo do SOUL.md). Vai depois do prompt da configuração,
+    // cortado em `MAX_PERSONA_CHARS`. Texto vazio não muda nada.
+    pub fn persona(mut self, text: impl Into<String>) -> Self {
+        let text = text.into();
+        let text = text.trim();
+        self.persona = (!text.is_empty()).then(|| text.chars().take(MAX_PERSONA_CHARS).collect());
+        self
+    }
+
     pub fn model(mut self, model: Box<dyn ChatModel>) -> Self {
         self.model = Some(model);
         self
@@ -108,8 +122,11 @@ impl<'a> SessionBuilder<'a> {
             max_tool_output: cfg.limits.max_tool_output,
         };
         let ctx = ContextManager::new(cfg.model.context_window as usize, cfg.limits.reserve_output_tokens);
-        let messages = vec![json!({"role": "system", "content": cfg.system_prompt})];
-        let base_system = cfg.system_prompt.clone();
+        let base_system = match &self.persona {
+            Some(persona) => format!("{}\n\n{persona}", cfg.system_prompt),
+            None => cfg.system_prompt.clone(),
+        };
+        let messages = vec![json!({"role": "system", "content": base_system})];
         Ok(Session {
             model,
             registry,
@@ -131,7 +148,7 @@ impl<'a> SessionBuilder<'a> {
 
 impl Session {
     pub fn builder(cfg: &AgentConfig) -> SessionBuilder<'_> {
-        SessionBuilder { cfg, model: None, approver: None, tools: None, hooks: Vec::new(), retriever: None, verifier: None, root: PathBuf::from(".") }
+        SessionBuilder { cfg, model: None, approver: None, tools: None, hooks: Vec::new(), retriever: None, verifier: None, persona: None, root: PathBuf::from(".") }
     }
 
     // Oferece skills ao modelo: o catálogo vai ao prompt do sistema e `load_skill` é registrada.
@@ -318,6 +335,28 @@ url = "http://unused"
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn persona_follows_the_system_prompt_and_is_capped() {
+        let dir = tempdir("persona");
+        let cfg = config("");
+        let tools = crate::toolkit::registry_from_names(&cfg.tools).unwrap();
+        let s = Session::builder(&cfg)
+            .model(scripted(vec![]))
+            .approver(Box::new(AutoApprover))
+            .tools(tools)
+            .root(&dir)
+            .persona(format!("  Chame de Ana.\n{}", "x".repeat(MAX_PERSONA_CHARS * 2)))
+            .build()
+            .unwrap();
+        let system = s.messages()[0]["content"].as_str().unwrap();
+        assert!(system.starts_with("sistema de teste\n\nChame de Ana."));
+        assert!(system.chars().count() <= "sistema de teste\n\n".len() + MAX_PERSONA_CHARS);
+        // Texto vazio não muda o prompt.
+        let tools = crate::toolkit::registry_from_names(&cfg.tools).unwrap();
+        let s = Session::builder(&cfg).model(scripted(vec![])).approver(Box::new(AutoApprover)).tools(tools).root(&dir).persona("  ").build().unwrap();
+        assert_eq!(s.messages()[0]["content"], "sistema de teste");
     }
 
     #[test]
