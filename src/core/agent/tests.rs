@@ -1,6 +1,6 @@
 use super::guard::*;
 use super::*;
-use crate::core::context::ContextManager;
+use crate::core::context::{self, ContextManager};
 use crate::core::tool::{Approver, Outcome, Registry, ToolContext, ToolSpec};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -272,9 +272,10 @@ fn model_error_propagates() {
 fn repeated_call_stops_the_turn() {
     let r = root("repeat");
     let same = || call("list_dir", json!({"path": "."}));
-    let model = fake(vec![same(), same(), same()]);
+    // A última resposta é o pedido final sem ferramentas; vazia, o turno termina com o erro de repetição.
+    let model = fake(vec![same(), same(), same(), text("")]);
     let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
-    assert!(report.error.is_some());
+    assert_eq!(report.error.as_deref(), Some("o modelo repetiu a mesma chamada; interrompendo"));
 }
 
 #[test]
@@ -669,6 +670,135 @@ fn a_model_that_keeps_repeating_reads_is_asked_for_an_answer_without_tools() {
         !msgs.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains("sem chamar mais ferramentas"))),
         "o pedido final não fica no histórico"
     );
+}
+
+// Modelo falso que guarda o que recebeu em cada chamada.
+struct Recording {
+    replies: RefCell<VecDeque<Value>>,
+    seen: RefCell<Vec<Vec<Value>>>,
+}
+
+impl ChatModel for Recording {
+    fn complete(&self, messages: &[Value], _tools: &[ToolSpec]) -> Result<Reply, String> {
+        self.seen.borrow_mut().push(messages.to_vec());
+        let message = self.replies.borrow_mut().pop_front().ok_or_else(|| "roteiro esgotado".to_string())?;
+        Ok(Reply { message, prompt_tokens: None, output_tokens: None })
+    }
+}
+
+// Leitura mínima e idempotente: esquema curto, para o pedido final pesar mais que o que a falta de esquemas libera.
+struct Peek;
+
+impl Tool for Peek {
+    fn name(&self) -> &'static str {
+        "peek"
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new("peek", "lê", json!({"type": "object", "properties": {}}))
+    }
+
+    fn idempotent(&self) -> bool {
+        true
+    }
+
+    fn run(&self, _ctx: &ToolContext, _args: &Value) -> Outcome {
+        Outcome::Done("ok".into())
+    }
+}
+
+fn stuck_on_reads(filler: &str) -> (Recording, Vec<Value>) {
+    let same = || call("peek", json!({}));
+    let model = Recording {
+        replies: RefCell::new(vec![same(), same(), same(), text("O projeto está vazio.")].into()),
+        seen: RefCell::new(Vec::new()),
+    };
+    let msgs = vec![
+        json!({"role": "system", "content": "sistema"}),
+        json!({"role": "user", "content": "pedido antigo"}),
+        json!({"role": "assistant", "content": filler}),
+        json!({"role": "user", "content": "tarefa"}),
+    ];
+    (model, msgs)
+}
+
+#[test]
+fn the_forced_final_request_is_fitted_to_the_context_window() {
+    let registry = Registry::new(vec![Box::new(Peek)]);
+    let tools_json = crate::core::tool::specs_value(&registry.specs());
+    let budget = ctx().budget_chars(&tools_json);
+    let r = root("forced-final-fit");
+
+    // Mede o histórico enviado no 3º passo (o último ajustado antes do pedido final) sem enchimento.
+    let (probe, mut msgs) = stuck_on_reads("x");
+    run(&probe, &registry, &r, &mut msgs, &AutoApprover).unwrap();
+    let third = context::size(&probe.seen.borrow()[2]);
+
+    // Enchimento que deixa esse 3º passo quase no limite: o que for acrescentado depois estoura o orçamento.
+    let filler = "x".repeat(budget - third - 10);
+    let (model, mut msgs) = stuck_on_reads(&filler);
+    let report = run(&model, &registry, &r, &mut msgs, &AutoApprover).unwrap();
+
+    assert_eq!(report.text, "O projeto está vazio.");
+    let seen = model.seen.borrow();
+    assert!(seen[2].iter().any(|m| m["content"] == filler.as_str()), "o enchimento ainda cabia no 3º passo");
+    let last = seen.last().unwrap();
+    assert!(
+        context::size(last) + context::value_size(&json!([])) <= ctx().budget_chars(&json!([])),
+        "o pedido final cabe na janela: {} caracteres",
+        context::size(last)
+    );
+    assert!(!last.iter().any(|m| m["content"] == filler.as_str()), "o histórico antigo saiu para dar lugar ao pedido");
+    assert!(last.iter().any(|m| m["content"] == "tarefa"), "o pedido original continua");
+    assert!(last.last().unwrap()["content"].as_str().unwrap().contains("sem chamar mais ferramentas"));
+}
+
+#[test]
+fn an_error_from_the_forced_final_call_is_not_reported_as_a_repeated_call() {
+    let r = root("forced-final-error");
+    let same = || call("list_dir", json!({"path": "."}));
+    // O roteiro acaba antes do pedido final: o provedor falha nessa chamada.
+    let model = fake(vec![same(), same(), same()]);
+    let result = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover);
+    assert_eq!(result.err().as_deref(), Some("roteiro esgotado"));
+}
+
+#[test]
+fn a_looping_forced_final_is_cut_off_early() {
+    use std::cell::Cell;
+    struct StuckAtTheEnd {
+        calls: Cell<usize>,
+        pieces: Cell<usize>,
+    }
+    impl ChatModel for StuckAtTheEnd {
+        fn complete(&self, _m: &[Value], _t: &[ToolSpec]) -> Result<Reply, String> {
+            Err("só o streaming é usado".into())
+        }
+        fn complete_streaming(&self, _m: &[Value], tools: &[ToolSpec], on_chunk: &mut dyn FnMut(Chunk) -> bool) -> Result<Reply, String> {
+            self.calls.set(self.calls.get() + 1);
+            if !tools.is_empty() {
+                return Ok(Reply { message: call("list_dir", json!({"path": "."})), prompt_tokens: None, output_tokens: None });
+            }
+            let mut said = String::new();
+            for _ in 0..500 {
+                let piece = "Taxa: 144 máquina-dias produzem 800 apostilas.\n";
+                self.pieces.set(self.pieces.get() + 1);
+                said.push_str(piece);
+                if !on_chunk(Chunk::Content(piece)) {
+                    break;
+                }
+            }
+            Ok(Reply { message: text(&said), prompt_tokens: None, output_tokens: None })
+        }
+    }
+    let r = root("forced-final-loop");
+    let model = StuckAtTheEnd { calls: Cell::new(0), pieces: Cell::new(0) };
+    let mut msgs = start();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover).unwrap();
+    assert_eq!(report.error.as_deref(), Some(LOOPING));
+    assert!(report.text.is_empty());
+    assert!(model.pieces.get() < 20, "parou cedo: {} pedaços de 500", model.pieces.get());
+    assert!(!msgs.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains("Taxa:"))), "o laço não entra no histórico");
 }
 
 #[test]

@@ -237,7 +237,7 @@ pub fn run_turn_with(
         if suppressed == total_calls {
             stalled += 1;
             if stalled >= 2 {
-                return finish_without_tools(model, messages, progress, report);
+                return finish_without_tools(model, messages, ctx, progress, report);
             }
         } else {
             stalled = 0;
@@ -250,36 +250,47 @@ pub fn run_turn_with(
 
 // Última tentativa quando o modelo não sai das mesmas leituras: pede a resposta com o que já foi lido,
 // sem oferecer ferramentas. Se nem assim vier texto, o turno termina com o erro de repetição.
+// Como nas outras chamadas, o histórico é ajustado ao contexto, o detector de laço vigia a geração e um
+// erro do provedor sobe como está, em vez de virar um diagnóstico de repetição que não aconteceu.
 fn finish_without_tools(
     model: &dyn ChatModel,
     messages: &mut Vec<Value>,
+    ctx: &ContextManager,
     progress: &dyn Progress,
     mut report: TurnReport,
 ) -> Result<TurnReport, String> {
-    let mut ask = messages.clone();
-    ask.push(json!({
+    let prompt = json!({
         "role": "user",
         "content": "Você já tem os resultados das ferramentas acima. Responda agora ao pedido usando só o que eles trouxeram, sem chamar mais ferramentas."
-    }));
+    });
+    // Ajusta antes de acrescentar o pedido: depois, ele seria o turno atual e o pedido original sairia do histórico.
+    let mut ask = messages.clone();
+    if let Some(trim) = ctx.fit_reserving(&mut ask, &json!([]), context::value_size(&prompt))? {
+        report.trims.push(trim);
+    }
+    ask.push(prompt);
+
     progress.model_waiting(true);
+    let mut guard = LoopGuard::default();
     let reply = model.complete_streaming(&ask, &[], &mut |chunk| {
         progress.model_chunk(chunk);
-        !progress.cancelled()
+        !progress.cancelled() && !guard.feed(chunk)
     });
     progress.model_waiting(false);
-    match reply {
-        Ok(reply) if !progress.cancelled() => {
-            progress.model_tokens(reply.prompt_tokens, reply.output_tokens);
-            let text = reply.message.get("content").and_then(Value::as_str).unwrap_or("").trim().to_string();
-            if text.is_empty() {
-                report.error = Some("o modelo repetiu a mesma chamada; interrompendo".into());
-            } else {
-                messages.push(reply.message);
-                report.text = text;
-            }
+    let reply = reply?;
+    progress.model_tokens(reply.prompt_tokens, reply.output_tokens);
+    if guard.looping {
+        report.error = Some(LOOPING.into());
+    } else if progress.cancelled() {
+        report.error = Some(INTERRUPTED.into());
+    } else {
+        let text = reply.message.get("content").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        if text.is_empty() {
+            report.error = Some("o modelo repetiu a mesma chamada; interrompendo".into());
+        } else {
+            messages.push(reply.message);
+            report.text = text;
         }
-        Ok(_) => report.error = Some(INTERRUPTED.into()),
-        Err(_) => report.error = Some("o modelo repetiu a mesma chamada; interrompendo".into()),
     }
     Ok(report)
 }
