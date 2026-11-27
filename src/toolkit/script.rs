@@ -64,7 +64,7 @@ impl Tool for RunScript {
 
 // Troca caracteres de controle por `\xNN`: um script não pode esconder texto na prévia com `\r`
 // ou sequências de escape do terminal.
-fn visible(line: &str) -> String {
+pub(super) fn visible(line: &str) -> String {
     line.chars()
         .map(|c| if c.is_control() && c != '\t' { format!("\\x{:02x}", c as u32) } else { c.to_string() })
         .collect()
@@ -149,6 +149,16 @@ fn run_script(root: &Path, args: &Value, approver: &dyn Approver, limit: Duratio
 }
 
 #[cfg(not(unix))]
+pub(super) fn run_process(
+    _command: std::process::Command,
+    _root: &Path,
+    _limit: Duration,
+    _spawn_error: impl FnOnce(&std::io::Error) -> String,
+) -> Result<Outcome, String> {
+    Err("executar comandos só funciona em macOS e Linux".into())
+}
+
+#[cfg(not(unix))]
 fn execute(_root: &Path, _rel: &str, _path: &Path, _interpreter: Option<&str>, _extra: &[String], _limit: Duration) -> Result<Outcome, String> {
     Err("run_script só funciona em macOS e Linux".into())
 }
@@ -156,7 +166,6 @@ fn execute(_root: &Path, _rel: &str, _path: &Path, _interpreter: Option<&str>, _
 #[cfg(unix)]
 fn execute(root: &Path, rel: &str, path: &Path, interpreter: Option<&str>, extra: &[String], limit: Duration) -> Result<Outcome, String> {
     use std::os::unix::fs::PermissionsExt;
-    use std::os::unix::process::CommandExt;
 
     let mut command = match interpreter {
         // Pelo interpretador: o arquivo é lido, não executado, então não precisa de chmod.
@@ -173,26 +182,41 @@ fn execute(root: &Path, rel: &str, path: &Path, interpreter: Option<&str>, extra
             Command::new(path)
         }
     };
+    command.args(extra);
+    run_process(command, root, limit, |e| match e.raw_os_error() {
+        // ENOEXEC: sem shebang, o sistema não sabe qual interpretador usar.
+        Some(8) => format!("{rel} não pôde ser executado: a primeira linha precisa ser um shebang, como {}", shebang_for(rel)),
+        _ if interpreter.is_some() => format!("não consegui executar {rel} com {}: {e}", interpreter.unwrap_or("")),
+        _ => format!("não consegui executar {rel}: {e}"),
+    })
+}
+
+// Roda um processo já montado (programa e argumentos) como o `run_script` roda um script: na pasta do
+// projeto, com ambiente reduzido, sem stdin, em grupo de processos próprio, com prazo e saída limitada.
+// `spawn_error` diz, em português, por que o processo não subiu.
+#[cfg(unix)]
+pub(super) fn run_process(
+    mut command: Command,
+    root: &Path,
+    limit: Duration,
+    spawn_error: impl FnOnce(&std::io::Error) -> String,
+) -> Result<Outcome, String> {
+    use std::os::unix::process::CommandExt;
+
     command
-        .args(extra)
         .current_dir(root)
         .env_clear()
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        // Grupo próprio: no prazo, o script e o que ele iniciou saem juntos.
+        // Grupo próprio: no prazo, o processo e o que ele iniciou saem juntos.
         .process_group(0);
     for key in KEPT_ENV {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
         }
     }
-    let mut child = command.spawn().map_err(|e| match e.raw_os_error() {
-        // ENOEXEC: sem shebang, o sistema não sabe qual interpretador usar.
-        Some(8) => format!("{rel} não pôde ser executado: a primeira linha precisa ser um shebang, como {}", shebang_for(rel)),
-        _ if interpreter.is_some() => format!("não consegui executar {rel} com {}: {e}", interpreter.unwrap_or("")),
-        _ => format!("não consegui executar {rel}: {e}"),
-    })?;
+    let mut child = command.spawn().map_err(|e| spawn_error(&e))?;
 
     let stdout = capture(child.stdout.take());
     let stderr = capture(child.stderr.take());
@@ -218,7 +242,7 @@ fn execute(root: &Path, rel: &str, path: &Path, interpreter: Option<&str>, extra
     let output = join_output(&stdout.bytes(), &stderr.bytes());
 
     Ok(match (status.code(), timed_out) {
-        (_, true) => Outcome::Error(format!("tempo esgotado ({} s): o script foi interrompido\n{output}", limit.as_secs())),
+        (_, true) => Outcome::Error(format!("tempo esgotado ({} s): o processo foi interrompido\n{output}", limit.as_secs())),
         (Some(0), _) => Outcome::Done(format!("código de saída: 0\n{output}")),
         (Some(code), _) => Outcome::Error(format!("saiu com código {code}\n{output}")),
         (None, _) => Outcome::Error(format!("encerrado por um sinal\n{output}")),
