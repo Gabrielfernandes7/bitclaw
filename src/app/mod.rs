@@ -4,4 +4,5 @@ pub mod header;
 pub mod init;
 pub mod plain;
 pub mod provider;
+pub mod skill_install;
 pub mod tui;
