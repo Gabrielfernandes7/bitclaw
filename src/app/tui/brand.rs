@@ -509,6 +509,13 @@ mod tests {
         }
     }
 
+    // A mesma arte de `docs/MASCOTE.md`, seção 3.2.
+    #[test]
+    fn the_big_crab_at_scale_one_is_the_documented_one() {
+        let rows: Vec<String> = big_crab(1, true).iter().map(|r| r.trim_end().to_string()).collect();
+        assert_eq!(rows, ["██ ▄▄     ▄▄ ██", "▀███▀     ▀███▀", "  ▀██▄█▄█▄██▀", "   ██▄███▄██", "  ▄▄▀█▀▀▀█▀▄▄", " ▀▀  ▀   ▀  ▀▀"]);
+    }
+
     #[test]
     fn the_big_crab_scales_and_blinks_without_changing_size() {
         let one = big_crab(1, true);
