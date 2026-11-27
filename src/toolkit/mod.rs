@@ -11,7 +11,7 @@ use crate::core::tool::{Registry, Tool};
 
 // Nomes das ferramentas embutidas, na ordem padrão.
 pub const BUILTIN_TOOLS: &[&str] =
-    &["list_dir", "read_file", "grep_files", "edit_file", "create_file", "create_dir", "delete_file", "run_script"];
+    &["list_dir", "read_file", "grep_files", "find_files", "edit_file", "create_file", "create_dir", "delete_file", "run_script"];
 
 // Constrói uma ferramenta embutida pelo nome. Nome desconhecido devolve `None`.
 pub fn builtin_catalog(name: &str) -> Option<Box<dyn Tool>> {
@@ -19,6 +19,7 @@ pub fn builtin_catalog(name: &str) -> Option<Box<dyn Tool>> {
         "list_dir" => Some(Box::new(fs::ListDir)),
         "read_file" => Some(Box::new(fs::ReadFile)),
         "grep_files" => Some(Box::new(fs::GrepFiles)),
+        "find_files" => Some(Box::new(fs::FindFiles)),
         "edit_file" => Some(Box::new(fs::EditFile)),
         "create_file" => Some(Box::new(fs::CreateFile)),
         "create_dir" => Some(Box::new(fs::CreateDir)),

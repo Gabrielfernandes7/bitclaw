@@ -141,6 +141,21 @@ fn mutating_tools_are_marked() {
 }
 
 #[test]
+fn plan_mode_keeps_only_read_only_tools() {
+    let names = crate::toolkit::default_registry().read_only().names();
+    assert_eq!(names, vec!["list_dir", "read_file", "grep_files", "find_files"], "só leitura, na ordem do catálogo");
+    assert!(!names.contains(&"run_script"), "script pode alterar qualquer coisa: fica fora do modo Plan");
+}
+
+#[test]
+fn unannotated_tools_count_as_changing_and_destructive() {
+    let d = crate::core::tool::Annotations::default();
+    assert!(!d.read_only && d.destructive && !d.idempotent);
+    let reg = crate::toolkit::default_registry();
+    assert!(reg.mutates("run_script"), "sem declaração de leitura, script conta como alteração");
+}
+
+#[test]
 #[should_panic(expected = "duplicados")]
 fn duplicate_names_are_rejected() {
     Registry::new(vec![Box::new(ListDir), Box::new(ListDir)]);
@@ -202,20 +217,90 @@ fn grep_files_finds_lines_and_skips_target() {
     fs::write(r.join("src/a.rs"), "fn main() {}\nlet Token = 1;\n").unwrap();
     fs::write(r.join("target/b.rs"), "token oculto\n").unwrap();
     let out = run(&r, "grep_files", json!({"pattern": "token"}));
-    assert_eq!(out, Outcome::Done("src/a.rs:2: let Token = 1;".into()));
-    let none = run(&r, "grep_files", json!({"pattern": "inexistente"}));
-    assert_eq!(none, Outcome::Done("nada encontrado para \"inexistente\"".into()));
+    assert_eq!(out, Outcome::Done("1 ocorrências em 1 arquivos:\nsrc/a.rs\n  2: let Token = 1;".into()));
+    let Outcome::Done(none) = run(&r, "grep_files", json!({"pattern": "inexistente"})) else { panic!() };
+    assert!(none.starts_with("nada encontrado para \"inexistente\""), "{none}");
+    assert!(none.contains("Não conclua que não existe"), "{none}");
+    assert!(none.contains("ocultos ou ignorados"), "avisa que target ficou de fora: {none}");
+    // Pasta ignorada passada em path é percorrida.
+    let Outcome::Done(inside) = run(&r, "grep_files", json!({"pattern": "token", "path": "target"})) else { panic!() };
+    assert!(inside.contains("target/b.rs"), "{inside}");
 }
 
 #[test]
 fn grep_files_caps_results_and_refuses_paths_outside_the_project() {
     let r = root("grep-cap");
-    fs::write(r.join("a.txt"), "alvo\n".repeat(100)).unwrap();
+    for i in 0..12 {
+        fs::write(r.join(format!("f{i:02}.txt")), "alvo\n".repeat(10)).unwrap();
+    }
     let Outcome::Done(text) = run(&r, "grep_files", json!({"pattern": "alvo"})) else { panic!() };
-    assert_eq!(text.lines().count(), 41, "{text}");
-    assert!(text.contains("[+60 resultados omitidos"), "{text}");
+    assert!(text.starts_with("120 ocorrências em 12 arquivos:"), "{text}");
+    assert_eq!(text.lines().filter(|l| l.starts_with("  ") && !l.contains('[')).count(), 40, "{text}");
+    assert!(text.contains("  [+4 neste arquivo]"), "teto por arquivo: {text}");
+    assert!(text.contains("[também em: f07.txt (10)"), "lista o que sobrou: {text}");
     assert!(matches!(run(&r, "grep_files", json!({"pattern": "x", "path": "../"})), Outcome::Error(_)));
     assert!(matches!(run(&r, "grep_files", json!({"pattern": "  "})), Outcome::Error(_)));
+    assert!(matches!(run(&r, "grep_files", json!({"pattern": " | "})), Outcome::Error(_)));
+}
+
+// O caso real que motivou a mudança: "troque a cor amarela da TUI para vermelho". O código diz `Yellow`,
+// a cor é definida num arquivo e usada em vários, e assets e a pasta de build também têm "yellow".
+fn color_project(name: &str) -> std::path::PathBuf {
+    let r = root(name);
+    fs::create_dir_all(r.join("assets")).unwrap();
+    fs::create_dir_all(r.join("src/ui/widgets")).unwrap();
+    fs::create_dir_all(r.join("build")).unwrap();
+    fs::create_dir_all(r.join("gerado")).unwrap();
+    fs::write(r.join(".gitignore"), "/gerado\n*.log\n").unwrap();
+    fs::write(r.join(".env"), "YELLOW_TOKEN=segredo\n").unwrap();
+    fs::write(r.join("app.log"), "yellow\n").unwrap();
+    fs::write(r.join("gerado/theme.rs"), "pub const ACCENT: Color = Color::Yellow;\n").unwrap();
+    fs::write(r.join("build/theme.rs"), "pub const ACCENT: Color = Color::Yellow;\n").unwrap();
+    fs::write(r.join("assets/a.svg"), format!("<svg>{}<rect fill=\"yellow\"/></svg>\n", "<g/>".repeat(100))).unwrap();
+    fs::write(r.join("src/ui/widgets/status.rs"), "let a = fg(Color::Yellow);\nlet b = fg(Color::Yellow);\n").unwrap();
+    fs::write(r.join("src/ui/theme.rs"), "// Destaque.\npub const ACCENT: Color = Color::Yellow;\n").unwrap();
+    fs::write(r.join("logo.png"), b"\x89PNG\0\0yellow").unwrap();
+    r
+}
+
+#[test]
+fn grep_files_puts_the_definition_first_and_skips_hidden_ignored_and_binary_files() {
+    let r = color_project("grep-color");
+    let Outcome::Done(text) = run(&r, "grep_files", json!({"pattern": "yellow"})) else { panic!() };
+    let first = text.lines().nth(1).unwrap();
+    assert_eq!(first, "src/ui/theme.rs", "{text}");
+    assert!(text.contains("  2: pub const ACCENT: Color = Color::Yellow;  ← definição"), "{text}");
+    assert!(text.contains("src/ui/widgets/status.rs") && text.contains("assets/a.svg"), "{text}");
+    for hidden in [".env", "gerado/", "build/", "app.log", "logo.png"] {
+        assert!(!text.contains(hidden), "{hidden} não devia aparecer: {text}");
+    }
+    let svg = text.lines().find(|l| l.contains("fill")).unwrap();
+    assert!(svg.contains("yellow") && svg.chars().count() < 200, "trecho em volta da ocorrência: {svg}");
+    let Outcome::Done(rs) = run(&r, "grep_files", json!({"pattern": "yellow", "ext": ".rs"})) else { panic!() };
+    assert!(!rs.contains("a.svg"), "{rs}");
+}
+
+#[test]
+fn grep_files_broadens_a_portuguese_request_that_finds_nothing() {
+    let r = color_project("grep-broaden");
+    let Outcome::Done(text) = run(&r, "grep_files", json!({"pattern": "amarela"})) else { panic!() };
+    assert!(text.starts_with("nada encontrado para \"amarela\"; busca ampliada com \"yellow\""), "{text}");
+    assert!(text.contains("pub const ACCENT: Color = Color::Yellow;  ← definição"), "{text}");
+    let Outcome::Done(accents) = run(&r, "grep_files", json!({"pattern": "DESTAQUE|azul"})) else { panic!() };
+    assert!(accents.contains("src/ui/theme.rs\n  1: // Destaque."), "{accents}");
+}
+
+#[test]
+fn find_files_matches_names_and_paths() {
+    let r = color_project("find");
+    assert_eq!(run(&r, "find_files", json!({"pattern": "status"})), Outcome::Done("src/ui/widgets/status.rs".into()));
+    let Outcome::Done(text) = run(&r, "find_files", json!({"pattern": "theme|widgets"})) else { panic!() };
+    assert_eq!(text, "src/ui/theme.rs\nsrc/ui/widgets/\nsrc/ui/widgets/status.rs", "sem gerado/ nem build/");
+    let Outcome::Done(wide) = run(&r, "find_files", json!({"pattern": "tema"})) else { panic!() };
+    assert!(wide.contains("busca ampliada com \"theme|palette\"") && wide.contains("src/ui/theme.rs"), "{wide}");
+    let Outcome::Done(none) = run(&r, "find_files", json!({"pattern": "zzz"})) else { panic!() };
+    assert!(none.contains("grep_files") && none.contains("ocultos ou ignorados"), "{none}");
+    assert!(matches!(run(&r, "find_files", json!({"pattern": "a", "path": "/etc"})), Outcome::Error(_)));
 }
 
 #[test]
