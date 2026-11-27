@@ -3,6 +3,7 @@
 use super::guard::{LOOPING, LoopGuard};
 use super::model::ChatModel;
 use super::report::{Action, Progress, TurnReport};
+use super::verify::Verifier;
 use super::text_calls::{calls_from_text, normalize_args};
 use crate::core::context::{self, ContextManager};
 use crate::core::tool::{Approver, Outcome, Registry, ToolContext, specs_value};
@@ -24,12 +25,30 @@ pub const MAX_CONSECUTIVE_FAILURES: usize = 2;
 pub struct Limits {
     pub max_steps: usize,
     pub max_consecutive_failures: usize,
+    // Antes da primeira ação do turno, o modelo não vê as ferramentas destrutivas (editar, remover,
+    // executar): primeiro olha o projeto. Desligado por padrão.
+    pub phased: bool,
+    // Teto, em caracteres, do resultado de uma ferramenta que volta ao modelo. 0 = sem teto.
+    pub max_tool_output: usize,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { max_steps: MAX_STEPS, max_consecutive_failures: MAX_CONSECUTIVE_FAILURES }
+        Self { max_steps: MAX_STEPS, max_consecutive_failures: MAX_CONSECUTIVE_FAILURES, phased: false, max_tool_output: 0 }
     }
+}
+
+// Quantas vezes por turno a verificação automática pode devolver um problema ao modelo.
+const MAX_VERIFY_ROUNDS: usize = 2;
+
+// Corta `text` em `max` caracteres, dizendo quanto ficou de fora. `max == 0` não corta.
+pub(crate) fn clip(text: String, max: usize) -> String {
+    let total = text.chars().count();
+    if max == 0 || total <= max {
+        return text;
+    }
+    let kept: String = text.chars().take(max).collect();
+    format!("{kept}\n[… {} caracteres omitidos; peça um trecho menor]", total - max)
 }
 
 // Roda o ciclo com os limites padrão. Ver `run_turn_with`.
@@ -42,7 +61,7 @@ pub fn run_turn(
     ctx: &mut ContextManager,
     progress: &dyn Progress,
 ) -> Result<TurnReport, String> {
-    run_turn_with(model, registry, root, messages, approver, ctx, progress, Limits::default())
+    run_turn_with(model, registry, root, messages, approver, ctx, progress, Limits::default(), None)
 }
 
 // Motivo registrado quando o usuário interrompe o turno.
@@ -61,9 +80,9 @@ pub fn run_turn_with(
     ctx: &mut ContextManager,
     progress: &dyn Progress,
     limits: Limits,
+    verifier: Option<&dyn Verifier>,
 ) -> Result<TurnReport, String> {
-    let tools = registry.specs();
-    let tools_json = specs_value(&tools);
+    let mut verify_rounds = 0;
     let mut report = TurnReport::default();
     let mut last_call: Option<String> = None;
     let mut repeats = 0;
@@ -82,6 +101,10 @@ pub fn run_turn_with(
             report.error = Some(INTERRUPTED.into());
             return Ok(report);
         }
+        // Fase de exploração: sem ação ainda, o modelo só vê o que não destrói nada.
+        let phased = limits.phased && report.actions.is_empty();
+        let tools = if phased { registry.specs_without_destructive() } else { registry.specs() };
+        let tools_json = specs_value(&tools);
         if let Some(trim) = ctx.fit(messages, &tools_json)? {
             report.trims.push(trim);
         }
@@ -145,6 +168,19 @@ pub fn run_turn_with(
                 calls = from_text;
             }
         }
+        if calls.is_empty()
+            && let Some(v) = verifier
+            && verify_rounds < MAX_VERIFY_ROUNDS
+            && report.changed()
+            && let Some(problem) = v.verify(root, &report.actions)
+        {
+            verify_rounds += 1;
+            messages.push(json!({
+                "role": "user",
+                "content": format!("A verificação automática encontrou um problema na sua alteração:\n{problem}\nCorrija com a ferramenta de edição e responda só depois.")
+            }));
+            continue;
+        }
         if calls.is_empty() {
             report.text = msg.get("content").and_then(Value::as_str).unwrap_or("").trim().to_string();
             return Ok(report);
@@ -195,6 +231,14 @@ pub fn run_turn_with(
                 continue;
             }
 
+            if phased && registry.destructive(&name) {
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_name": name.clone(),
+                    "content": "ERRO: esta ferramenta ainda não está disponível. Olhe o projeto primeiro (leia ou procure) e então altere."
+                }));
+                continue;
+            }
             let outcome = registry.execute(&ToolContext::new(root, approver), &name, &args);
             progress.tool_done(&name, &args, &outcome);
             if registry.idempotent(&name) {
@@ -214,7 +258,7 @@ pub fn run_turn_with(
                 failing = None;
             }
 
-            messages.push(json!({"role": "tool", "tool_name": name.clone(), "content": outcome.text()}));
+            messages.push(json!({"role": "tool", "tool_name": name.clone(), "content": clip(outcome.text(), limits.max_tool_output)}));
             // Recusa do usuário encerra o turno: insistir na mesma alteração só o irrita e gasta passos.
             if matches!(outcome, Outcome::Refused(_)) {
                 report.actions.push(Action { name: name.clone(), args, outcome, mutates });

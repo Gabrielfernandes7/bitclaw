@@ -1,6 +1,7 @@
 //! Adaptador do Ollama: traduz o núcleo (modelos, esforço, ferramentas) para a API `/api/chat`.
 //! Tudo que é específico do Ollama fica aqui; o resto do BitClaw não sabe que ele existe.
 
+mod constrained;
 mod options;
 
 pub use options::{NUM_CTX, OllamaSettings, Options, SharedOptions, TEMPERATURE, DEFAULT_URL};
@@ -59,6 +60,7 @@ pub struct Client {
     pub options: SharedOptions,
     caps: ModelCapabilities,
     effort: SharedEffort,
+    constrained: bool,
 }
 
 // Dados de exibição do modelo, pedidos ao `/api/show`. Campos ausentes ficam como `None`.
@@ -174,7 +176,13 @@ impl Client {
             .timeout(MAX_CALL)
             .build()
             .map_err(|e| e.to_string())?;
-        Ok(Self { http, base_url, model, options, caps, effort })
+        Ok(Self { http, base_url, model, options, caps, effort, constrained: false })
+    }
+
+    /// Liga a decodificação restrita: as ferramentas vão como JSON Schema em `format`.
+    pub fn constrained(mut self, on: bool) -> Self {
+        self.constrained = on;
+        self
     }
 
     // Corpo da requisição para o esforço de raciocínio de agora.
@@ -184,7 +192,26 @@ impl Client {
         // Modelo sem ferramentas recebe a conversa sem o catálogo: não tenta chamar nada.
         let tools = if self.caps.tool_calling { tools } else { &[] };
         let options = *self.options.lock().unwrap_or_else(|e| e.into_inner());
+        if self.constrained && !tools.is_empty() {
+            let plain = constrained::plain_messages(messages, tools);
+            let mut body = build_body(&self.model, &plain, &[], &options, think);
+            body["format"] = constrained::schema(tools);
+            return body;
+        }
         build_body(&self.model, messages, tools, &options, think)
+    }
+
+    // Na resposta do modo restrito o conteúdo é JSON: vira mensagem com `tool_calls` ou texto.
+    fn finish(&self, mut reply: Reply, tools: &[ToolSpec]) -> Reply {
+        if self.constrained && !tools.is_empty() {
+            let content = reply.message.get("content").and_then(Value::as_str).unwrap_or("").to_string();
+            let mut message = constrained::into_message(&content, tools);
+            if let Some(t) = reply.message.get("thinking") {
+                message["thinking"] = t.clone();
+            }
+            reply.message = message;
+        }
+        reply
     }
 
     // Envia o corpo ao `/api/chat` e devolve a resposta HTTP, já checada.
@@ -215,7 +242,19 @@ impl Client {
         body["stream"] = json!(true);
         let resp = self.send_chat(&body)?;
         let lines = lines::stream(resp, "Ollama");
-        fold_stream(lines, on_chunk)
+        if !(self.constrained && !tools.is_empty()) {
+            return fold_stream(lines, on_chunk);
+        }
+        // O conteúdo bruto é JSON: não se mostra. Só o raciocínio e o "ainda esperando" passam.
+        let reply = fold_stream(lines, &mut |chunk| match chunk {
+            Chunk::Content(_) => on_chunk(Chunk::Idle),
+            other => on_chunk(other),
+        })?;
+        let reply = self.finish(reply, tools);
+        if let Some(text) = reply.message.get("content").and_then(Value::as_str).filter(|t| !t.is_empty()) {
+            on_chunk(Chunk::Content(text));
+        }
+        Ok(reply)
     }
 
     /// Envia o histórico e as ferramentas; devolve a mensagem do assistente.
@@ -223,11 +262,12 @@ impl Client {
         let body = self.chat_body(messages, tools);
         let resp = self.send_chat(&body)?;
         let v: Value = resp.json().map_err(|e| e.to_string())?;
-        Ok(Reply {
+        let reply = Reply {
             message: v.get("message").cloned().unwrap_or(Value::Null),
             prompt_tokens: v.get("prompt_eval_count").and_then(Value::as_u64),
             output_tokens: v.get("eval_count").and_then(Value::as_u64),
-        })
+        };
+        Ok(self.finish(reply, tools))
     }
 
     /// Detalhes do modelo para mostrar ao usuário. Campos ausentes ficam como `None`.

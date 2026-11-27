@@ -54,6 +54,12 @@ pub struct LimitsConfig {
     pub max_consecutive_failures: usize,
     // Tokens reservados para a resposta do modelo, fora do orçamento do histórico.
     pub reserve_output_tokens: usize,
+    // Antes da primeira ação, o modelo não vê as ferramentas destrutivas.
+    pub phased: bool,
+    // Teto, em caracteres, do resultado de cada ferramenta que volta ao modelo. 0 = sem teto.
+    pub max_tool_output: usize,
+    // Depois de alterar, roda a verificação do projeto e devolve o problema ao modelo.
+    pub verify: bool,
 }
 
 fn default_context_window() -> u32 {
@@ -66,6 +72,9 @@ impl Default for LimitsConfig {
             max_steps: MAX_STEPS,
             max_consecutive_failures: MAX_CONSECUTIVE_FAILURES,
             reserve_output_tokens: 1024,
+            phased: false,
+            max_tool_output: 0,
+            verify: false,
         }
     }
 }
@@ -155,7 +164,7 @@ name = "m"
         let cfg = AgentConfig::from_toml(BUNDLED).expect("agents/bitclaw.toml deve ser válido");
         assert_eq!(cfg.name, "BitClaw");
         assert_eq!(cfg.model.name, "nemotron-3-nano:4b-mlx");
-        assert_eq!(cfg.tools.len(), 8);
+        assert_eq!(cfg.tools.len(), 9);
         assert!(cfg.tools.iter().any(|t| t == "run_script"), "o agente padrão executa scripts, com confirmação");
     }
 

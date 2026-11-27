@@ -21,6 +21,8 @@ pub(super) enum Command {
     // Nova janela de contexto, em tokens.
     SetContext(usize),
     Init,
+    // Desfaz o último turno com alterações (ver `toolkit::fs::journal`).
+    Undo,
 }
 
 pub(super) enum UiEvent {
@@ -143,6 +145,7 @@ pub(super) fn worker<F>(
         match command {
             Command::Submit(text) => {
                 cancel.store(false, Ordering::Relaxed);
+                bitclaw::toolkit::fs::journal::begin_turn(session.root());
                 let result = session.submit(&text, &progress);
                 let _ = tx.send(UiEvent::Done { result, usage: session.usage() });
             }
@@ -159,6 +162,10 @@ pub(super) fn worker<F>(
                     }
                     Err(e) => e,
                 };
+                let _ = tx.send(UiEvent::Notice(notice));
+            }
+            Command::Undo => {
+                let notice = bitclaw::toolkit::fs::journal::undo_last_turn(session.root());
                 let _ = tx.send(UiEvent::Notice(notice));
             }
             Command::Init => {

@@ -5,6 +5,7 @@ use crate::core::tool::{Approver, Outcome, Tool, ToolContext, ToolSpec, str_arg,
 use serde_json::{json, Value};
 use std::path::Path;
 use super::backup::backup;
+use super::journal;
 use super::BACKUP_DIR;
 use crate::core::tool::{Preview, PreviewLine};
 use std::fs;
@@ -30,8 +31,8 @@ impl Tool for DeleteFile {
         )
     }
 
-    fn mutates(&self) -> bool {
-        true
+    fn annotations(&self) -> crate::core::tool::Annotations {
+        crate::core::tool::Annotations { read_only: false, destructive: true, idempotent: false }
     }
 
     fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {
@@ -50,17 +51,18 @@ fn delete_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Out
     }
 
     let content = fs::read_to_string(&path).unwrap_or_default();
-    let preview = Preview {
-        title: format!("remover arquivo {rel}"),
-        lines: vec![PreviewLine::Note(format!("{rel} será removido ({} linhas)", content.lines().count()))],
-    };
+    let preview = Preview::removal(
+        format!("remover arquivo {rel}"),
+        vec![PreviewLine::Note(format!("{rel} será removido ({} linhas)", content.lines().count()))],
+    );
     if !approver.approve(&preview) {
         return Ok(Outcome::Refused(format!("usuário recusou a remoção; {rel} foi mantido")));
     }
 
     // Backup antes de remover, no mesmo formato da edição.
-    backup(root, rel, &content)?;
+    let copia = backup(root, rel, &content)?;
 
     fs::remove_file(&path).map_err(|e| e.to_string())?;
+    journal::record(root, "removido", rel, Some(&copia), None);
     Ok(Outcome::Done(format!("arquivo removido: {rel} (cópia em {BACKUP_DIR}/)")))
 }

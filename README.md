@@ -168,7 +168,9 @@ troque o nome da função soma por adiciona em calc.py
 
 - `list_dir`: lista um diretório do projeto.
 - `read_file`: lê um arquivo. Arquivos com mais de 8 KB são truncados e o aviso diz quantas linhas ele tem. Para gastar menos contexto, `mode: "outline"` devolve só a estrutura (declarações e `//!`, com o número da linha, sem o módulo de testes) e `start_line`/`end_line` leem só um trecho.
-- `grep_files`: procura um texto (sem regex, ignora maiúsculas) e devolve `arquivo:linha: trecho`, no máximo 40 resultados. Pula `target`, `node_modules`, `.git` e `.bitclaw`.
+- `grep_files`: procura texto no conteúdo dos arquivos, em todas as subpastas (sem regex; ignora maiúsculas e acentos; alternativas com `|`, ex.: `yellow|amarelo`; filtro opcional `ext`). Agrupa por arquivo, põe primeiro quem tem uma definição (`const`, `fn`, `struct`...), marcada com `← definição`, e corta em 40 linhas (6 por arquivo), listando os arquivos que sobraram. Sem resultado, amplia a busca com as palavras soltas e a tradução de termos comuns (amarelo → yellow, tema → theme) e, se ainda assim nada vier, diz o que foi pulado e como procurar de outro jeito.
+- `find_files`: acha arquivos e pastas pelo nome ou caminho (não lê o conteúdo), com as mesmas regras de `grep_files`.
+- As duas buscas pulam o que o `.gitignore` da raiz ignora (nomes, caminhos e `*.ext`), arquivos e pastas ocultos (`.env`, `.git`, `.bitclaw`), `target`, `node_modules`, `dist`, `build` e arquivos binários. Uma pasta dessas passada em `path` é percorrida.
 - `edit_file`: troca um trecho exato que aparece uma única vez. Mostra o diff com contexto, pede confirmação e salva um backup em `.bitclaw/backup/`. Só altera arquivos existentes.
 - `create_file`: cria um arquivo novo com o conteúdo dado. Recusa sobrescrever um arquivo existente e pede confirmação.
 - `create_dir`: cria uma pasta nova e vazia, com as pastas pais que faltarem. Recusa pasta existente e pede confirmação.
@@ -211,7 +213,7 @@ Os testes não dependem de rede nem de modelo: usam um modelo falso com resposta
 ## Limites conhecidos
 
 - Modelos pequenos às vezes escrevem a chamada de ferramenta como texto. Há um fallback que reconhece três formatos (`calls_from_text` em `src/core/agent/text_calls.rs`): JSON (`{"name": ..., "arguments": ...}`), tokens especiais (`read_file{path:<|"|>a.txt<|"|>}`, inclusive várias coladas na linha) e estilo Python (`create_file(path="a.py", content="...")`). A chamada é regravada no histórico como `tool_calls`, para o resultado responder a uma chamada do modelo.
-- Leituras idênticas (`list_dir`, `read_file`, `grep_files`) não rodam duas vezes no mesmo turno: o modelo recebe um aviso e, se insistir, uma última rodada sem ferramentas para responder. Resposta totalmente vazia é pedida de novo, até duas vezes por turno.
+- Leituras idênticas (`list_dir`, `read_file`, `grep_files`, `find_files`) não rodam duas vezes no mesmo turno: o modelo recebe um aviso e, se insistir, uma última rodada sem ferramentas para responder. Resposta totalmente vazia é pedida de novo, até duas vezes por turno.
 - O modelo pode afirmar que concluiu uma tarefa sem ter aplicado todas as edições. Confira o arquivo. O programa avisa nos casos mais óbvios, mas não é garantia.
 - Ferramentas ainda são só as embutidas: não há carregamento de ferramentas externas nem de skills.
 - A biblioteca ainda não tem um segundo agente que a use de fora do repositório. Essa é a prova da Fase 6 de `docs/PROJETO.md`.

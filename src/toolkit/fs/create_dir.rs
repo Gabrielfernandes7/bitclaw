@@ -28,8 +28,8 @@ impl Tool for CreateDir {
         )
     }
 
-    fn mutates(&self) -> bool {
-        true
+    fn annotations(&self) -> crate::core::tool::Annotations {
+        crate::core::tool::Annotations { read_only: false, destructive: false, idempotent: false }
     }
 
     fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {
@@ -43,7 +43,7 @@ fn create_dir(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Outc
     if path.symlink_metadata().is_ok() {
         return Err(format!("{rel} já existe"));
     }
-    let preview = Preview { title: format!("nova pasta {rel}"), lines: vec![PreviewLine::Added(format!("{rel}/"))] };
+    let preview = Preview::new(format!("nova pasta {rel}"), vec![PreviewLine::Added(format!("{rel}/"))]);
     if !approver.approve(&preview) {
         return Ok(Outcome::Refused("usuário recusou a criação; nenhuma pasta foi criada".into()));
     }

@@ -69,6 +69,8 @@ pub(in crate::app::tui) struct View<'a> {
     pub(in crate::app::tui) live_rows: usize,
     // Sugestões de arquivo para o `@` sob o cursor. Vazio quando não há menção.
     pub(in crate::app::tui) mentions: Vec<Entry>,
+    // Imagem do mascote para terminais com protocolo gráfico (iTerm2, Kitty, Sixel).
+    pub(in crate::app::tui) mascot_image: Option<&'a ratatui_image::protocol::Protocol>,
 }
 
 // O estado do mascote e há quanto tempo ele dura, em ms.
@@ -128,12 +130,23 @@ pub(in crate::app::tui) fn banner_lines(settings: &Settings, stats: &SessionStat
     let head = header_lines(settings, stats);
     let with_mascot = mascot_rect(Rect::new(0, 0, width, MASCOT_ROWS)).is_some();
     if with_mascot {
-        for (i, art) in brand::frame(mascot.mood, mascot.ms).into_iter().enumerate().take(MASCOT_ROWS as usize) {
-            let mut spans = vec![Span::styled(art, fg(YELLOW)), Span::raw("  ")];
-            if let Some(h) = head.get(i) {
-                spans.extend(h.spans.iter().cloned());
+        if settings.graphics {
+            let pad = " ".repeat(brand::WIDTH as usize);
+            for i in 0..MASCOT_ROWS as usize {
+                let mut spans = vec![Span::raw(pad.clone()), Span::raw("  ")];
+                if let Some(h) = head.get(i) {
+                    spans.extend(h.spans.iter().cloned());
+                }
+                lines.push(Line::from(spans));
             }
-            lines.push(Line::from(spans));
+        } else {
+            for (i, art) in brand::frame(mascot.mood, mascot.ms).into_iter().enumerate().take(MASCOT_ROWS as usize) {
+                let mut spans = vec![Span::styled(art, fg(YELLOW)), Span::raw("  ")];
+                if let Some(h) = head.get(i) {
+                    spans.extend(h.spans.iter().cloned());
+                }
+                lines.push(Line::from(spans));
+            }
         }
     } else {
         lines.extend(head.into_iter().take(MASCOT_ROWS as usize));
@@ -204,6 +217,14 @@ fn draw_chat(f: &mut Frame, v: &View, area: Rect) {
         return;
     }
     f.render_widget(Paragraph::new(v.transcript.visible(area.height as usize)), area);
+    if let Some(proto) = v.mascot_image {
+        let first = v.transcript.first_visible(area.height as usize);
+        if first <= TOP_GAP as usize && mascot_rect(area).is_some() {
+            let y = area.y + TOP_GAP.saturating_sub(first as u16);
+            let mascot_area = Rect::new(area.x, y, brand::WIDTH, MASCOT_ROWS);
+            f.render_widget(ratatui_image::Image::new(proto), mascot_area);
+        }
+    }
     let back = v.transcript.scroll_back.min(v.transcript.total_rows().saturating_sub(area.height as usize));
     if back > 0 {
         let text = format!(" ↓ {back} linhas abaixo · PageDown ou a roda do mouse voltam ao fim ");
@@ -262,6 +283,7 @@ fn draw_composer(f: &mut Frame, v: &View, area: Rect) {
             Line::from(vec![
                 Span::styled(mark, name),
                 Span::styled(format!("{:<8} ", c.name), name),
+                Span::styled(if c.usage.is_empty() { String::new() } else { format!("{} ", c.usage) }, fg(KEYWORD)),
                 Span::styled(c.desc, fg(GRAY)),
             ])
         })

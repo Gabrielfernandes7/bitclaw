@@ -27,8 +27,8 @@ impl Tool for ListDir {
         )
     }
 
-    fn idempotent(&self) -> bool {
-        true
+    fn annotations(&self) -> crate::core::tool::Annotations {
+        crate::core::tool::Annotations { read_only: true, destructive: false, idempotent: true }
     }
 
     fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {

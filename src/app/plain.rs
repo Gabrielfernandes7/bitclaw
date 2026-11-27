@@ -55,7 +55,11 @@ impl Progress for Lines {
 
     fn tool_call(&self, name: &str, args: &Value) {
         let target = args.get("path").and_then(Value::as_str).unwrap_or("");
-        println!("  · {name} {target}");
+        // Nas buscas, o texto procurado diz mais que a pasta.
+        match args.get("pattern").and_then(Value::as_str) {
+            Some(pattern) => println!("  · {name} \"{pattern}\" {target}"),
+            None => println!("  · {name} {target}"),
+        }
     }
 
     // A saída de um script aparece como o programa a escreveu, sem depender do resumo do modelo.
@@ -165,6 +169,7 @@ pub fn run(
             }
             _ => {}
         }
+        bitclaw::toolkit::fs::journal::begin_turn(session.root());
         match session.submit(input, &Lines) {
             Ok(report) => print_report(&report),
             Err(e) => eprintln!("erro: {e}"),

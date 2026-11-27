@@ -6,22 +6,25 @@ pub(super) struct Cmd {
     pub(super) name: &'static str,
     pub(super) aliases: &'static [&'static str],
     pub(super) desc: &'static str,
+    // Argumentos aceitos, mostrados ao lado do nome no menu: `[a|b]` escolhe um, `<x>` é obrigatório.
+    pub(super) usage: &'static str,
 }
 
-pub(super) const COMMANDS: [Cmd; 13] = [
-    Cmd { name: "/help", aliases: &[], desc: "mostra os comandos e as teclas" },
-    Cmd { name: "/model", aliases: &[], desc: "troca o modelo: load <nome>, show [nome] ou busca entre os instalados" },
-    Cmd { name: "/effort", aliases: &[], desc: "esforço de raciocínio: só os níveis que o modelo aceita" },
-    Cmd { name: "/context", aliases: &[], desc: "janela de contexto em tokens: mostra, troca (16k, 32768) ou volta ao padrão (reset)" },
-    Cmd { name: "/temp", aliases: &["/temperature"], desc: "temperatura de geração: mostra, troca (0 a 2) ou volta ao padrão (reset)" },
-    Cmd { name: "/init", aliases: &[], desc: "cria o AGENTS.md com o resumo verificável do projeto" },
-    Cmd { name: "/clear", aliases: &[], desc: "apaga o histórico e mantém o prompt do sistema" },
-    Cmd { name: "/think", aliases: &[], desc: "liga ou desliga o raciocínio do modelo (gasta mais contexto)" },
-    Cmd { name: "/skills", aliases: &[], desc: "abre as skills para ligar e desligar" },
-    Cmd { name: "/skill", aliases: &[], desc: "baixa uma skill de um repositório git: install <dono/repo> [--path pasta], depois yes ou no" },
-    Cmd { name: "/status", aliases: &[], desc: "versão, modelo, contexto e estatísticas da sessão" },
-    Cmd { name: "/restart-dev", aliases: &[], desc: "recompila e reabre o BitClaw com as alterações do código (desenvolvimento)" },
-    Cmd { name: "/exit", aliases: &["/quit"], desc: "encerra o BitClaw" },
+pub(super) const COMMANDS: [Cmd; 14] = [
+    Cmd { name: "/help", aliases: &[], desc: "mostra os comandos e as teclas", usage: "" },
+    Cmd { name: "/model", aliases: &[], desc: "troca o modelo: load <nome>, show [nome] ou busca entre os instalados", usage: "<load|show> [nome]" },
+    Cmd { name: "/effort", aliases: &[], desc: "esforço de raciocínio: só os níveis que o modelo aceita", usage: "<off|low|medium|high>" },
+    Cmd { name: "/context", aliases: &[], desc: "janela de contexto em tokens: mostra, troca (16k, 32768) ou volta ao padrão (reset)", usage: "<tokens|reset>" },
+    Cmd { name: "/temp", aliases: &["/temperature"], desc: "temperatura de geração: mostra, troca (0 a 2) ou volta ao padrão (reset)", usage: "<0-2|reset>" },
+    Cmd { name: "/init", aliases: &[], desc: "cria o AGENTS.md com o resumo verificável do projeto", usage: "" },
+    Cmd { name: "/clear", aliases: &[], desc: "apaga o histórico e mantém o prompt do sistema", usage: "" },
+    Cmd { name: "/think", aliases: &[], desc: "liga ou desliga o raciocínio do modelo (gasta mais contexto)", usage: "" },
+    Cmd { name: "/skills", aliases: &[], desc: "abre as skills para ligar e desligar", usage: "" },
+    Cmd { name: "/skill", aliases: &[], desc: "baixa uma skill de um repositório git: install <dono/repo> [--path pasta], depois yes ou no", usage: "<install|yes|no> [dono/repo]" },
+    Cmd { name: "/status", aliases: &[], desc: "versão, modelo, contexto e estatísticas da sessão", usage: "" },
+    Cmd { name: "/undo", aliases: &[], desc: "desfaz as alterações do último turno (arquivos criados, editados ou removidos)", usage: "" },
+    Cmd { name: "/restart-dev", aliases: &[], desc: "recompila e reabre o BitClaw com as alterações do código (desenvolvimento)", usage: "" },
+    Cmd { name: "/exit", aliases: &["/quit"], desc: "encerra o BitClaw", usage: "" },
 ];
 
 impl Cmd {

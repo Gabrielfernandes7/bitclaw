@@ -198,6 +198,7 @@ mod tests {
             default_options: bitclaw::core::options::Options::default(),
             auto_yes: false,
             color: false,
+            graphics: false,
             mouse: true,
             root: std::path::PathBuf::from("/projeto"),
         }

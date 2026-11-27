@@ -333,6 +333,10 @@ impl Tool for LoadSkill {
         "load_skill"
     }
 
+    fn annotations(&self) -> crate::core::tool::Annotations {
+        crate::core::tool::Annotations { read_only: true, destructive: false, idempotent: false }
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "load_skill",

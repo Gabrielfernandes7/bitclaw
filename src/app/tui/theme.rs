@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) const YELLOW: Color = Color::Rgb(255, 204, 0);
 pub(super) const GRAY: Color = Color::Rgb(150, 150, 150);
+// Mais apagado que o cinza: o que está fora de alcance, como a reta depois do cursor de esforço.
+pub(super) const DIM: Color = Color::Rgb(85, 85, 85);
 pub(super) const GREEN: Color = Color::Rgb(0, 200, 120);
 pub(super) const RED: Color = Color::Rgb(255, 77, 77);
 pub(super) const ORANGE: Color = Color::Rgb(255, 150, 60);

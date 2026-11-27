@@ -4,6 +4,7 @@ use crate::core::sandbox::resolve;
 use crate::core::tool::{Approver, Outcome, Tool, ToolContext, ToolSpec, str_arg, wrap};
 use serde_json::{json, Value};
 use std::path::Path;
+use super::journal;
 use crate::core::tool::{Preview, PreviewLine};
 use std::fs;
 
@@ -29,8 +30,8 @@ impl Tool for CreateFile {
         )
     }
 
-    fn mutates(&self) -> bool {
-        true
+    fn annotations(&self) -> crate::core::tool::Annotations {
+        crate::core::tool::Annotations { read_only: false, destructive: false, idempotent: false }
     }
 
     fn run(&self, ctx: &ToolContext, args: &Value) -> Outcome {
@@ -47,10 +48,7 @@ fn create_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Out
         return Err(format!("{rel} já existe; use edit_file para alterar um arquivo existente"));
     }
 
-    let preview = Preview {
-        title: format!("novo arquivo {rel}"),
-        lines: content.lines().map(|l| PreviewLine::Added(l.to_string())).collect(),
-    };
+    let preview = Preview::new(format!("novo arquivo {rel}"), content.lines().map(|l| PreviewLine::Added(l.to_string())).collect());
     if !approver.approve(&preview) {
         return Ok(Outcome::Refused("usuário recusou a criação; nenhum arquivo foi criado".into()));
     }
@@ -59,5 +57,6 @@ fn create_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Out
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     fs::write(&path, content).map_err(|e| e.to_string())?;
+    journal::record(root, "criado", rel, None, Some(content.as_bytes()));
     Ok(Outcome::Done(format!("arquivo criado: {rel}")))
 }
