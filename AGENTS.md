@@ -13,6 +13,8 @@ cargo test
 cargo run
 ```
 
+Flags do binário: `--config`, `--model`, `--url`, `--dir`, `--yes`, `--no-color`, `--no-mouse`, `--think` e `--plan` (modo Plan: só ferramentas que declaram `read_only`).
+
 ## Estrutura
 
 - `Cargo.lock`
@@ -33,51 +35,69 @@ cargo run
 
 ## Agentes
 
-- `agents/bitclaw.toml`
+- `agents/bitclaw.toml` (padrão, embutido no binário)
+- `agents/openrouter.toml`
 
 ## Notas
 
 <!-- Acrescente o que não é óbvio no código: convenções, limites, o que não mexer. -->
 
+- **Ferramenta nova declara suas anotações.** `Tool::annotations()` tem `read_only`, `destructive` e `idempotent`. Sem declaração, a ferramenta vale como alteradora e destrutiva. Isso vale para `run_script`, que por isso fica fora do modo Plan.
+- **Prévia tem tipo.** `Preview::new` é uma alteração; `Preview::removal` é uma remoção e nunca entra em aprovação em lote. O tipo não vem do título.
+- **Skills instaladas carregam só com digest aprovado.** `/skill install` grava o SHA-256 da pasta em `.bitclaw/skills.lock`. Skill cujo conteúdo mudou, ou sem digest, não é carregada, e a lista de ignoradas diz por quê. Skill instalada antes do digest precisa ser apagada e instalada de novo.
+- **Recibos de aprovação** ficam em `.bitclaw/approvals.jsonl`: tipo, título, decisão e quem decidiu. Aprovação em lote (`a`) aparece como do usuário.
+- **`/undo` desfaz o último turno com alterações** a partir de `.bitclaw/undo.jsonl`. Só mexe em arquivo que ainda está como o turno deixou. Não desfaz criação de pasta, nem o `/init`. No modo simples (sem terminal) não há `/undo`.
+- **Mascote.** A arte vem de `assets/bitclaw-crab.svg`, a fonte única. Em terminais gráficos (como iTerm2 no macOS), o SVG é rasterizado diretamente em RGBA e exibido via protocolo gráfico nativo; em terminais sem suporte a imagens (como Terminal.app) ou em modo texto, há fallback com meios-blocos.
+
 ## Stack
 
 - Rust, edição 2024
-- Dependências: crossterm, ratatui, ratatui-textarea, reqwest, serde, serde_json, toml
+- Dependências: crossterm, image, ratatui, ratatui-image, ratatui-textarea, reqwest, resvg, serde, serde_json, sha2, toml
 
 ## Código
 
-- `src/agent.rs`: Ciclo modelo → ferramentas → modelo.
-- `src/config.rs`: Configuração de um agente, lida de TOML.
-- `src/context.rs`: Gerenciador de contexto: mantém o histórico dentro do orçamento da janela do modelo.
-- `src/init.rs`: `/init`: cria o `AGENTS.md` do projeto com fatos extraídos do próprio repositório.
-- `src/lib.rs`: BitClaw como biblioteca: o core de agente.
-- `src/main.rs`: Binário do BitClaw: lê a configuração, monta as peças (adaptador do Ollama, aprovação, interface) e abre o terminal.
-- `src/models.rs`: Modelos e suas capacidades, sem depender de provedor nem de interface.
-- `src/ollama.rs`: Adaptador do Ollama: traduz o núcleo (modelos, esforço, ferramentas) para a API `/api/chat`.
-- `src/sandbox.rs`: Resolve caminhos do agente dentro da pasta do projeto: recusa caminhos absolutos, `..` e symlinks que saem dela.
-- `src/session.rs`: Sessão de um agente: histórico, orçamento de contexto e um turno por vez.
-- `src/skills.rs`: Skills: instruções em pastas com `SKILL.md`, carregadas sob demanda.
-- `src/tools.rs`: Ferramentas de arquivo do agente (list_dir, read_file, edit_file, create_file, create_dir e delete_file), a aprovação das alterações e o backup do que é sobrescrito.
-- `src/tui/`: Interface de terminal do BitClaw, com ratatui em tela cheia.
-  - `src/tui/brand.rs`: Identidade visual do BitClaw: o mascote e o cabeçalho de texto.
-  - `src/tui/commands.rs`: Comandos com `/` e o menu que os lista.
-  - `src/tui/history.rs`: Histórico das tarefas enviadas, navegado com ↑ e ↓ como no shell.
-  - `src/tui/input.rs`: Entrada do usuário: teclas, painéis e comandos com `/`.
-  - `src/tui/markdown.rs`: Renderização leve de Markdown para o terminal: títulos, listas, `código`, **negrito** e blocos de código.
-  - `src/tui/mention.rs`: Menção de arquivos com `@`: digitar `@docs/` lista o que há na pasta, e Tab ou Enter completa.
-  - `src/tui/plain.rs`: Modo simples: quando a entrada ou a saída não é um terminal (pipes, scripts), o BitClaw lê uma tarefa por linha e escreve texto puro, sem cores nem interface interativa.
-  - `src/tui/print.rs`: Saída para a conversa: cabeçalho, avisos, prévias e relatório do turno.
-  - `src/tui/theme.rs`: Cores e estilos da interface.
-  - `src/tui/worker.rs`: Ponte entre a interface e o agente: a sessão roda numa thread, e os dois conversam por canais.
+- `src/main.rs`: binário do BitClaw. Lê a configuração, escolhe o provedor, monta a sessão (`--plan` filtra as ferramentas; o aprovador é embrulhado para registrar recibos) e abre a TUI ou o modo simples.
+- `src/lib.rs`: BitClaw como biblioteca. Expõe `core`, `toolkit` e `adapters`.
+- `src/core/`: o agente, sem rede, sem terminal e sem provedor.
+  - `src/core/agent/`: `turn.rs` (laço modelo → ferramentas → modelo), `guard.rs` (detector de laço), `text_calls.rs` (chamadas escritas como texto), `hook.rs` (gancho pós-turno), `model.rs` (contrato `ChatModel`), `report.rs` (`TurnReport` e `Progress`).
+  - `src/core/tool/`: contrato `Tool` com `Annotations`, `Registry` (inclui `read_only()` para o modo Plan) e `Approver` com `Preview` tipada.
+  - `src/core/session.rs`: sessão de um agente, a API pública do core.
+  - `src/core/config.rs`: configuração de um agente, lida de TOML.
+  - `src/core/context.rs`: mantém o histórico dentro do orçamento da janela do modelo.
+  - `src/core/skill.rs`: skills, instruções em pastas com `SKILL.md`, carregadas sob demanda pela ferramenta `load_skill`.
+  - `src/core/sandbox.rs`: resolve caminhos dentro da pasta do projeto (recusa absolutos, `..` e symlinks que saem dela).
+  - `src/core/models.rs`, `src/core/options.rs`: modelos e capacidades; opções de geração que a interface muda.
+- `src/toolkit/`: ferramentas prontas, opcionais.
+  - `src/toolkit/fs/`: `list_dir`, `read_file`, `grep_files`, `find_files`, `edit_file`, `create_file`, `create_dir` e `delete_file`. `backup.rs` guarda o conteúdo anterior em `.bitclaw/backup`; `journal.rs` é o diário do `/undo`.
+  - `src/toolkit/script.rs`: `run_script`, com aprovação, prazo, saída limitada e ambiente reduzido.
+  - `src/toolkit/claims.rs`: confere se o texto final diz que criou, alterou ou removeu algo que as ações não confirmam.
+- `src/adapters/`: provedores de modelo. `ollama/` traduz o núcleo para `/api/chat`; `openrouter/` traduz para `/chat/completions`; `lines.rs` lê respostas em streaming.
+- `src/app/`: o BitClaw em si.
+  - `src/app/provider.rs`: o único lugar que sabe quais adaptadores existem.
+  - `src/app/skill_install.rs`: `/skill install` (git, prévia, aprovação, lock com digest) e a carga das skills instaladas.
+  - `src/app/receipts.rs`: `Recorded`, o aprovador que grava os recibos.
+  - `src/app/init.rs`: `/init`, que cria o `AGENTS.md` com fatos do próprio repositório.
+  - `src/app/header.rs`: texto do cabeçalho.
+  - `src/app/plain.rs`: modo simples, uma tarefa por linha, texto puro.
+  - `src/app/tui/`: interface de terminal com ratatui.
+    - `brand.rs`: mascote (lido do SVG) e os textos de aviso.
+    - `commands.rs`: comandos com `/` e o menu que os lista.
+    - `input.rs`: teclas, painéis e despacho dos comandos.
+    - `worker.rs`: ponte com a sessão, que roda numa thread e conversa por canais. Marca o começo de cada turno no diário.
+    - `mod.rs`, `transcript.rs`, `steps.rs`, `print.rs`, `markdown.rs`, `mention.rs`, `history.rs`, `clipboard.rs`, `restart.rs`, `theme.rs`: a conversa, os passos, a saída, o Markdown, a menção `@`, o histórico de entradas, a área de transferência, o `/restart-dev` e as cores.
+    - `view/`: desenho dos painéis e da barra de status.
 
 ## Documentação
 
-- `README.md`: seções Pré-requisitos, Como rodar, Configuração do agente, Usar como biblioteca, Uso no prompt, Ferramentas, Contexto, Avaliação com modelos reais, Testes, Segurança
-- `docs/CHOICE.md`: Escolha: política para o histórico que excede o contexto
-- `docs/MODELOS.md`: Modelos para testar e diagnósticos
+- `README.md`: seções Pré-requisitos, Como rodar, Configuração do agente, Usar como biblioteca, Uso no prompt, Ferramentas, Contexto, Avaliação com modelos reais, Testes, Segurança, Limites conhecidos, Estrutura
+- `docs/ARCHITECTURE.md`: arquitetura alvo do `src/` e o plano de refatoração
+- `docs/CHOICE.md`: escolha: política para o histórico que excede o contexto
+- `docs/MODELOS.md`: modelos para testar e diagnósticos
+- `docs/MASCOTE.md`: mascote do BitClaw: versões e variações
 - `docs/PROJETO.md`: BitClaw — documento de projeto
+- `docs/TEST.md`: pilares do teste
+- `docs/identidade/`: SVGs da identidade visual e o script que os gera
 
 ## Scripts
 
-- `scripts/eval.sh`: Avaliação com modelos reais (Fase 5 de docs/PROJETO.md).
-
+- `scripts/eval.sh`: avaliação com modelos reais (Fase 5 de docs/PROJETO.md).
