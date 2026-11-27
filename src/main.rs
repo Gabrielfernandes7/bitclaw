@@ -207,5 +207,7 @@ fn run() -> Result<(), String> {
 // Monta a sessão: as ferramentas vêm do toolkit, pelos nomes do TOML.
 fn build_session(cfg: &AgentConfig, client: Box<dyn ChatModel>, approver: Box<dyn Approver>, root: &std::path::Path) -> Result<Session, String> {
     let tools = toolkit::registry_from_names(&cfg.tools).map_err(|e| format!("configuração: {e}"))?;
-    Session::builder(cfg).model(client).approver(approver).tools(tools).hook(Box::new(toolkit::claims::FileClaims)).root(root).build()
+    let builder = Session::builder(cfg).model(client).approver(approver).tools(tools).hook(Box::new(toolkit::claims::FileClaims)).retriever(Box::new(toolkit::fs::SymbolIndex::default())).root(root);
+    let builder = if cfg.limits.verify { builder.verifier(Box::new(toolkit::verify::ProjectCheck)) } else { builder };
+    builder.build()
 }

@@ -510,7 +510,7 @@ fn cancelling_stops_the_turn_without_dangling_tool_calls() {
     let mut messages = vec![json!({"role": "user", "content": "x"})];
     let report = run_turn_with(
         &model, &registry, &dir, &mut messages, &AutoApprover, &mut ctx(),
-        &CancelAfterFirstReply(std::cell::Cell::new(0)), Limits::default(),
+        &CancelAfterFirstReply(std::cell::Cell::new(0)), Limits::default(), None,
     )
     .unwrap();
     assert_eq!(report.error.as_deref(), Some(INTERRUPTED));
@@ -868,4 +868,61 @@ fn a_model_that_stays_silent_ends_with_an_empty_report_after_two_retries() {
     let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
     assert!(report.text.is_empty());
     assert!(report.actions.is_empty());
+}
+
+// ---- Fases, teto de saída e verificação automática ----
+
+fn limits(phased: bool, max_tool_output: usize) -> Limits {
+    Limits { phased, max_tool_output, ..Limits::default() }
+}
+
+#[test]
+fn a_destructive_call_before_looking_is_refused_when_phased() {
+    let r = root("phased");
+    fs::write(r.join("a.txt"), "x").unwrap();
+    let model = fake(vec![call("delete_file", json!({"path": "a.txt"})), text("ok")]);
+    let mut msgs = start();
+    let report = run_turn_with(
+        &model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover, &mut ctx(), &Silent, limits(true, 0), None,
+    )
+    .unwrap();
+    assert!(r.join("a.txt").exists(), "o arquivo não pode ter sido removido");
+    assert!(report.actions.is_empty());
+    assert!(msgs.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains("ainda não está disponível"))));
+}
+
+#[test]
+fn clip_marks_what_was_left_out_and_zero_means_no_cap() {
+    let long = "a".repeat(50);
+    assert_eq!(super::turn::clip(long.clone(), 0), long);
+    let cut = super::turn::clip(long, 10);
+    assert!(cut.starts_with("aaaaaaaaaa\n[… 40 caracteres omitidos"), "{cut}");
+}
+
+struct Once(RefCell<bool>);
+
+impl Verifier for Once {
+    fn verify(&self, _root: &Path, _actions: &[Action]) -> Option<String> {
+        let first = !*self.0.borrow();
+        *self.0.borrow_mut() = true;
+        first.then(|| "error: não compila".to_string())
+    }
+}
+
+#[test]
+fn a_failed_verification_goes_back_to_the_model_once() {
+    let r = root("verify");
+    let model = fake(vec![
+        call("create_file", json!({"path": "a.txt", "content": "x"})),
+        text("Pronto."),
+        text("Corrigido."),
+    ]);
+    let mut msgs = start();
+    let report = run_turn_with(
+        &model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover, &mut ctx(), &Silent, Limits::default(),
+        Some(&Once(RefCell::new(false))),
+    )
+    .unwrap();
+    assert_eq!(report.text, "Corrigido.");
+    assert!(msgs.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains("verificação automática"))));
 }

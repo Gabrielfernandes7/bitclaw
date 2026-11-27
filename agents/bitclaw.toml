@@ -52,3 +52,9 @@ max_steps = 8
 max_consecutive_failures = 2
 # Tokens reservados para a resposta, fora do orçamento do histórico.
 reserve_output_tokens = 1024
+# Modelos pequenos (~1B): ferramentas destrutivas só depois de olhar o projeto.
+phased = false
+# Teto, em caracteres, do resultado de cada ferramenta que volta ao modelo (0 = sem teto).
+max_tool_output = 0
+# Depois de alterar, roda `cargo check` (Rust) ou `py_compile` (Python) e devolve o erro ao modelo.
+verify = false

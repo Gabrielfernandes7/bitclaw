@@ -2,9 +2,10 @@
 //! É a API pública do core. Um agente novo monta uma `Session` e chama `submit`; não precisa
 //! conhecer o loop nem o adaptador de modelo.
 
-use crate::core::agent::{self, ChatModel, Limits, Progress, TurnHook, TurnReport};
+use crate::core::agent::{self, ChatModel, Limits, Progress, TurnHook, TurnReport, Verifier};
 use crate::core::config::AgentConfig;
 use crate::core::context::{self, ContextManager, Usage};
+use crate::core::retrieve::Retriever;
 use crate::core::skill::{self as skills, Disabled, Skill};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -17,6 +18,8 @@ pub struct Session {
     registry: Registry,
     approver: Box<dyn Approver>,
     hooks: Vec<Box<dyn TurnHook>>,
+    retriever: Option<Box<dyn Retriever>>,
+    verifier: Option<Box<dyn Verifier>>,
     root: PathBuf,
     limits: Limits,
     ctx: ContextManager,
@@ -46,6 +49,8 @@ pub struct SessionBuilder<'a> {
     approver: Option<Box<dyn Approver>>,
     tools: Option<Registry>,
     hooks: Vec<Box<dyn TurnHook>>,
+    retriever: Option<Box<dyn Retriever>>,
+    verifier: Option<Box<dyn Verifier>>,
     root: PathBuf,
 }
 
@@ -71,6 +76,18 @@ impl<'a> SessionBuilder<'a> {
         self
     }
 
+    // Anexa a cada tarefa os trechos do projeto que o `Retriever` achar prováveis.
+    pub fn retriever(mut self, retriever: Box<dyn Retriever>) -> Self {
+        self.retriever = Some(retriever);
+        self
+    }
+
+    // Depois de uma alteração, roda a verificação e devolve o problema ao modelo para corrigir.
+    pub fn verifier(mut self, verifier: Box<dyn Verifier>) -> Self {
+        self.verifier = Some(verifier);
+        self
+    }
+
     // Pasta do projeto. Sem esta chamada, a pasta atual.
     pub fn root(mut self, root: impl Into<PathBuf>) -> Self {
         self.root = root.into();
@@ -87,6 +104,8 @@ impl<'a> SessionBuilder<'a> {
         let limits = Limits {
             max_steps: cfg.limits.max_steps,
             max_consecutive_failures: cfg.limits.max_consecutive_failures,
+            phased: cfg.limits.phased,
+            max_tool_output: cfg.limits.max_tool_output,
         };
         let ctx = ContextManager::new(cfg.model.context_window as usize, cfg.limits.reserve_output_tokens);
         let messages = vec![json!({"role": "system", "content": cfg.system_prompt})];
@@ -96,6 +115,8 @@ impl<'a> SessionBuilder<'a> {
             registry,
             approver,
             hooks: self.hooks,
+            retriever: self.retriever,
+            verifier: self.verifier,
             root,
             limits,
             ctx,
@@ -110,7 +131,7 @@ impl<'a> SessionBuilder<'a> {
 
 impl Session {
     pub fn builder(cfg: &AgentConfig) -> SessionBuilder<'_> {
-        SessionBuilder { cfg, model: None, approver: None, tools: None, hooks: Vec::new(), root: PathBuf::from(".") }
+        SessionBuilder { cfg, model: None, approver: None, tools: None, hooks: Vec::new(), retriever: None, verifier: None, root: PathBuf::from(".") }
     }
 
     // Oferece skills ao modelo: o catálogo vai ao prompt do sistema e `load_skill` é registrada.
@@ -174,7 +195,10 @@ impl Session {
                 object.remove("thinking");
             }
         }
-        let input = self.with_named_skills(input);
+        let mut input = self.with_named_skills(input);
+        if let Some(found) = self.retriever.as_ref().and_then(|r| r.retrieve(&self.root, &input)) {
+            input.push_str(&format!("\n\n{found}"));
+        }
         self.messages.push(json!({"role": "user", "content": input}));
         let result = agent::run_turn_with(
             self.model.as_ref(),
@@ -185,6 +209,7 @@ impl Session {
             &mut self.ctx,
             progress,
             self.limits,
+            self.verifier.as_deref(),
         );
         if result.is_err() {
             self.messages = snapshot;

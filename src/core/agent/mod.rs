@@ -7,8 +7,10 @@ mod model;
 mod report;
 mod text_calls;
 mod turn;
+mod verify;
 
 pub use hook::TurnHook;
+pub use verify::Verifier;
 pub use guard::{LOOPING, is_looping};
 pub use model::{ChatModel, Chunk, Reply};
 pub use report::{Action, Progress, Silent, TurnReport};

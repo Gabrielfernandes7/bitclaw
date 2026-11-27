@@ -6,6 +6,7 @@
 pub mod claims;
 pub mod fs;
 pub mod script;
+pub mod verify;
 
 use crate::core::tool::{Registry, Tool};
 
