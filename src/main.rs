@@ -118,7 +118,12 @@ fn run() -> Result<(), String> {
         None => (Vec::new(), Vec::new()),
     };
     let skills = skills::with_builtins(project_skills);
-    let mut info = vec![format!("projeto {}", root.display()), provider.model_line(&cfg, &default_info)];
+    let provider_label = provider.label().to_string();
+    let model_details = provider.model_details(&default_info);
+    let mut info = vec![
+        app::header::project_line(&root),
+        app::header::model_line(&cfg.model.name, start_effort, &provider_label, &model_details, cfg.model.context_window),
+    ];
     info.extend(provider.notices.iter().cloned());
     // Os nomes das skills não vão para a tela da TUI (o painel `/skills` os mostra). O modo simples os lista.
     let mut skill_info = Vec::new();
@@ -152,6 +157,8 @@ fn run() -> Result<(), String> {
         let settings = app::tui::Settings {
             title: cfg.name.clone(),
             info,
+            provider: provider_label,
+            details: model_details,
             skills: skills.clone(),
             skills_off: Arc::clone(&skills_off),
             model: Arc::clone(&active),

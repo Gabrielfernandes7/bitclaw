@@ -1,5 +1,6 @@
 //! O BitClaw em si: interface de terminal e modo simples.
 
+pub mod header;
 pub mod init;
 pub mod plain;
 pub mod provider;
