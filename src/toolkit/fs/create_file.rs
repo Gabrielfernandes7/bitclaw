@@ -4,6 +4,7 @@ use crate::core::sandbox::resolve;
 use crate::core::tool::{Approver, Outcome, Tool, ToolContext, ToolSpec, str_arg, wrap};
 use serde_json::{json, Value};
 use std::path::Path;
+use super::journal;
 use crate::core::tool::{Preview, PreviewLine};
 use std::fs;
 
@@ -56,5 +57,6 @@ fn create_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Out
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     fs::write(&path, content).map_err(|e| e.to_string())?;
+    journal::record(root, "criado", rel, None, Some(content.as_bytes()));
     Ok(Outcome::Done(format!("arquivo criado: {rel}")))
 }

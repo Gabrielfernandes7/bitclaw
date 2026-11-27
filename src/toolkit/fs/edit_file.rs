@@ -5,6 +5,7 @@ use crate::core::tool::{Approver, Outcome, Tool, ToolContext, ToolSpec, str_arg,
 use serde_json::{json, Value};
 use std::path::Path;
 use super::backup::backup;
+use super::journal;
 use super::preview::edit_preview;
 use std::fs;
 
@@ -66,9 +67,10 @@ fn edit_file(root: &Path, args: &Value, approver: &dyn Approver) -> Result<Outco
     }
 
     // Backup antes de escrever.
-    backup(root, rel, &content)?;
+    let copia = backup(root, rel, &content)?;
 
     fs::write(&path, &updated).map_err(|e| e.to_string())?;
+    journal::record(root, "escrito", rel, Some(&copia), Some(updated.as_bytes()));
     // Só o essencial volta ao modelo: o diff já foi mostrado ao usuário na aprovação, e o caminho do
     // backup não serve a ele. Repetir a edição é o erro mais comum, por isso o aviso fica.
     Ok(Outcome::Done(format!(

@@ -1,6 +1,7 @@
 //! Ferramentas de arquivo: list_dir, read_file, grep_files, edit_file, create_file, create_dir e delete_file.
 
 mod backup;
+pub mod journal;
 mod create_dir;
 mod create_file;
 mod delete_file;
