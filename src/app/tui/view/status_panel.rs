@@ -197,6 +197,7 @@ mod tests {
             options: Arc::new(Mutex::new(bitclaw::core::options::Options::default())),
             default_options: bitclaw::core::options::Options::default(),
             auto_yes: false,
+            plan: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             color: false,
             graphics: false,
             mouse: true,

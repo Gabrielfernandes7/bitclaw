@@ -7,6 +7,9 @@ use serde_json::Value;
 // as do toolkit, as de um fork, as que a sessão soma (`load_skill`).
 pub struct Registry {
     tools: Vec<Box<dyn Tool>>,
+    // Modo Plan: só as ferramentas que declaram `read_only` aparecem e executam. Liga e desliga em
+    // tempo de execução (`/plan`), sem perder as outras ferramentas.
+    plan: bool,
 }
 
 impl Registry {
@@ -17,27 +20,42 @@ impl Registry {
         let total = names.len();
         names.dedup();
         assert_eq!(names.len(), total, "nomes de ferramenta duplicados");
-        Self { tools }
+        Self { tools, plan: false }
     }
 
     // Acrescenta uma ferramenta (ex.: `load_skill`). Nome repetido é erro.
     pub fn with_tool(mut self, tool: Box<dyn Tool>) -> Self {
         self.tools.push(tool);
-        Self::new(self.tools)
+        let plan = self.plan;
+        Self { plan, ..Self::new(self.tools) }
     }
 
     // Junta dois registros (ex.: as ferramentas do toolkit com as de um fork).
     pub fn merge(mut self, other: Registry) -> Self {
         self.tools.extend(other.tools);
-        Self::new(self.tools)
+        let plan = self.plan || other.plan;
+        Self { plan, ..Self::new(self.tools) }
+    }
+
+    // As ferramentas que o modelo pode usar agora: todas, ou só as de leitura no modo Plan.
+    fn available(&self) -> impl Iterator<Item = &Box<dyn Tool>> {
+        self.tools.iter().filter(|t| !self.plan || t.annotations().read_only)
     }
 
     pub fn specs(&self) -> Vec<ToolSpec> {
-        self.tools.iter().map(|t| t.spec()).collect()
+        self.available().map(|t| t.spec()).collect()
     }
 
     pub fn names(&self) -> Vec<&'static str> {
-        self.tools.iter().map(|t| t.name()).collect()
+        self.available().map(|t| t.name()).collect()
+    }
+
+    pub fn set_plan(&mut self, on: bool) {
+        self.plan = on;
+    }
+
+    pub fn plan(&self) -> bool {
+        self.plan
     }
 
     // Ferramenta que altera algo (tudo que não declara `read_only`).
@@ -55,8 +73,7 @@ impl Registry {
 
     // As especificações sem as ferramentas destrutivas: o que o modelo vê antes de olhar o projeto.
     pub fn specs_without_destructive(&self) -> Vec<ToolSpec> {
-        self.tools
-            .iter()
+        self.available()
             .filter(|t| {
                 let a = t.annotations();
                 a.read_only || !a.destructive
@@ -70,12 +87,16 @@ impl Registry {
     }
 
     // O modo Plan: só as ferramentas que declaram `read_only`. Nada que altera chega ao modelo.
-    pub fn read_only(self) -> Registry {
-        Self::new(self.tools.into_iter().filter(|t| t.annotations().read_only).collect())
+    pub fn read_only(mut self) -> Registry {
+        self.plan = true;
+        self
     }
 
     pub fn execute(&self, ctx: &ToolContext, name: &str, args: &Value) -> Outcome {
         match self.find(name) {
+            Some(tool) if self.plan && !tool.annotations().read_only => Outcome::Error(format!(
+                "modo Plan: {name} altera o projeto e está desligada. Use só ferramentas de leitura"
+            )),
             Some(tool) => tool.run(ctx, args),
             None => Outcome::Error(format!(
                 "ferramenta desconhecida: {name}. Use uma destas: {}",

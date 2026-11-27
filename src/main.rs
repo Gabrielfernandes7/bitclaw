@@ -229,6 +229,7 @@ fn run() -> Result<(), String> {
             default_options: provider.default_options,
             catalog: Arc::clone(&catalog),
             auto_yes: args.auto_yes,
+            plan: Arc::new(std::sync::atomic::AtomicBool::new(args.plan)),
             color,
             graphics: color && app::tui::brand::Graphics::is_supported(),
             mouse: !args.no_mouse,

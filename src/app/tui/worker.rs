@@ -21,6 +21,8 @@ pub(super) enum Command {
     // Nova janela de contexto, em tokens.
     SetContext(usize),
     Init,
+    // Liga (true) ou desliga o modo Plan da sessão.
+    Plan(bool),
     // Desfaz o último turno com alterações (ver `toolkit::fs::journal`).
     Undo,
 }
@@ -164,6 +166,7 @@ pub(super) fn worker<F>(
                 };
                 let _ = tx.send(UiEvent::Notice(notice));
             }
+            Command::Plan(on) => session.set_plan(on),
             Command::Undo => {
                 let notice = bitclaw::toolkit::fs::journal::undo_last_turn(session.root());
                 let _ = tx.send(UiEvent::Notice(notice));

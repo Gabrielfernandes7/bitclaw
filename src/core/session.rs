@@ -274,6 +274,15 @@ impl Session {
         context::clear(&mut self.messages);
     }
 
+    // Liga ou desliga o modo Plan (só ferramentas de leitura) no meio da sessão.
+    pub fn set_plan(&mut self, on: bool) {
+        self.registry.set_plan(on);
+    }
+
+    pub fn plan(&self) -> bool {
+        self.registry.plan()
+    }
+
     pub fn messages(&self) -> &[Value] {
         &self.messages
     }
@@ -335,6 +344,22 @@ url = "http://unused"
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn plan_mode_toggles_at_runtime_without_losing_tools() {
+        let dir = tempdir("plan-toggle");
+        let mut s = from_parts(&config(""), scripted(vec![]), &dir).unwrap();
+        let all = s.registry.names();
+        assert!(all.contains(&"create_file") && all.contains(&"read_file"));
+        s.set_plan(true);
+        assert!(s.plan());
+        assert_eq!(s.registry.names(), vec!["read_file"]);
+        let refused = s.registry.execute(&crate::core::tool::ToolContext::new(&dir, &AutoApprover), "create_file", &json!({"path": "x.txt", "content": "x"}));
+        assert!(matches!(refused, crate::core::tool::Outcome::Error(ref e) if e.contains("modo Plan")), "{refused:?}");
+        assert!(!dir.join("x.txt").exists());
+        s.set_plan(false);
+        assert_eq!(s.registry.names(), all);
     }
 
     #[test]

@@ -305,6 +305,7 @@ impl App {
             _ if command.is_some_and(|c| c.name == "/temp") => self.temperature_command(arg)?,
             _ if command.is_some_and(|c| c.name == "/effort") => self.effort_command(arg)?,
             _ if command.is_some_and(|c| c.name == "/init") => self.init_command()?,
+            _ if command.is_some_and(|c| c.name == "/plan") => self.plan_command(arg)?,
             _ if command.is_some_and(|c| c.name == "/soul") => {
                 let mut lines = match crate::app::soul::load(&self.settings.root) {
                     Some(text) => text.lines().map(|l| note(l)).collect(),
@@ -378,6 +379,29 @@ impl App {
         let mut lines = self.warning(brand::THINK_WARNING)?;
         lines.push(Line::default());
         self.print(lines)
+    }
+
+    // `/plan [on|off]`: liga, desliga ou alterna o modo Plan. Vale já no próximo passo do agente.
+    pub(super) fn plan_command(&mut self, arg: &str) -> io::Result<()> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let now = self.settings.plan.load(Relaxed);
+        let next = match arg {
+            "" => !now,
+            "on" | "ligar" | "sim" => true,
+            "off" | "desligar" | "não" | "nao" => false,
+            _ => return self.print(vec![note("uso: /plan [on|off]"), Line::default()]),
+        };
+        if self.work.is_some() {
+            return self.print(vec![note("espere a tarefa terminar para mudar o modo Plan."), Line::default()]);
+        }
+        self.settings.plan.store(next, Relaxed);
+        let _ = self.commands.send(Command::Plan(next));
+        let text = if next {
+            "modo Plan ligado: só leitura. Nada é editado, criado, removido nem executado. /plan desliga."
+        } else {
+            "modo Plan desligado: as ferramentas de alteração voltaram."
+        };
+        self.print(vec![note(text), Line::default()])
     }
 
     // `/init`: o agente monta o rascunho e pede aprovação; a prévia aparece como as outras edições.

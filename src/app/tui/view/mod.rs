@@ -308,7 +308,12 @@ fn draw_composer(f: &mut Frame, v: &View, area: Rect) {
     // Rodapé: modelo, modo e contexto à esquerda; atalhos à direita, na versão que couber.
     let model_id = locked(&v.settings.model).id.clone();
     // O modo só aparece quando é o diferente do normal (`--yes`, "Automático"); o padrão fica implícito.
-    let mode = if v.settings.auto_yes { "Automático · " } else { "" };
+    let plan = v.settings.plan.load(std::sync::atomic::Ordering::Relaxed);
+    let mode = match (plan, v.settings.auto_yes) {
+        (true, _) => "Plano · ",
+        (false, true) => "Automático · ",
+        (false, false) => "",
+    };
     let mut info = vec![Span::styled(format!("{model_id} · {mode}"), fg(GRAY))];
     let effort = *locked(&v.settings.effort);
     if !effort.is_off() {

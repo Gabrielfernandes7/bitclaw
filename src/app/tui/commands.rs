@@ -10,13 +10,14 @@ pub(super) struct Cmd {
     pub(super) usage: &'static str,
 }
 
-pub(super) const COMMANDS: [Cmd; 15] = [
+pub(super) const COMMANDS: [Cmd; 16] = [
     Cmd { name: "/help", aliases: &[], desc: "mostra os comandos e as teclas", usage: "" },
     Cmd { name: "/model", aliases: &[], desc: "troca o modelo: load <nome>, show [nome] ou busca entre os instalados", usage: "<load|show> [nome]" },
     Cmd { name: "/effort", aliases: &[], desc: "esforço de raciocínio: só os níveis que o modelo aceita", usage: "<off|low|medium|high>" },
     Cmd { name: "/context", aliases: &[], desc: "janela de contexto em tokens: mostra, troca (16k, 32768) ou volta ao padrão (reset)", usage: "<tokens|reset>" },
     Cmd { name: "/temp", aliases: &["/temperature"], desc: "temperatura de geração: mostra, troca (0 a 2) ou volta ao padrão (reset)", usage: "<0-2|reset>" },
     Cmd { name: "/init", aliases: &[], desc: "cria o AGENTS.md com o resumo verificável do projeto", usage: "" },
+    Cmd { name: "/plan", aliases: &[], desc: "modo Plan: só leitura, nada é alterado nem executado. Sem argumento, alterna", usage: "[on|off]" },
     Cmd { name: "/soul", aliases: &[], desc: "mostra o SOUL.md em vigor (quem o agente é para você); `bitclaw soul` refaz as perguntas", usage: "" },
     Cmd { name: "/clear", aliases: &[], desc: "apaga o histórico e mantém o prompt do sistema", usage: "" },
     Cmd { name: "/think", aliases: &[], desc: "liga ou desliga o raciocínio do modelo (gasta mais contexto)", usage: "" },
@@ -49,7 +50,7 @@ fn visible_with(has_source: bool) -> impl Iterator<Item = &'static Cmd> {
 }
 
 // Comandos que aceitam um argumento depois do nome (`/model <id>`, `/effort <nível>`).
-pub(super) const ARG_COMMANDS: &[&str] = &["/model", "/effort", "/context", "/temp", "/skill"];
+pub(super) const ARG_COMMANDS: &[&str] = &["/model", "/effort", "/context", "/temp", "/skill", "/plan"];
 
 // O que um comando de ajuste (`/context`, `/temp`) pede: mostrar o valor, voltar ao padrão ou trocar.
 #[derive(Debug, PartialEq)]
