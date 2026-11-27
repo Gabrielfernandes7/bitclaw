@@ -46,6 +46,7 @@ Subcomandos `bitclaw update`, `bitclaw uninstall` e `bitclaw soul`, e `--version
 <!-- Acrescente o que não é óbvio no código: convenções, limites, o que não mexer. -->
 
 - **Ferramenta nova declara suas anotações.** `Tool::annotations()` tem `read_only`, `destructive` e `idempotent`. Sem declaração, a ferramenta vale como alteradora e destrutiva. Isso vale para `run_script`, que por isso fica fora do modo Plan.
+- **Anotação pode depender da chamada.** `Tool::call_annotations(args)` e `per_call_annotations()`: `run_command` é só leitura para `git status` e alteradora para `git commit`. No modo Plan ela continua visível e cada chamada é julgada. O agente usa `Registry::mutates_call`/`idempotent_call`, não os métodos por nome.
 - **Prévia tem tipo.** `Preview::new` é uma alteração; `Preview::removal` é uma remoção e nunca entra em aprovação em lote. O tipo não vem do título.
 - **Skills instaladas carregam só com digest aprovado.** `/skill install` grava o SHA-256 da pasta em `.bitclaw/skills.lock`. Skill cujo conteúdo mudou, ou sem digest, não é carregada, e a lista de ignoradas diz por quê. Skill instalada antes do digest precisa ser apagada e instalada de novo.
 - **Recibos de aprovação** ficam em `.bitclaw/approvals.jsonl`: tipo, título, decisão e quem decidiu. Aprovação em lote (`a`) aparece como do usuário.
@@ -75,7 +76,8 @@ Subcomandos `bitclaw update`, `bitclaw uninstall` e `bitclaw soul`, e `--version
   - `src/core/models.rs`, `src/core/options.rs`: modelos e capacidades; opções de geração que a interface muda.
 - `src/toolkit/`: ferramentas prontas, opcionais.
   - `src/toolkit/fs/`: `list_dir`, `read_file`, `grep_files`, `find_files`, `edit_file`, `create_file`, `create_dir` e `delete_file`. `backup.rs` guarda o conteúdo anterior em `.bitclaw/backup`; `journal.rs` é o diário do `/undo`.
-  - `src/toolkit/script.rs`: `run_script`, com aprovação, prazo, saída limitada e ambiente reduzido.
+  - `src/toolkit/script.rs`: `run_script`, com aprovação, prazo, saída limitada e ambiente reduzido. `run_process` é a execução comum.
+  - `src/toolkit/command.rs`: `run_command`, programas conhecidos sem shell. `classify` põe cada chamada em Leitura, Alteração ou Recusada.
   - `src/toolkit/claims.rs`: confere se o texto final diz que criou, alterou ou removeu algo que as ações não confirmam.
 - `src/adapters/`: provedores de modelo. `ollama/` traduz o núcleo para `/api/chat`; `openrouter/` traduz para `/chat/completions`; `lines.rs` lê respostas em streaming.
 - `src/app/`: o BitClaw em si.

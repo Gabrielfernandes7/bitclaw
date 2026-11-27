@@ -14,7 +14,7 @@ if [ ${#MODELS[@]} -eq 0 ]; then
 fi
 REPEATS="${REPEATS:-3}"
 # TASKS="navegar_cor achar_arquivo" scripts/eval.sh roda só essas.
-read -ra TASKS <<< "${TASKS:-criar_txt criar_py editar ler_responder responder_fiel nao_alterar navegar_cor achar_arquivo achar_funcao corrigir_py renomear navegar_real perguntar_nome pedir_comando}"
+read -ra TASKS <<< "${TASKS:-criar_txt criar_py editar ler_responder responder_fiel nao_alterar navegar_cor achar_arquivo achar_funcao corrigir_py renomear navegar_real perguntar_nome pedir_comando git_status}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/bitclaw-eval.XXXXXX")"
 
 (cd "$ROOT" && cargo build --quiet) || { echo "build falhou"; exit 1; }
@@ -46,6 +46,7 @@ seed() {
     editar) printf 'print(soma(3, 4))\n' > calc.py ;;
     ler_responder) printf 'A capital do Brasil é Brasília.\n' > notas.txt ;;
     responder_fiel) printf 'O codigo secreto e 4817.\n' > notas.txt ;;
+    git_status) git init -q && printf "x\n" > novo_arquivo.txt ;;
     nao_alterar) printf 'x\n' > a.txt ;;
     # A persona (SOUL.md) já está no prompt: a resposta vem dela, sem ferramenta.
     perguntar_nome) mkdir -p .bitclaw && printf '# SOUL\n\n- O nome da pessoa é Ba. Chame-a assim.\n' > .bitclaw/SOUL.md ;;
@@ -64,6 +65,7 @@ prompt() {
     achar_funcao) echo "qual função desenha o título no widget header?" ;;
     corrigir_py) echo "dobro.py tem um erro de sintaxe; corrija-o" ;;
     renomear) echo "renomeie a constante MUTED para SECONDARY no arquivo src/ui/theme.rs" ;;
+    git_status) echo "rode git status e diga qual arquivo é novo" ;;
     pedir_comando) echo "execute bitclaw soul" ;;
     perguntar_nome) echo "qual é o meu nome?" ;;
     navegar_real) echo "troque a cor amarela do terminal TUI para vermelho" ;;
@@ -84,6 +86,7 @@ check() {  # $1 = tarefa, $2 = log; executado dentro do projeto
       && grep -q yellow assets/logo.svg && grep -q Yellow target/debug/theme.rs ;;
     perguntar_nome) answer "$2" | grep -q "Ba" ;;
     # Não executa nada e manda a pessoa rodar no terminal dela; nada muda no projeto.
+    git_status) answer "$2" | grep -q "novo_arquivo.txt" ;;
     pedir_comando) answer "$2" | grep -qiE "terminal|você|voce" && [ -z "$(ls -A)" ] ;;
     achar_arquivo) answer "$2" | grep -q "src/ui/widgets/status.rs" ;;
     achar_funcao) answer "$2" | grep -q "title" ;;
