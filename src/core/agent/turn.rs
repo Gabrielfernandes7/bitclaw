@@ -11,6 +11,11 @@ use std::collections::HashSet;
 use std::path::Path;
 
 pub const MAX_STEPS: usize = 8;
+// Quantas vezes por turno uma resposta totalmente vazia (sem texto e sem chamada) é pedida de novo.
+const MAX_EMPTY_RETRIES: usize = 2;
+// Dito ao modelo, só na nova tentativa, quando a resposta veio vazia. Não entra no histórico.
+const EMPTY_REPLY_NUDGE: &str = "Sua resposta anterior veio vazia. Se o pedido exige uma alteração ou leitura, chame a ferramenta agora, \
+                                 com todos os argumentos preenchidos; se não, responda em texto.";
 // Quantas falhas seguidas da mesma ferramenta encerram o turno.
 pub const MAX_CONSECUTIVE_FAILURES: usize = 2;
 
@@ -65,6 +70,12 @@ pub fn run_turn_with(
     let mut failing: Option<(String, usize)> = None;
     // Alterações já executadas neste turno. Repetir a mesma alteração não a reaplica.
     let mut applied: HashSet<String> = HashSet::new();
+    // Leituras já feitas desde a última alteração ou execução. Repeti-las devolveria o mesmo resultado.
+    let mut seen_reads: HashSet<String> = HashSet::new();
+    // Passos seguidos em que o modelo só pediu leituras que já tinha.
+    let mut stalled = 0;
+    let mut empty_retries = 0;
+    let mut nudge = false;
 
     for _ in 0..limits.max_steps {
         if progress.cancelled() {
@@ -77,7 +88,14 @@ pub fn run_turn_with(
         let sent_chars = context::size(messages) + context::value_size(&tools_json);
         progress.model_waiting(true);
         let mut guard = LoopGuard::default();
-        let reply = model.complete_streaming(messages, &tools, &mut |chunk| {
+        // Na nova tentativa de uma resposta vazia, o empurrão vai só nesta chamada.
+        let retry_messages = nudge.then(|| {
+            let mut sent = messages.clone();
+            sent.push(json!({"role": "user", "content": EMPTY_REPLY_NUDGE}));
+            sent
+        });
+        nudge = false;
+        let reply = model.complete_streaming(retry_messages.as_deref().unwrap_or(messages), &tools, &mut |chunk| {
             progress.model_chunk(chunk);
             !progress.cancelled() && !guard.feed(chunk)
         });
@@ -101,21 +119,56 @@ pub fn run_turn_with(
             ctx.calibrate(sent_chars, tokens);
         }
         let msg = reply.message;
+        let empty = msg.get("content").and_then(Value::as_str).unwrap_or("").trim().is_empty()
+            && msg.get("tool_calls").and_then(Value::as_array).is_none_or(|c| c.is_empty());
+        if empty && empty_retries < MAX_EMPTY_RETRIES {
+            // Nada utilizável (alguns provedores descartam uma chamada que não conseguem interpretar):
+            // a resposta vazia não entra no histórico, e o modelo tenta de novo.
+            empty_retries += 1;
+            nudge = true;
+            continue;
+        }
         messages.push(msg.clone());
 
         let mut calls = msg.get("tool_calls").and_then(Value::as_array).cloned().unwrap_or_default();
         if calls.is_empty() {
-            calls = calls_from_text(msg.get("content").and_then(Value::as_str).unwrap_or(""));
+            let known = registry.names();
+            let (from_text, rest) = calls_from_text(msg.get("content").and_then(Value::as_str).unwrap_or(""), &known);
+            if !from_text.is_empty() {
+                // Regrava a chamada no histórico no formato estruturado. Como texto solto, o resultado da
+                // ferramenta não responde a nenhuma chamada do modelo, e ele a repete; assim o template do
+                // modelo mostra o par chamada/resultado do jeito nativo.
+                if let Some(last) = messages.last_mut() {
+                    last["content"] = Value::String(rest);
+                    last["tool_calls"] = Value::Array(from_text.clone());
+                }
+                calls = from_text;
+            }
         }
         if calls.is_empty() {
             report.text = msg.get("content").and_then(Value::as_str).unwrap_or("").trim().to_string();
             return Ok(report);
         }
 
+        let mut suppressed = 0;
+        let total_calls = calls.len();
         for call in calls {
             let func = call.get("function").cloned().unwrap_or(Value::Null);
             let name = func.get("name").and_then(Value::as_str).unwrap_or("").to_string();
             let args = normalize_args(func.get("arguments"));
+
+            // Leitura idêntica a uma já feita: não executa de novo; devolve o aviso e o resultado segue acima.
+            let read_key = format!("{name}{args}");
+            if registry.idempotent(&name) && seen_reads.contains(&read_key) {
+                suppressed += 1;
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_name": name.clone(),
+                    "content": "você já fez esta chamada neste turno e o resultado está acima na conversa. \
+                                Não repita: use-o e responda ao usuário, ou chame outra ferramenta."
+                }));
+                continue;
+            }
             progress.tool_call(&name, &args);
 
             // Mesma chamada repetida: o modelo está preso, interrompe.
@@ -144,6 +197,12 @@ pub fn run_turn_with(
 
             let outcome = registry.execute(&ToolContext::new(root, approver), &name, &args);
             progress.tool_done(&name, &args, &outcome);
+            if registry.idempotent(&name) {
+                seen_reads.insert(read_key);
+            } else {
+                // Alteração ou execução pode mudar o que as leituras devolvem: valem de novo.
+                seen_reads.clear();
+            }
 
             // Falhas seguidas da mesma ferramenta, mesmo com argumentos diferentes, encerram o turno.
             if matches!(outcome, Outcome::Error(_)) {
@@ -173,8 +232,54 @@ pub fn run_turn_with(
                 return Ok(report);
             }
         }
+
+        // O modelo só repetiu leituras que já tinha: avisou uma vez; se insiste, pede a resposta sem ferramentas.
+        if suppressed == total_calls {
+            stalled += 1;
+            if stalled >= 2 {
+                return finish_without_tools(model, messages, progress, report);
+            }
+        } else {
+            stalled = 0;
+        }
     }
 
     report.error = Some(format!("limite de {} passos atingido sem resposta final", limits.max_steps));
+    Ok(report)
+}
+
+// Última tentativa quando o modelo não sai das mesmas leituras: pede a resposta com o que já foi lido,
+// sem oferecer ferramentas. Se nem assim vier texto, o turno termina com o erro de repetição.
+fn finish_without_tools(
+    model: &dyn ChatModel,
+    messages: &mut Vec<Value>,
+    progress: &dyn Progress,
+    mut report: TurnReport,
+) -> Result<TurnReport, String> {
+    let mut ask = messages.clone();
+    ask.push(json!({
+        "role": "user",
+        "content": "Você já tem os resultados das ferramentas acima. Responda agora ao pedido usando só o que eles trouxeram, sem chamar mais ferramentas."
+    }));
+    progress.model_waiting(true);
+    let reply = model.complete_streaming(&ask, &[], &mut |chunk| {
+        progress.model_chunk(chunk);
+        !progress.cancelled()
+    });
+    progress.model_waiting(false);
+    match reply {
+        Ok(reply) if !progress.cancelled() => {
+            progress.model_tokens(reply.prompt_tokens, reply.output_tokens);
+            let text = reply.message.get("content").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            if text.is_empty() {
+                report.error = Some("o modelo repetiu a mesma chamada; interrompendo".into());
+            } else {
+                messages.push(reply.message);
+                report.text = text;
+            }
+        }
+        Ok(_) => report.error = Some(INTERRUPTED.into()),
+        Err(_) => report.error = Some("o modelo repetiu a mesma chamada; interrompendo".into()),
+    }
     Ok(report)
 }

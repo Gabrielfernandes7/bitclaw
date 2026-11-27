@@ -561,3 +561,177 @@ fn a_run_claimed_without_a_successful_run_is_flagged() {
     let real = TurnReport { text: "Executei o script: a saída é 2880.".into(), actions: vec![ok], ..Default::default() };
     assert!(crate::toolkit::claims::warnings(&real).iter().all(|x| !x.contains("execução")));
 }
+
+#[test]
+fn tagged_text_call_from_the_model_runs_as_a_real_tool() {
+    let r = root("tagged-call");
+    std::fs::write(r.join("a.txt"), "oi").unwrap();
+    let model = fake(vec![
+        text(r#"list_dir{path:<|"|>.<|"|>}"#),
+        text("Há um arquivo: a.txt."),
+    ]);
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
+    assert_eq!(report.actions.len(), 1);
+    assert!(matches!(report.actions[0].outcome, Outcome::Done(_)));
+    assert_eq!(report.text, "Há um arquivo: a.txt.");
+}
+
+#[test]
+fn native_tool_calls_take_precedence_over_text() {
+    let r = root("native-precedence");
+    let mut msg = call("list_dir", json!({"path": "."}));
+    msg["content"] = json!(r#"read_file{path:<|"|>x<|"|>}"#);
+    let model = fake(vec![msg, text("ok")]);
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
+    assert_eq!(report.actions.len(), 1);
+    assert_eq!(report.actions[0].name, "list_dir");
+}
+
+fn tagged(name: &str, path: &str) -> Value {
+    text(&format!("{name}{{path:<|\"|>{path}<|\"|>}}"))
+}
+
+#[test]
+fn text_call_is_rewritten_as_a_structured_call_in_the_history() {
+    // O resultado da ferramenta precisa responder a uma chamada do modelo no histórico; texto solto não serve.
+    let r = root("rewrite-history");
+    let model = fake(vec![tagged("list_dir", "."), text("Pronto.")]);
+    let mut msgs = start();
+    run(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover).unwrap();
+    let assistant = &msgs[2];
+    assert_eq!(assistant["tool_calls"][0]["function"]["name"], "list_dir");
+    assert_eq!(assistant["tool_calls"][0]["function"]["arguments"], json!({"path": "."}));
+    assert_eq!(assistant["content"], "", "o texto da chamada não fica no histórico");
+    assert_eq!(msgs[3]["role"], "tool");
+}
+
+#[test]
+fn prose_around_a_text_call_stays_in_the_history() {
+    let r = root("rewrite-prose");
+    let model = fake(vec![text("Vou listar.\nlist_dir{path:<|\"|>.<|\"|>}"), text("Pronto.")]);
+    let mut msgs = start();
+    run(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover).unwrap();
+    assert_eq!(msgs[2]["content"], "Vou listar.");
+}
+
+#[test]
+fn glued_text_calls_all_run() {
+    let r = root("glued");
+    fs::write(r.join("a.txt"), "um").unwrap();
+    fs::write(r.join("b.txt"), "dois").unwrap();
+    let both = text(r#"read_file{path:<|"|>a.txt<|"|>}read_file{path:<|"|>b.txt<|"|>}"#);
+    let model = fake(vec![both, text("um e dois")]);
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
+    assert_eq!(report.actions.len(), 2);
+    assert_eq!(report.text, "um e dois");
+}
+
+#[test]
+fn repeated_read_is_not_run_again_and_the_model_gets_a_hint() {
+    let r = root("repeat-read");
+    let model = fake(vec![call("list_dir", json!({"path": "."})), call("list_dir", json!({"path": "."})), text("Está vazio.")]);
+    let mut msgs = start();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover).unwrap();
+    assert_eq!(report.actions.len(), 1, "a repetição não conta como ação nova");
+    assert_eq!(report.text, "Está vazio.");
+    assert!(report.error.is_none());
+    let hints = msgs.iter().filter(|m| m["content"].as_str().is_some_and(|c| c.contains("já fez esta chamada"))).count();
+    assert_eq!(hints, 1);
+}
+
+#[test]
+fn repeated_read_between_other_calls_is_also_caught() {
+    let r = root("repeat-read-gap");
+    fs::create_dir(r.join("src")).unwrap();
+    let model = fake(vec![
+        call("list_dir", json!({"path": "src"})),
+        call("list_dir", json!({"path": "."})),
+        call("list_dir", json!({"path": "src"})),
+        text("ok"),
+    ]);
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
+    assert_eq!(report.actions.len(), 2);
+    assert_eq!(report.text, "ok");
+}
+
+#[test]
+fn a_model_that_keeps_repeating_reads_is_asked_for_an_answer_without_tools() {
+    let r = root("repeat-finalize");
+    let same = || call("list_dir", json!({"path": "."}));
+    let model = fake(vec![same(), same(), same(), text("O projeto está vazio.")]);
+    let mut msgs = start();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover).unwrap();
+    assert_eq!(report.text, "O projeto está vazio.");
+    assert!(report.error.is_none(), "{:?}", report.error);
+    assert_eq!(report.actions.len(), 1);
+    assert_eq!(msgs.last().unwrap()["content"], "O projeto está vazio.");
+    assert!(
+        !msgs.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains("sem chamar mais ferramentas"))),
+        "o pedido final não fica no histórico"
+    );
+}
+
+#[test]
+fn reading_again_after_a_change_runs_again() {
+    let r = root("read-after-write");
+    let model = fake(vec![
+        call("list_dir", json!({"path": "."})),
+        call("create_file", json!({"path": "novo.txt", "content": "x"})),
+        call("list_dir", json!({"path": "."})),
+        text("Criei novo.txt."),
+    ]);
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
+    assert_eq!(report.actions.len(), 3);
+    assert!(report.error.is_none());
+}
+
+#[test]
+fn non_idempotent_tools_are_not_deduplicated() {
+    let r = root("echo-twice");
+    let reg = Registry::new(vec![Box::new(Echo)]);
+    let model = fake(vec![call("echo", json!({"texto": "a"})), call("echo", json!({"texto": "a"})), text("fim")]);
+    let report = run(&model, &reg, &r, &mut start(), &AutoApprover).unwrap();
+    assert_eq!(report.actions.len(), 2, "uma ferramenta que não se declara idempotente roda sempre");
+}
+
+#[test]
+fn an_empty_reply_is_asked_again_and_leaves_no_trace_in_the_history() {
+    let r = root("empty-retry");
+    let model = fake(vec![text(""), call("create_file", json!({"path": "a.txt", "content": "x"})), text("Criei a.txt.")]);
+    let mut msgs = start();
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut msgs, &AutoApprover).unwrap();
+    assert!(report.changed());
+    assert_eq!(report.text, "Criei a.txt.");
+    assert!(
+        !msgs.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains("veio vazia")) || (m["role"] == "assistant" && m["content"] == "" && m.get("tool_calls").is_none())),
+        "a resposta vazia e o empurrão não entram no histórico: {msgs:?}"
+    );
+}
+
+#[test]
+fn the_retry_nudge_is_sent_only_with_the_retry() {
+    use std::cell::Cell;
+    struct Spy(FakeModel, Cell<usize>, RefCell<Vec<bool>>);
+    impl ChatModel for Spy {
+        fn complete(&self, messages: &[Value], tools: &[ToolSpec]) -> Result<Reply, String> {
+            let nudged = messages.last().is_some_and(|m| m["content"].as_str().is_some_and(|c| c.contains("veio vazia")));
+            self.2.borrow_mut().push(nudged);
+            self.1.set(self.1.get() + 1);
+            self.0.complete(messages, tools)
+        }
+    }
+    let r = root("empty-nudge");
+    let spy = Spy(fake(vec![text(""), text("Olá.")]), Cell::new(0), RefCell::new(vec![]));
+    let report = run(&spy, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
+    assert_eq!(report.text, "Olá.");
+    assert_eq!(*spy.2.borrow(), vec![false, true]);
+}
+
+#[test]
+fn a_model_that_stays_silent_ends_with_an_empty_report_after_two_retries() {
+    let r = root("empty-forever");
+    let model = fake(vec![text(""), text(""), text(""), text("nunca chega")]);
+    let report = run(&model, &crate::toolkit::default_registry(), &r, &mut start(), &AutoApprover).unwrap();
+    assert!(report.text.is_empty());
+    assert!(report.actions.is_empty());
+}
