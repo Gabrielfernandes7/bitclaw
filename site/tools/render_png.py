@@ -60,6 +60,20 @@ def render(svg_markup: str, width: int, height: int, dest: Path, scale_to: int |
         shutil.copy(png, dest)
 
 
+MASCOT = ROOT / "docs" / "identidade" / "bitclaw-bricks-dark.svg"
+ICON_SIDE = 760  # o mascote (684x624) com folga de ~6% em cada lado
+
+
+def icon_svg() -> str:
+    """O mascote de peças no meio de um quadrado escuro, para favicon e ícones."""
+    w, h, body = inner(MASCOT)
+    ox, oy = (ICON_SIDE - w) / 2, (ICON_SIDE - h) / 2 + 6
+    return (
+        f'<rect width="{ICON_SIDE}" height="{ICON_SIDE}" rx="120" fill="#141416"/>'
+        f'<svg x="{ox}" y="{oy}" width="{w}" height="{h}" viewBox="0 0 {w:g} {h:g}">{body}</svg>'
+    )
+
+
 def crab_cells() -> str:
     s = CRAB.read_text()
     return "".join(
@@ -74,25 +88,33 @@ def main() -> None:
         w, h, body = inner(ROOT / "docs" / "identidade" / f"{name}.svg")
         render(body, int(w), int(h), OUT / "png" / f"{name}.png", scale_to=int(w) * 2 if w < 1000 else int(w))
 
-    # og-image: cena à direita, nome e frase à esquerda
+    # og-image: nome e frase à esquerda; à direita a cena aprovada INTEIRA (caranguejo, peça vermelha,
+    # faíscas e a pilha), dentro de um painel do tamanho dela, sem nada cortado.
     w, h, body = inner(ROOT / "docs" / "identidade" / "bricks-cena.svg")
+    panel_w, panel_h = 640, 630
+    vb_w = 950.0  # largura da cena que cabe no painel (a linha do chão sai pelos lados, de propósito)
+    vb_x = 80.0
+    vb_h = vb_w * panel_h / panel_w
+    vb_y = (h - vb_h) / 2
+    font = "Helvetica Neue, Arial, sans-serif"
     og = (
-        '<rect width="1200" height="630" fill="#131316"/>'
-        '<g transform="translate(470 20) scale(0.8)">'
-        f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}">{body}</svg></g>'
-        '<rect width="560" height="630" fill="#171717"/>'
+        '<rect width="1200" height="630" fill="#171717"/>'
         '<g fill="#FFCC00"><rect x="64" y="70" width="34" height="14" rx="5"/><rect x="108" y="70" width="34" height="14" rx="5"/></g>'
-        '<text x="60" y="270" font-family="Helvetica Neue, Arial, sans-serif" font-weight="900" font-size="132" letter-spacing="-6" fill="#F5F3EB">bit<tspan fill="#FFCC00">claw</tspan></text>'
-        '<text x="64" y="345" font-family="Helvetica Neue, Arial, sans-serif" font-weight="700" font-size="34" fill="#F5F3EB">Um agente de IA local,</text>'
-        '<text x="64" y="390" font-family="Helvetica Neue, Arial, sans-serif" font-weight="700" font-size="34" fill="#FFCC00">montado peça por peça.</text>'
-        '<text x="64" y="560" font-family="Menlo, monospace" font-size="24" fill="#A8A399">Rust · Ollama · documentação</text>'
+        f'<text x="60" y="270" font-family="{font}" font-weight="900" font-size="132" letter-spacing="-6" fill="#F5F3EB">bit<tspan fill="#FFCC00">claw</tspan></text>'
+        f'<text x="64" y="345" font-family="{font}" font-weight="700" font-size="34" fill="#F5F3EB">Um agente de IA local,</text>'
+        f'<text x="64" y="390" font-family="{font}" font-weight="700" font-size="34" fill="#FFCC00">montado peça por peça.</text>'
+        f'<text x="64" y="560" font-family="Menlo, monospace" font-size="24" fill="#A8A399">Rust · Ollama · documentação</text>'
+        f'<svg x="{1200 - panel_w}" y="0" width="{panel_w}" height="{panel_h}" viewBox="{vb_x} {vb_y} {vb_w} {vb_h}">'
+        f'<rect x="-2000" y="-2000" width="6000" height="6000" fill="#0C0C0E"/>{body}</svg>'
     )
     render(og, 1200, 630, OUT / "og-image.png")
 
-    # favicons: o caranguejo em pixels (240x144) centrado num quadrado escuro
-    icon = f'<rect width="288" height="288" fill="#171717"/><g transform="translate(24 72)">{crab_cells()}</g>'
-    for name, size in (("favicon-32.png", 32), ("apple-touch-icon.png", 180)):
-        render(icon, 288, 288, OUT / name, scale_to=size)
+    # ícones: o caranguejo de peças (o mesmo da galeria), inteiro, num quadrado com folga ao redor
+    for name, size in (("favicon-32.png", 32), ("apple-touch-icon.png", 180), ("icon-512.png", 512)):
+        render(icon_svg(), ICON_SIDE, ICON_SIDE, OUT / name, scale_to=size)
+    (OUT / "favicon.svg").write_text(
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {ICON_SIDE} {ICON_SIDE}">{icon_svg()}</svg>\n'
+    )
     print("PNGs em", OUT)
 
 
